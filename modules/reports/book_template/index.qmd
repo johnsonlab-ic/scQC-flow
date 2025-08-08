@@ -1,0 +1,27 @@
+# scQC-flow Quality Control Report
+
+This comprehensive quality control report summarizes the analysis of single-cell RNA sequencing data processed through the scQC-flow pipeline.
+
+## Overview
+
+This report includes detailed quality control metrics for each sample processed, including:
+
+- Basic statistics (cell counts, feature counts, UMI distributions)
+- Quality control metrics (mitochondrial gene percentages, ribosomal gene percentages)
+- Visualization of key quality metrics
+- Cell distribution analyses
+- Top expressed genes
+- Filtering recommendations
+- Quality control summaries
+
+## Samples Analyzed
+
+The following sections contain detailed reports for each sample processed through the pipeline.
+
+## Navigation
+
+Use the table of contents on the left to navigate between different sample reports. Each sample report follows the same structure for easy comparison across samples.
+
+## About scQC-flow
+
+scQC-flow is a Nextflow pipeline designed for comprehensive quality control analysis of single-cell RNA sequencing data from Cell Ranger outputs. The pipeline can optionally integrate CellBender for ambient RNA removal and provides detailed Quarto-based reports for downstream analysis planning.

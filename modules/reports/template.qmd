@@ -1,0 +1,424 @@
+---
+title: "Seurat QC Report - SAMPLE_NAME_PLACEHOLDER"
+author: "scQC-flow Pipeline"
+date: today
+format: 
+  html:
+    toc: true
+    toc-float: true
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+# Sample Overview: SAMPLE_NAME_PLACEHOLDER
+
+**Data path:** `DATA_PATH_PLACEHOLDER/outs/filtered_feature_bc_matrix/`
+
+```{r}
+#| label: setup
+#| include: false
+
+library(Matrix)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(gridExtra)
+
+# Load the data
+data_path <- "DATA_PATH_PLACEHOLDER/outs/filtered_feature_bc_matrix/"
+
+if (!dir.exists(data_path)) {
+  stop(paste("Data directory not found at:", data_path))
+}
+
+cat("Loading data from:", data_path, "\n")
+count_data <- Read10X(data.dir = data_path)
+
+# Create Seurat object
+seurat_obj <- CreateSeuratObject(counts = count_data, 
+                                 project = "SAMPLE_NAME_PLACEHOLDER", 
+                                 min.cells = 3, 
+                                 min.features = 200)
+
+# Calculate QC metrics
+seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+seurat_obj[["percent.rb"]] <- PercentageFeatureSet(seurat_obj, pattern = "^RP[SL]")
+
+# Load DropletQC metrics if available
+dropletqc_file <- "DROPLETQC_PATH_PLACEHOLDER"
+has_dropletqc <- file.exists(dropletqc_file)
+
+if (has_dropletqc) {
+  cat("Loading DropletQC metrics from:", dropletqc_file, "\n")
+  dropletqc_data <- read.csv(dropletqc_file)
+  
+  # Match cell barcodes and add nuclear fraction to Seurat object
+  cell_barcodes <- rownames(seurat_obj@meta.data)
+  
+  # Remove any suffix from Seurat barcodes (like -1) if present
+  clean_barcodes <- gsub("-.*$", "", cell_barcodes)
+  dropletqc_clean <- gsub("-.*$", "", dropletqc_data$cell_barcode)
+  
+  # Match and add nuclear fraction
+  nuclear_fractions <- rep(NA, length(cell_barcodes))
+  for (i in seq_along(clean_barcodes)) {
+    match_idx <- which(dropletqc_clean == clean_barcodes[i])
+    if (length(match_idx) > 0) {
+      nuclear_fractions[i] <- dropletqc_data$nuclear_fraction[match_idx[1]]
+    }
+  }
+  
+  seurat_obj[["nuclear_fraction"]] <- nuclear_fractions
+  cat("Added nuclear fraction data for", sum(!is.na(nuclear_fractions)), "cells\n")
+} else {
+  cat("DropletQC metrics file not found, skipping nuclear fraction analysis\n")
+}
+
+# Load scDblFinder metrics if available
+scdbl_file <- "SCDBL_PATH_PLACEHOLDER"
+has_scdbl <- file.exists(scdbl_file)
+
+if (has_scdbl) {
+  cat("Loading scDblFinder metrics from:", scdbl_file, "\n")
+  scdbl_data <- read.csv(scdbl_file)
+  
+  # Match cell barcodes and add doublet information to Seurat object
+  cell_barcodes <- rownames(seurat_obj@meta.data)
+  
+  # Remove any suffix from Seurat barcodes (like -1) if present
+  clean_barcodes <- gsub("-.*$", "", cell_barcodes)
+  scdbl_clean <- gsub("-.*$", "", scdbl_data$cell_barcode)
+  
+  # Match and add doublet scores and classes
+  doublet_scores <- rep(NA, length(cell_barcodes))
+  doublet_classes <- rep(NA, length(cell_barcodes))
+  for (i in seq_along(clean_barcodes)) {
+    match_idx <- which(scdbl_clean == clean_barcodes[i])
+    if (length(match_idx) > 0) {
+      doublet_scores[i] <- scdbl_data$doublet_score[match_idx[1]]
+      doublet_classes[i] <- scdbl_data$doublet_class[match_idx[1]]
+    }
+  }
+  
+  seurat_obj[["doublet_score"]] <- doublet_scores
+  seurat_obj[["doublet_class"]] <- doublet_classes
+  cat("Added doublet data for", sum(!is.na(doublet_scores)), "cells\n")
+} else {
+  cat("scDblFinder metrics file not found, skipping doublet analysis\n")
+}
+
+cat("Successfully loaded", ncol(seurat_obj), "cells and", nrow(seurat_obj), "features\n")
+```
+
+## Basic Statistics
+
+```{r}
+#| label: basic-stats
+
+stats <- data.frame(
+  Metric = c("Total Cells", "Total Features", "Median UMI per cell", "Median Features per cell"),
+  Value = c(
+    ncol(seurat_obj),
+    nrow(seurat_obj),
+    median(seurat_obj$nCount_RNA),
+    median(seurat_obj$nFeature_RNA)
+  )
+)
+
+kable(stats, caption = "Dataset Statistics")
+```
+
+## Quality Control Metrics
+
+```{r}
+#| label: qc-metrics
+
+# Base QC stats
+qc_stats <- data.frame(
+  Metric = c("Mean UMI per cell", "Mean Features per cell", "Mean % Mitochondrial", "Mean % Ribosomal"),
+  Value = c(
+    round(mean(seurat_obj$nCount_RNA), 2),
+    round(mean(seurat_obj$nFeature_RNA), 2),
+    round(mean(seurat_obj$percent.mt), 2),
+    round(mean(seurat_obj$percent.rb), 2)
+  )
+)
+
+# Add nuclear fraction if available
+if (has_dropletqc && "nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+  nuclear_stats <- data.frame(
+    Metric = "Mean Nuclear Fraction",
+    Value = round(mean(seurat_obj$nuclear_fraction, na.rm = TRUE), 3)
+  )
+  qc_stats <- rbind(qc_stats, nuclear_stats)
+}
+
+# Add doublet rate if available
+if (has_scdbl && "doublet_class" %in% colnames(seurat_obj@meta.data)) {
+  doublet_rate <- mean(seurat_obj$doublet_class == "doublet", na.rm = TRUE) * 100
+  doublet_stats <- data.frame(
+    Metric = "Doublet Rate (%)",
+    Value = round(doublet_rate, 2)
+  )
+  qc_stats <- rbind(qc_stats, doublet_stats)
+}
+
+kable(qc_stats, caption = "Quality Control Metrics")
+```
+
+## Visualizations
+
+```{r}
+#| label: violin-plots
+#| fig-width: 12
+#| fig-height: 6
+
+# Base features for violin plots
+features_to_plot <- c("nFeature_RNA", "nCount_RNA", "percent.mt")
+
+# Add nuclear fraction if available
+if (has_dropletqc && "nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+  features_to_plot <- c(features_to_plot, "nuclear_fraction")
+}
+
+# Add doublet score if available
+if (has_scdbl && "doublet_score" %in% colnames(seurat_obj@meta.data)) {
+  features_to_plot <- c(features_to_plot, "doublet_score")
+}
+
+VlnPlot(seurat_obj, features = features_to_plot, 
+        ncol = length(features_to_plot), pt.size = 0.1)
+```
+
+```{r}
+#| label: scatter-plots
+#| fig-width: 12
+#| fig-height: 5
+
+plot1 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+  geom_smooth(method = "lm") +
+  ggtitle("UMI vs Features")
+
+plot2 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "percent.mt") +
+  geom_smooth(method = "lm") +
+  ggtitle("UMI vs Mitochondrial %")
+
+if (has_dropletqc && "nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+  # Create additional plots with nuclear fraction
+  grid.arrange(plot1, plot2, ncol = 2)
+} else {
+  grid.arrange(plot1, plot2, ncol = 2)
+}
+```
+
+```{r}
+#| label: nuclear-fraction-plots
+#| fig-width: 12
+#| fig-height: 5
+#| eval: !expr has_dropletqc && "nuclear_fraction" %in% colnames(seurat_obj@meta.data)
+
+# Nuclear fraction scatter plots (only if dropletQC data is available)
+if (has_dropletqc && "nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+  plot3 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "nuclear_fraction") +
+    geom_smooth(method = "lm") +
+    ggtitle("UMI vs Nuclear Fraction") +
+    labs(y = "Nuclear Fraction")
+
+  plot4 <- FeatureScatter(seurat_obj, feature1 = "nFeature_RNA", feature2 = "nuclear_fraction") +
+    geom_smooth(method = "lm") +
+    ggtitle("Features vs Nuclear Fraction") +
+    labs(y = "Nuclear Fraction")
+
+  grid.arrange(plot3, plot4, ncol = 2)
+}
+```
+
+## Doublet Analysis
+
+```{r}
+#| label: doublet-analysis
+#| fig-width: 12
+#| fig-height: 8
+#| eval: !expr has_scdbl && "doublet_score" %in% colnames(seurat_obj@meta.data)
+
+# Doublet analysis plots (only if scDblFinder data is available)
+if (has_scdbl && "doublet_score" %in% colnames(seurat_obj@meta.data)) {
+  
+  # Doublet classification summary
+  doublet_summary <- table(seurat_obj$doublet_class)
+  doublet_df <- data.frame(
+    Classification = names(doublet_summary),
+    Count = as.numeric(doublet_summary),
+    Percentage = round(as.numeric(doublet_summary) / sum(doublet_summary) * 100, 1)
+  )
+  
+  cat("### Doublet Detection Summary\n\n")
+  kable(doublet_df, caption = "Doublet vs Singlet Classification")
+  
+  cat("\n\n### Doublet Score Distribution\n\n")
+  
+  # Doublet score histogram
+  p1 <- ggplot(seurat_obj@meta.data, aes(x = doublet_score, fill = doublet_class)) +
+    geom_histogram(bins = 50, alpha = 0.7) +
+    scale_fill_manual(values = c("doublet" = "red", "singlet" = "blue")) +
+    labs(title = "Distribution of Doublet Scores",
+         x = "Doublet Score", y = "Number of Cells",
+         fill = "Classification") +
+    theme_minimal()
+  
+  # Doublet score vs UMI
+  p2 <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "doublet_score", 
+                       group.by = "doublet_class") +
+    scale_color_manual(values = c("doublet" = "red", "singlet" = "blue")) +
+    ggtitle("UMI vs Doublet Score") +
+    labs(y = "Doublet Score", color = "Classification")
+  
+  # Doublet score vs Features  
+  p3 <- FeatureScatter(seurat_obj, feature1 = "nFeature_RNA", feature2 = "doublet_score",
+                       group.by = "doublet_class") +
+    scale_color_manual(values = c("doublet" = "red", "singlet" = "blue")) +
+    ggtitle("Features vs Doublet Score") +
+    labs(y = "Doublet Score", color = "Classification")
+  
+  # Doublet score vs Mitochondrial %
+  p4 <- FeatureScatter(seurat_obj, feature1 = "percent.mt", feature2 = "doublet_score",
+                       group.by = "doublet_class") +
+    scale_color_manual(values = c("doublet" = "red", "singlet" = "blue")) +
+    ggtitle("Mitochondrial % vs Doublet Score") +
+    labs(x = "Mitochondrial %", y = "Doublet Score", color = "Classification")
+  
+  grid.arrange(p1, p2, p3, p4, ncol = 2)
+}
+```
+
+## Cell Distribution Analysis
+
+```{r}
+#| label: cell-distribution
+#| fig-width: 12
+#| fig-height: 4
+
+# Histogram of UMI counts per cell
+p1 <- ggplot(seurat_obj@meta.data, aes(x = nCount_RNA)) +
+  geom_histogram(bins = 50, fill = "skyblue", alpha = 0.7) +
+  scale_x_log10() +
+  labs(title = "Distribution of UMI Counts per Cell",
+       x = "UMI Count (log10)", y = "Number of Cells") +
+  theme_minimal()
+
+# Histogram of features per cell
+p2 <- ggplot(seurat_obj@meta.data, aes(x = nFeature_RNA)) +
+  geom_histogram(bins = 50, fill = "lightcoral", alpha = 0.7) +
+  scale_x_log10() +
+  labs(title = "Distribution of Features per Cell",
+       x = "Feature Count (log10)", y = "Number of Cells") +
+  theme_minimal()
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+## Top Expressed Genes
+
+```{r}
+#| label: top-genes
+
+# Get top expressed genes
+count_matrix <- GetAssayData(seurat_obj, assay = "RNA", layer = "counts")
+gene_expression <- Matrix::rowSums(count_matrix)
+top_genes <- sort(gene_expression, decreasing = TRUE)[1:10]
+
+top_genes_df <- data.frame(
+  Gene = names(top_genes),
+  Total_UMI = as.numeric(top_genes),
+  Percentage = round((as.numeric(top_genes) / sum(gene_expression)) * 100, 2)
+)
+
+kable(top_genes_df, caption = "Top 10 Most Expressed Genes")
+```
+
+```{r}
+#| label: top-genes-plot
+#| fig-width: 10
+#| fig-height: 6
+
+ggplot(top_genes_df, aes(x = reorder(Gene, Total_UMI), y = Total_UMI)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  coord_flip() +
+  labs(title = "Top 10 Most Expressed Genes", 
+       x = "Gene", y = "Total UMI Count") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10))
+```
+
+## Filtering Recommendations
+
+```{r}
+#| label: recommendations
+
+min_features <- quantile(seurat_obj$nFeature_RNA, 0.01)
+max_features <- quantile(seurat_obj$nFeature_RNA, 0.99)
+max_mt <- quantile(seurat_obj$percent.mt, 0.95)
+
+recommendations <- data.frame(
+  Filter = c("Minimum features per cell", "Maximum features per cell", "Maximum mitochondrial %"),
+  Recommended_Threshold = c(
+    round(min_features),
+    round(max_features),
+    round(max_mt, 1)
+  ),
+  Rationale = c(
+    "Remove low-quality cells (1st percentile)",
+    "Remove potential doublets (99th percentile)", 
+    "Remove dying cells (95th percentile)"
+  )
+)
+
+kable(recommendations, caption = "Suggested Filtering Thresholds")
+```
+
+## Quality Control Summary
+
+```{r}
+#| label: qc-summary
+
+# Summary of data quality
+summary_metrics <- data.frame(
+  Aspect = c(
+    "Cell Count", 
+    "Median UMI/cell",
+    "Median Features/cell",
+    "Mitochondrial Gene %",
+    "Data Quality"
+  ),
+  Value = c(
+    format(ncol(seurat_obj), big.mark = ","),
+    format(median(seurat_obj$nCount_RNA), big.mark = ","),
+    format(median(seurat_obj$nFeature_RNA), big.mark = ","),
+    paste0(round(mean(seurat_obj$percent.mt), 1), "%"),
+    if(median(seurat_obj$nCount_RNA) > 1000 & mean(seurat_obj$percent.mt) < 20) "High" else "Moderate"
+  ),
+  Status = c(
+    if(ncol(seurat_obj) > 500) "✓ Adequate" else "⚠ Low",
+    if(median(seurat_obj$nCount_RNA) > 1000) "✓ Good" else "⚠ Low", 
+    if(median(seurat_obj$nFeature_RNA) > 500) "✓ Good" else "⚠ Low",
+    if(mean(seurat_obj$percent.mt) < 20) "✓ Good" else "⚠ High",
+    if(median(seurat_obj$nCount_RNA) > 1000 & mean(seurat_obj$percent.mt) < 20) "✓ Ready for analysis" else "⚠ May need additional filtering"
+  )
+)
+
+kable(summary_metrics, caption = "Quality Control Assessment Summary")
+```
+
+## Session Information
+
+```{r}
+#| label: session-info
+
+sessionInfo()
+```
