@@ -4,11 +4,11 @@
 process SCDBL {
     label "process_dropletqc"
     tag { sampleName }
-    container "ah3918/pilot-analyses:latest"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
-    
+
     input:
-    tuple val(sampleName), path(mappingDir)
+    tuple val(sampleName), path(mappingDir), path(run_scdbl_R)
 
     output:
     tuple val(sampleName), path("${sampleName}_scdbl_metrics.csv"), emit: metrics
@@ -19,12 +19,9 @@ process SCDBL {
     echo "Running scDblFinder analysis for sample: ${sampleName}"
     echo "Mapping directory: ${mappingDir}"
 
-    # Copy the R script and execute it with parameters
-    cp ${projectDir}/modules/scdbl/run_scdbl.R .
-
     # Run the R script with arguments
     echo "Executing scDblFinder doublet detection..."
-    Rscript run_scdbl.R --mapping_dir ${mappingDir} --sample_name ${sampleName}
+    Rscript ${run_scdbl_R} --mapping_dir ${mappingDir} --sample_name ${sampleName}
 
     echo "scDblFinder analysis completed for ${sampleName}"
     """

@@ -77,62 +77,62 @@ workflow {
         .fromPath(params.mapping_dirs)
         .splitCsv(header: true)
         .map { row -> tuple(row.samplename, file(row.path)) }
-        .set { sampleChannel }
+        .set { sampleChannelBase }
 
-    // Conditionally run CellBender on each sample
-    if (params.cellbender) {
-        if (params.gpu) {
-            log.info "Running CellBender with GPU acceleration"
-            cellbender_results = CELLBENDER_GPU(sampleChannel)
-        } else {
-            log.info "Running CellBender with CPU"
-            cellbender_results = CELLBENDER(sampleChannel)
-        }
-        
-        // Convert H5 files to Seurat-compatible format
-        seurat_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
-    } else {
-        log.info "Skipping CellBender - processing raw Cell Ranger outputs"
-    }
+    // Prepare script/template files as value channels
+    dropletqc_script_path = file("${projectDir}/modules/dropletqc/run_dropletqc.R")
+    scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
+    report_template_path = file("${projectDir}/modules/reports/template.qmd")
+    combined_template_path = file("${projectDir}/modules/reports/combined_template.qmd")
+    book_template_path = file("${projectDir}/modules/reports/book_template/")
+
+    // Expand sampleChannel to include script inputs using map
+    dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> tuple(sampleName, mappingDir, dropletqc_script_path) }
+    scdbl_input_ch = sampleChannelBase.map { sampleName, mappingDir -> tuple(sampleName, mappingDir, scdbl_script_path) }
 
     // Always run DropletQC nuclear fraction analysis
     log.info "Running DropletQC nuclear fraction analysis"
-    dropletqc_results = DROPLETQC(sampleChannel)
+    dropletqc_results = DROPLETQC(dropletqc_input_ch)
 
     // Always run scDblFinder doublet detection
     log.info "Running scDblFinder doublet detection"
-    scdbl_results = SCDBL(sampleChannel)
+    scdbl_results = SCDBL(scdbl_input_ch)
+
+    // Prepare GENERATE_REPORTS input channel
+    report_input_ch = sampleChannelBase
+        .join(dropletqc_results.metrics)
+        .join(scdbl_results.metrics)
+        .map { it -> tuple(it[0][0], it[0][1], it[1], it[2], report_template_path) }
 
     // Conditionally run Quarto report generation
     if (params.report) {
         log.info "Generating Quarto QC reports (including DropletQC and scDblFinder data)"
-        
-        // Wait for both DropletQC and scDblFinder to complete before generating reports
-        combined_qc_data = sampleChannel.join(dropletqc_results.metrics).join(scdbl_results.metrics)
-        reports_output = GENERATE_REPORTS(combined_qc_data)
-        
+
+        reports_output = GENERATE_REPORTS(report_input_ch)
+
         // Generate combined report for side-by-side comparison
         log.info "Generating combined QC report for all samples"
         combined_report_output = GENERATE_COMBINED_REPORT(
-            combined_qc_data.map { it -> it[0] }.collect(),
-            combined_qc_data.map { it -> it[1] }.collect(),
-            combined_qc_data.map { it -> it[2] }.collect(),
-            combined_qc_data.map { it -> it[3] }.collect()
+            report_input_ch.map { it -> it[0] }.collect(),
+            report_input_ch.map { it -> it[1] }.collect(),
+            report_input_ch.map { it -> it[2] }.collect(),
+            report_input_ch.map { it -> it[3] }.collect(),
+            combined_template_path
         )
-        
+
         // Optionally combine all reports into a single book
         if (params.book) {
             log.info "Combining reports into a Quarto book"
-            
+
             // Collect all HTML reports and QMD sources (extract just the file paths)
             all_html_reports = reports_output.html_report.map { sampleName, htmlFile -> htmlFile }.collect()
             all_qmd_sources = reports_output.qmd_source.map { sampleName, qmdFile -> qmdFile }.collect()
-            
+
             // Generate combined book
-            combined_book = COMBINE_REPORTS(all_html_reports, all_qmd_sources)
+            combined_book = COMBINE_REPORTS(all_html_reports, all_qmd_sources, book_template_path)
         }
-        
+
         // For backward compatibility, also run the original report if available
-        // quarto_sc_report(sampleChannel)
+        // quarto_sc_report(sampleChannelBase)
     }
 }

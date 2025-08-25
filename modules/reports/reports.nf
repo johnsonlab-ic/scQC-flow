@@ -4,11 +4,11 @@
 process GENERATE_REPORTS {
     label "process_reports"
     tag { sampleName }
-    container "ah3918/pilot-analyses:latest"
+        container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
-    
+
     input:
-    tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics)
+    tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics), path(template_qmd)
 
     output:
     tuple val(sampleName), path("${sampleName}_qc_report.html"), emit: html_report
@@ -21,14 +21,14 @@ process GENERATE_REPORTS {
     echo "DropletQC metrics: ${dropletqc_metrics}"
     echo "scDblFinder metrics: ${scdbl_metrics}"
 
-    # Copy the template and replace placeholders
-    cp ${projectDir}/modules/reports/template.qmd ${sampleName}_qc_report.qmd
-    
+    # Copy the template from input path to a new file and replace placeholders
+    cp ${template_qmd} ${sampleName}_qc_report.qmd
+
     # Replace placeholders with actual values (use absolute path)
     ABSOLUTE_PATH=\$(realpath ${mappingDir})
     sed -i "s|SAMPLE_NAME_PLACEHOLDER|${sampleName}|g" ${sampleName}_qc_report.qmd
     sed -i "s|DATA_PATH_PLACEHOLDER|\$ABSOLUTE_PATH|g" ${sampleName}_qc_report.qmd
-    
+
     # Use the QC metrics files that were passed as input
     DROPLETQC_PATH=\$(realpath ${dropletqc_metrics})
     SCDBL_PATH=\$(realpath ${scdbl_metrics})
@@ -44,95 +44,97 @@ process GENERATE_REPORTS {
 }
 
 process COMBINE_REPORTS {
-    label "process_reports"
-    container "ah3918/pilot-analyses:latest"
-    publishDir "${params.outputDir}", mode: 'copy', overwrite: true
-    
-    input:
-    path html_reports
-    path qmd_sources
+        label "process_reports"
+        container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+        publishDir "${params.outputDir}", mode: 'copy', overwrite: true
 
-    output:
-    path "combined_qc_book/", emit: book_directory
-    path "combined_qc_book/_book/", emit: rendered_book
+        input:
+        path html_reports
+        path qmd_sources
+        path(book_template_dir)
 
-    script:
-    """
-    echo "Combining all QC reports into a single Quarto book..."
-    
-    mkdir -p combined_qc_book/chapters
-    cd combined_qc_book
+        output:
+        path "combined_qc_book/", emit: book_directory
+        path "combined_qc_book/_book/", emit: rendered_book
 
-    # Copy the book template and configuration
-    cp -r ${projectDir}/modules/reports/book_template/* .
-    
-    # Copy all individual QMD reports to chapters directory
-    cp ../*.qmd chapters/ || echo "No QMD files to copy"
+        script:
+        """
+        echo "Combining all QC reports into a single Quarto book..."
 
-    # Update the _quarto.yml with all chapters
-    echo "Creating book configuration..."
-    
-    # Generate chapters list (only if chapters exist)
-    if ls chapters/*.qmd >/dev/null 2>&1; then
-        CHAPTERS=\$(ls chapters/*.qmd | sed 's|chapters/||g' | sort)
-    else
-        CHAPTERS=""
-    fi
-    
-    # Create the chapters section in _quarto.yml
-    cat > _quarto.yml << 'EOF'
+        mkdir -p combined_qc_book/chapters
+        cd combined_qc_book
+
+        # Copy the book template and configuration from input
+        cp -r ${book_template_dir}/* .
+
+        # Copy all individual QMD reports to chapters directory
+        cp ../*.qmd chapters/ || echo "No QMD files to copy"
+
+        # Update the _quarto.yml with all chapters
+        echo "Creating book configuration..."
+
+        # Generate chapters list (only if chapters exist)
+        if ls chapters/*.qmd >/dev/null 2>&1; then
+                CHAPTERS=\$(ls chapters/*.qmd | sed 's|chapters/||g' | sort)
+        else
+                CHAPTERS=""
+        fi
+
+        # Create the chapters section in _quarto.yml
+        cat > _quarto.yml << 'EOF'
 project:
-  type: book
-  output-dir: _book
+    type: book
+    output-dir: _book
 
 book:
-  title: "scQC-flow Quality Control Report"
-  author: "scQC-flow Pipeline"
-  date: today
+    title: "scQC-flow Quality Control Report"
+    author: "scQC-flow Pipeline"
+    date: today
   
-  chapters:
-    - index.qmd
+    chapters:
+        - index.qmd
 EOF
 
-    # Add each chapter to the YAML
-    for chapter in \$CHAPTERS; do
-        echo "    - chapters/\$chapter" >> _quarto.yml
-    done
+        # Add each chapter to the YAML
+        for chapter in \$CHAPTERS; do
+                echo "    - chapters/\$chapter" >> _quarto.yml
+        done
 
-    cat >> _quarto.yml << 'EOF'
+        cat >> _quarto.yml << 'EOF'
 
 format:
-  html:
-    theme: cosmo
-    toc: true
-    code-fold: true
-    code-tools: true
-    embed-resources: true
+    html:
+        theme: cosmo
+        toc: true
+        code-fold: true
+        code-tools: true
+        embed-resources: true
 
     
 execute:
-  warning: false
-  message: false
+    warning: false
+    message: false
 EOF
 
-    # Render the book
-    echo "Rendering combined QC book..."
-    quarto render
-    
-    echo "Combined QC book completed"
-    """
+        # Render the book
+        echo "Rendering combined QC book..."
+        quarto render
+
+        echo "Combined QC book completed"
+        """
 }
 
 process GENERATE_COMBINED_REPORT {
     label "process_reports"
-    container "ah3918/pilot-analyses:latest"
+        container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}", mode: 'copy', overwrite: true
-    
+
     input:
     val sample_names
     path mapping_dirs
     path dropletqc_files
     path scdbl_files
+    path(combined_template_qmd)
 
     output:
     path "combined_qc_report.html", emit: combined_report
@@ -141,26 +143,26 @@ process GENERATE_COMBINED_REPORT {
     script:
     """
     echo "Generating combined QC report for all samples..."
-    
+
     # Debug: List all input files
     echo "All files in work directory:"
     ls -la
-    
-    # Copy the combined template
-    cp ${projectDir}/modules/reports/combined_template.qmd combined_qc_report.qmd
-    
+
+    # Use the combined template directly from input path
+    cp ${combined_template_qmd} combined_qc_report.qmd
+
     # Create sample information file that the template can read
     echo "sample_name,mapping_dir,dropletqc_file,scdbl_file" > sample_info.csv
-    
+
     # Convert to arrays (handle the join properly)
     SAMPLE_NAMES="${sample_names.join(' ')}"
-    
+
     # Process files in order - they should be named with sample prefixes now
     declare -a sample_array=(\$SAMPLE_NAMES)
-    
+
     for sample in \${sample_array[@]}; do
         echo "Processing sample: \$sample"
-        
+
         # Find mapping directory for this sample
         mapping_dir=""
         for dir in */; do
@@ -169,7 +171,7 @@ process GENERATE_COMBINED_REPORT {
                 break
             fi
         done
-        
+
         # Find dropletqc file for this sample
         dropletqc_file=""
         for file in \${sample}_dropletqc_metrics.csv; do
@@ -178,7 +180,7 @@ process GENERATE_COMBINED_REPORT {
                 break
             fi
         done
-        
+
         # Find scdbl file for this sample
         scdbl_file=""
         for file in \${sample}_scdbl_metrics.csv; do
@@ -187,11 +189,11 @@ process GENERATE_COMBINED_REPORT {
                 break
             fi
         done
-        
+
         echo "  Mapping dir: \$mapping_dir"
         echo "  DropletQC file: \$dropletqc_file"
         echo "  scDbl file: \$scdbl_file"
-        
+
         # Add to CSV
         echo "\$sample,\$mapping_dir,\$dropletqc_file,\$scdbl_file" >> sample_info.csv
     done
