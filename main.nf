@@ -91,18 +91,19 @@ workflow {
     scdbl_input_ch = sampleChannelBase.map { sampleName, mappingDir -> tuple(sampleName, mappingDir, scdbl_script_path) }
 
     // Always run DropletQC nuclear fraction analysis
-    log.info "Running DropletQC nuclear fraction analysis"
     dropletqc_results = DROPLETQC(dropletqc_input_ch)
 
     // Always run scDblFinder doublet detection
-    log.info "Running scDblFinder doublet detection"
     scdbl_results = SCDBL(scdbl_input_ch)
 
     // Prepare GENERATE_REPORTS input channel
     report_input_ch = sampleChannelBase
         .join(dropletqc_results.metrics)
         .join(scdbl_results.metrics)
-        .map { it -> tuple(it[0][0], it[0][1], it[1], it[2], report_template_path) }
+        // After the two joins the structure is [sampleName, mappingDir, dropletqc_metrics_path, scdbl_metrics_path]
+        .map { it -> tuple(it[0], it[1], it[2], it[3], report_template_path) }
+
+    // Debug: Print contents of report_input_ch
 
     // Conditionally run Quarto report generation
     if (params.report) {
