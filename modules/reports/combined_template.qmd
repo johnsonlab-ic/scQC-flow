@@ -1,0 +1,502 @@
+---
+title: "Combined QC Report - All Samples"
+author: "scQC-flow Pipeline"
+date: today
+format: 
+  html:
+    toc: true
+    toc-float: true
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+    page-layout: full
+execute:
+  warning: false
+  message: false
+---
+
+```{css}
+.plot-container {
+  height: 600px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  border: 1px solid #ddd;
+  margin: 10px 0;
+}
+
+.plot-item {
+  display: inline-block;
+  vertical-align: top;
+  margin: 5px;
+  width: 400px;
+  height: 580px;
+}
+
+.sample-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 15px;
+  margin: 20px 0;
+}
+
+.sample-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 15px;
+  background-color: #f9f9f9;
+}
+```
+
+# Combined Quality Control Report
+
+This report provides a comprehensive overview of all samples processed through the scQC-flow pipeline, with side-by-side comparisons of key quality metrics.
+
+```{r}
+#| label: setup
+#| include: false
+
+library(Matrix)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(gridExtra)
+library(DT)
+
+# Read sample information
+sample_info <- read.csv("SAMPLE_INFO_PLACEHOLDER")
+
+# Initialize sample data list
+sample_data <- list()
+
+# Load all samples
+for (i in 1:nrow(sample_info)) {
+  sample_name <- sample_info$sample_name[i]
+  mapping_dir <- sample_info$mapping_dir[i]
+  dropletqc_file <- sample_info$dropletqc_file[i]
+  scdbl_file <- sample_info$scdbl_file[i]
+  
+  cat("Loading sample:", sample_name, "\n")
+  
+  # Load count data
+  data_path <- file.path(mapping_dir, "outs/filtered_feature_bc_matrix/")
+  count_data <- Read10X(data.dir = data_path)
+  
+  # Create Seurat object
+  seurat_obj <- CreateSeuratObject(counts = count_data, 
+                                   project = sample_name, 
+                                   min.cells = 3, 
+                                   min.features = 200)
+  
+  # Calculate QC metrics
+  seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+  seurat_obj[["percent.rb"]] <- PercentageFeatureSet(seurat_obj, pattern = "^RP[SL]")
+  
+  # Load DropletQC data if available
+  if (file.exists(dropletqc_file)) {
+    dropletqc_data <- read.csv(dropletqc_file)
+    cell_barcodes <- rownames(seurat_obj@meta.data)
+    clean_barcodes <- gsub("-.*$", "", cell_barcodes)
+    dropletqc_clean <- gsub("-.*$", "", dropletqc_data$cell_barcode)
+    
+    nuclear_fractions <- rep(NA, length(cell_barcodes))
+    for (j in seq_along(clean_barcodes)) {
+      match_idx <- which(dropletqc_clean == clean_barcodes[j])
+      if (length(match_idx) > 0) {
+        nuclear_fractions[j] <- dropletqc_data$nuclear_fraction[match_idx[1]]
+      }
+    }
+    seurat_obj[["nuclear_fraction"]] <- nuclear_fractions
+  }
+  
+  # Load scDblFinder data if available
+  if (file.exists(scdbl_file)) {
+    scdbl_data <- read.csv(scdbl_file)
+    cell_barcodes <- rownames(seurat_obj@meta.data)
+    clean_barcodes <- gsub("-.*$", "", cell_barcodes)
+    scdbl_clean <- gsub("-.*$", "", scdbl_data$cell_barcode)
+    
+    doublet_scores <- rep(NA, length(cell_barcodes))
+    doublet_classes <- rep(NA, length(cell_barcodes))
+    for (j in seq_along(clean_barcodes)) {
+      match_idx <- which(scdbl_clean == clean_barcodes[j])
+      if (length(match_idx) > 0) {
+        doublet_scores[j] <- scdbl_data$doublet_score[match_idx[1]]
+        doublet_classes[j] <- scdbl_data$doublet_class[match_idx[1]]
+      }
+    }
+    seurat_obj[["doublet_score"]] <- doublet_scores
+    seurat_obj[["doublet_class"]] <- doublet_classes
+  }
+  
+  # Add to sample data list
+  sample_data[[sample_name]] <- list(
+    seurat_obj = seurat_obj,
+    sample_name = sample_name
+  )
+}
+
+# Combine all samples into a single summary
+all_samples_summary <- data.frame()
+all_qc_data <- list()
+
+for (sample_name in names(sample_data)) {
+  sample_info <- sample_data[[sample_name]]
+  seurat_obj <- sample_info$seurat_obj
+  
+  # Basic stats
+  basic_stats <- data.frame(
+    Sample = sample_name,
+    Total_Cells = ncol(seurat_obj),
+    Total_Features = nrow(seurat_obj),
+    Median_UMI = median(seurat_obj$nCount_RNA),
+    Median_Features = median(seurat_obj$nFeature_RNA),
+    Mean_MT_Percent = round(mean(seurat_obj$percent.mt), 2),
+    Mean_RB_Percent = round(mean(seurat_obj$percent.rb), 2)
+  )
+  
+  # Add nuclear fraction if available
+  if ("nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+    basic_stats$Mean_Nuclear_Fraction = round(mean(seurat_obj$nuclear_fraction, na.rm = TRUE), 3)
+  }
+  
+  # Add doublet rate if available
+  if ("doublet_class" %in% colnames(seurat_obj@meta.data)) {
+    basic_stats$Doublet_Rate_Percent = round(mean(seurat_obj$doublet_class == "doublet", na.rm = TRUE) * 100, 2)
+  }
+  
+  all_samples_summary <- rbind(all_samples_summary, basic_stats)
+  all_qc_data[[sample_name]] <- seurat_obj@meta.data
+}
+```
+
+## Sample Overview
+
+```{r}
+#| label: sample-overview
+
+# Create interactive table
+datatable(all_samples_summary, 
+          options = list(pageLength = 20, scrollX = TRUE),
+          caption = "Summary Statistics for All Samples") %>%
+  formatRound(columns = c("Median_UMI", "Median_Features"), digits = 0) %>%
+  formatRound(columns = c("Mean_MT_Percent", "Mean_RB_Percent"), digits = 2)
+```
+
+## Basic QC Metrics Comparison
+
+### UMI Count Distribution
+
+::: {.plot-container}
+```{r}
+#| label: umi-comparison
+#| fig-width: 16
+#| fig-height: 5
+#| results: asis
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- ggplot(seurat_obj@meta.data, aes(x = nCount_RNA)) +
+    geom_histogram(bins = 50, fill = "skyblue", alpha = 0.7) +
+    scale_x_log10() +
+    labs(title = paste("UMI Distribution -", sample_name),
+         x = "UMI Count (log10)", y = "Cells") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 10))
+  
+  plots_list[[sample_name]] <- p
+}
+
+# Arrange plots in a grid that can scroll horizontally
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+### Feature Count Distribution
+
+::: {.plot-container}
+```{r}
+#| label: feature-comparison
+#| fig-width: 16
+#| fig-height: 5
+#| results: asis
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- ggplot(seurat_obj@meta.data, aes(x = nFeature_RNA)) +
+    geom_histogram(bins = 50, fill = "lightcoral", alpha = 0.7) +
+    scale_x_log10() +
+    labs(title = paste("Feature Distribution -", sample_name),
+         x = "Feature Count (log10)", y = "Cells") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 10))
+  
+  plots_list[[sample_name]] <- p
+}
+
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+## Violin Plots Comparison
+
+### UMI Count
+
+::: {.plot-container}
+```{r}
+#| label: umi-violin-comparison
+#| fig-width: 16
+#| fig-height: 5
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- VlnPlot(seurat_obj, features = "nCount_RNA", pt.size = 0) +
+    ggtitle(paste("UMI Count -", sample_name)) +
+    theme(plot.title = element_text(size = 10), 
+          axis.title.x = element_blank(),
+          legend.position = "none")
+  
+  plots_list[[sample_name]] <- p
+}
+
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+### Feature Count
+
+::: {.plot-container}
+```{r}
+#| label: feature-violin-comparison
+#| fig-width: 16
+#| fig-height: 5
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- VlnPlot(seurat_obj, features = "nFeature_RNA", pt.size = 0) +
+    ggtitle(paste("Feature Count -", sample_name)) +
+    theme(plot.title = element_text(size = 10),
+          axis.title.x = element_blank(),
+          legend.position = "none")
+  
+  plots_list[[sample_name]] <- p
+}
+
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+### Mitochondrial Percentage
+
+::: {.plot-container}
+```{r}
+#| label: mt-violin-comparison
+#| fig-width: 16
+#| fig-height: 5
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- VlnPlot(seurat_obj, features = "percent.mt", pt.size = 0) +
+    ggtitle(paste("Mitochondrial % -", sample_name)) +
+    theme(plot.title = element_text(size = 10),
+          axis.title.x = element_blank(),
+          legend.position = "none")
+  
+  plots_list[[sample_name]] <- p
+}
+
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+## Nuclear Fraction Comparison
+
+```{r}
+#| label: nuclear-fraction-check
+#| include: false
+
+# Check if any samples have nuclear fraction data
+has_nuclear_data <- any(sapply(sample_data, function(x) "nuclear_fraction" %in% colnames(x$seurat_obj@meta.data)))
+```
+
+```{r}
+#| label: nuclear-fraction-comparison
+#| fig-width: 16
+#| fig-height: 5
+#| eval: !expr has_nuclear_data
+
+if (has_nuclear_data) {
+  cat("### Nuclear Fraction Distribution\n\n")
+  cat("::: {.plot-container}\n")
+  
+  plots_list <- list()
+  for (sample_name in names(sample_data)) {
+    seurat_obj <- sample_data[[sample_name]]$seurat_obj
+    
+    if ("nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+      p <- VlnPlot(seurat_obj, features = "nuclear_fraction", pt.size = 0) +
+        ggtitle(paste("Nuclear Fraction -", sample_name)) +
+        theme(plot.title = element_text(size = 10),
+              axis.title.x = element_blank(),
+              legend.position = "none")
+      
+      plots_list[[sample_name]] <- p
+    }
+  }
+  
+  if (length(plots_list) > 0) {
+    do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+  }
+  
+  cat(":::\n\n")
+}
+```
+
+## Doublet Analysis Comparison
+
+```{r}
+#| label: doublet-check
+#| include: false
+
+# Check if any samples have doublet data
+has_doublet_data <- any(sapply(sample_data, function(x) "doublet_score" %in% colnames(x$seurat_obj@meta.data)))
+```
+
+```{r}
+#| label: doublet-comparison
+#| fig-width: 16
+#| fig-height: 10
+#| eval: !expr has_doublet_data
+
+if (has_doublet_data) {
+  cat("### Doublet Score Distribution\n\n")
+  cat("::: {.plot-container}\n")
+  
+  plots_list <- list()
+  for (sample_name in names(sample_data)) {
+    seurat_obj <- sample_data[[sample_name]]$seurat_obj
+    
+    if ("doublet_score" %in% colnames(seurat_obj@meta.data)) {
+      p <- VlnPlot(seurat_obj, features = "doublet_score", pt.size = 0) +
+        ggtitle(paste("Doublet Score -", sample_name)) +
+        theme(plot.title = element_text(size = 10),
+              axis.title.x = element_blank(),
+              legend.position = "none")
+      
+      plots_list[[sample_name]] <- p
+    }
+  }
+  
+  if (length(plots_list) > 0) {
+    do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+  }
+  
+  cat(":::\n\n")
+  
+  cat("### Doublet Classification\n\n")
+  cat("::: {.plot-container}\n")
+  
+  plots_list <- list()
+  for (sample_name in names(sample_data)) {
+    seurat_obj <- sample_data[[sample_name]]$seurat_obj
+    
+    if ("doublet_class" %in% colnames(seurat_obj@meta.data)) {
+      doublet_summary <- table(seurat_obj$doublet_class)
+      doublet_df <- data.frame(
+        Classification = names(doublet_summary),
+        Count = as.numeric(doublet_summary)
+      )
+      
+      p <- ggplot(doublet_df, aes(x = Classification, y = Count, fill = Classification)) +
+        geom_col() +
+        scale_fill_manual(values = c("doublet" = "red", "singlet" = "blue")) +
+        ggtitle(paste("Doublet Classification -", sample_name)) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 10),
+              legend.position = "none")
+      
+      plots_list[[sample_name]] <- p
+    }
+  }
+  
+  if (length(plots_list) > 0) {
+    do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+  }
+  
+  cat(":::\n\n")
+}
+```
+
+## Scatter Plot Comparisons
+
+### UMI vs Features
+
+::: {.plot-container}
+```{r}
+#| label: umi-features-scatter
+#| fig-width: 16
+#| fig-height: 5
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+    geom_smooth(method = "lm", se = FALSE) +
+    ggtitle(paste("UMI vs Features -", sample_name)) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 10),
+          legend.position = "none")
+  
+  plots_list[[sample_name]] <- p
+}
+
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+### UMI vs Mitochondrial %
+
+::: {.plot-container}
+```{r}
+#| label: umi-mt-scatter
+#| fig-width: 16
+#| fig-height: 5
+
+plots_list <- list()
+for (sample_name in names(sample_data)) {
+  seurat_obj <- sample_data[[sample_name]]$seurat_obj
+  
+  p <- FeatureScatter(seurat_obj, feature1 = "nCount_RNA", feature2 = "percent.mt") +
+    geom_smooth(method = "lm", se = FALSE) +
+    ggtitle(paste("UMI vs MT% -", sample_name)) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 10),
+          legend.position = "none")
+  
+  plots_list[[sample_name]] <- p
+}
+
+do.call(grid.arrange, c(plots_list, ncol = length(plots_list)))
+```
+:::
+
+## Session Information
+
+```{r}
+#| label: session-info
+
+sessionInfo()
+```
