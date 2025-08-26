@@ -3,6 +3,7 @@ nextflow.enable.dsl=2
 // Import modules
 include { CELLBENDER; CELLBENDER_GPU; CELLBENDER_H5_CONVERT } from './modules/cellbender/cellbender'
 include { GENERATE_REPORTS; COMBINE_REPORTS; GENERATE_COMBINED_REPORT } from './modules/reports/reports'
+include { CREATE_SEURAT } from './modules/seurat/seurat'
 include { DROPLETQC } from './modules/dropletqc/dropletqc'
 include { SCDBL } from './modules/scdbl/scdbl'
 
@@ -82,9 +83,10 @@ workflow {
     // Prepare script/template files as value channels
     dropletqc_script_path = file("${projectDir}/modules/dropletqc/run_dropletqc.R")
     scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
-    report_template_path = file("${projectDir}/modules/reports/template.qmd")
+    report_template_path = file("${projectDir}/modules/reports/seurat_template.qmd")
     combined_template_path = file("${projectDir}/modules/reports/combined_template.qmd")
     book_template_path = file("${projectDir}/modules/reports/book_template/")
+    seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
 
     // Expand sampleChannel to include script inputs using map
     dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> tuple(sampleName, mappingDir, dropletqc_script_path) }
@@ -96,12 +98,20 @@ workflow {
     // Always run scDblFinder doublet detection
     scdbl_results = SCDBL(scdbl_input_ch)
 
-    // Prepare GENERATE_REPORTS input channel
-    report_input_ch = sampleChannelBase
+    // After DropletQC and scDbl, create Seurat objects that include metadata
+    seurat_input_ch = sampleChannelBase
         .join(dropletqc_results.metrics)
         .join(scdbl_results.metrics)
-        // After the two joins the structure is [sampleName, mappingDir, dropletqc_metrics_path, scdbl_metrics_path]
-        .map { it -> tuple(it[0], it[1], it[2], it[3], report_template_path) }
+        // structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics]
+        .map { it -> tuple(it[0], it[1], it[2], it[3]) }
+
+    // Provide the external R script to the Seurat process by zipping it into each tuple
+    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path) }
+    seurat_results = CREATE_SEURAT(seurat_input_with_script)
+
+    // Prepare GENERATE_REPORTS input channel to use Seurat objects
+    // seurat_results emits: (sampleName, mappingDir, pre_rds, post_rds)
+    report_input_ch = seurat_results.map { sampleName, mappingDir, pre_rds, post_rds -> tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path) }
 
     // Debug: Print contents of report_input_ch
 
@@ -111,15 +121,15 @@ workflow {
 
         reports_output = GENERATE_REPORTS(report_input_ch)
 
-        // Generate combined report for side-by-side comparison
-        log.info "Generating combined QC report for all samples"
-        combined_report_output = GENERATE_COMBINED_REPORT(
-            report_input_ch.map { it -> it[0] }.collect(),
-            report_input_ch.map { it -> it[1] }.collect(),
-            report_input_ch.map { it -> it[2] }.collect(),
-            report_input_ch.map { it -> it[3] }.collect(),
-            combined_template_path
-        )
+        // // Generate combined report for side-by-side comparison
+        // log.info "Generating combined QC report for all samples"
+        // combined_report_output = GENERATE_COMBINED_REPORT(
+        //     report_input_ch.map { it -> it[0] }.collect(),
+        //     report_input_ch.map { it -> it[1] }.collect(),
+        //     report_input_ch.map { it -> it[2] }.collect(),
+        //     report_input_ch.map { it -> it[3] }.collect(),
+        //     combined_template_path
+        // )
 
         // Optionally combine all reports into a single book
         if (params.book) {

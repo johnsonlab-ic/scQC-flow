@@ -8,7 +8,7 @@ process GENERATE_REPORTS {
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics), path(template_qmd)
+    tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd)
 
     output:
     tuple val(sampleName), path("${sampleName}_qc_report.html"), emit: html_report
@@ -18,8 +18,8 @@ process GENERATE_REPORTS {
     """
     echo "Generating QC report for sample: ${sampleName}"
     echo "Mapping directory: ${mappingDir}"
-    echo "DropletQC metrics: ${dropletqc_metrics}"
-    echo "scDblFinder metrics: ${scdbl_metrics}"
+    echo "Pre-QC Seurat RDS: ${seurat_preqc_rds}"
+    echo "Post-QC Seurat RDS: ${seurat_postqc_rds}"
 
     # Copy the template from input path to a new file and replace placeholders
     cp ${template_qmd} ${sampleName}_qc_report.qmd
@@ -29,11 +29,11 @@ process GENERATE_REPORTS {
     sed -i "s|SAMPLE_NAME_PLACEHOLDER|${sampleName}|g" ${sampleName}_qc_report.qmd
     sed -i "s|DATA_PATH_PLACEHOLDER|\$ABSOLUTE_PATH|g" ${sampleName}_qc_report.qmd
 
-    # Use the QC metrics files that were passed as input
-    DROPLETQC_PATH=\$(realpath ${dropletqc_metrics})
-    SCDBL_PATH=\$(realpath ${scdbl_metrics})
-    sed -i "s|DROPLETQC_PATH_PLACEHOLDER|\$DROPLETQC_PATH|g" ${sampleName}_qc_report.qmd
-    sed -i "s|SCDBL_PATH_PLACEHOLDER|\$SCDBL_PATH|g" ${sampleName}_qc_report.qmd
+    # Use the Seurat object paths that were passed as input
+    SEURAT_PRE_PATH=\$(realpath ${seurat_preqc_rds})
+    SEURAT_POST_PATH=\$(realpath ${seurat_postqc_rds})
+    sed -i "s|SEURAT_PRE_PATH_PLACEHOLDER|\$SEURAT_PRE_PATH|g" ${sampleName}_qc_report.qmd
+    sed -i "s|SEURAT_POST_PATH_PLACEHOLDER|\$SEURAT_POST_PATH|g" ${sampleName}_qc_report.qmd
 
     # Render the report
     echo "Rendering Quarto report..."
@@ -157,38 +157,37 @@ process GENERATE_COMBINED_REPORT {
     # Convert to arrays (handle the join properly)
     SAMPLE_NAMES="${sample_names.join(' ')}"
 
-    # Process files in order - they should be named with sample prefixes now
+    # Get all mapping directories and files in arrays to maintain order
     declare -a sample_array=(\$SAMPLE_NAMES)
+    declare -a mapping_dirs=(\$(find . -maxdepth 1 -type l -name "*mapped" | sort))
+    declare -a dropletqc_files=(\$(ls *_dropletqc_metrics.csv 2>/dev/null | sort))
+    declare -a scdbl_files=(\$(ls *_scdbl_metrics.csv 2>/dev/null | sort))
 
-    for sample in \${sample_array[@]}; do
-        echo "Processing sample: \$sample"
+    # Process files by index to maintain order
+    for i in "\${!sample_array[@]}"; do
+        sample="\${sample_array[\$i]}"
+        echo "Processing sample: \$sample (index \$i)"
 
-        # Find mapping directory for this sample
-        mapping_dir=""
-        for dir in */; do
-            if [[ "\$dir" == *"\$sample"* ]]; then
-                mapping_dir=\$(realpath "\$dir")
-                break
-            fi
-        done
+        # Get mapping directory by index (since Nextflow preserves order)
+        if [ \$i -lt \${#mapping_dirs[@]} ]; then
+            mapping_dir=\$(realpath "\${mapping_dirs[\$i]}")
+        else
+            mapping_dir=""
+        fi
 
-        # Find dropletqc file for this sample
-        dropletqc_file=""
-        for file in \${sample}_dropletqc_metrics.csv; do
-            if [[ -f "\$file" ]]; then
-                dropletqc_file=\$(realpath "\$file")
-                break
-            fi
-        done
+        # Get dropletqc file by index
+        if [ \$i -lt \${#dropletqc_files[@]} ]; then
+            dropletqc_file=\$(realpath "\${dropletqc_files[\$i]}")
+        else
+            dropletqc_file=""
+        fi
 
-        # Find scdbl file for this sample
-        scdbl_file=""
-        for file in \${sample}_scdbl_metrics.csv; do
-            if [[ -f "\$file" ]]; then
-                scdbl_file=\$(realpath "\$file")
-                break
-            fi
-        done
+        # Get scdbl file by index
+        if [ \$i -lt \${#scdbl_files[@]} ]; then
+            scdbl_file=\$(realpath "\${scdbl_files[\$i]}")
+        else
+            scdbl_file=""
+        fi
 
         echo "  Mapping dir: \$mapping_dir"
         echo "  DropletQC file: \$dropletqc_file"
