@@ -53,3 +53,4 @@ nextflow run main.nf \
 ## Citation
 
 If you use scQC-flow, please cite the relevant tools (Nextflow, Seurat, DropletQC, scDblFinder, Quarto).
+git merge --no-ff dropletQC -m "Merge dropletQC into main"git merge --no-ff dropletQC -m "Merge dropletQC into main"
