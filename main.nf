@@ -117,7 +117,7 @@ workflow {
 
     // Conditionally run Quarto report generation
     if (params.report) {
-        log.info "Generating Quarto QC reports (including DropletQC and scDblFinder data)"
+        
 
         reports_output = GENERATE_REPORTS(report_input_ch)
 
