@@ -11,7 +11,7 @@ include { SCDBL } from './modules/scdbl/scdbl'
 params.mapping_dirs = "${projectDir}/personal/mapping_dirs.csv"
 params.outputDir = "results"
 params.gpu = false
-params.report = false
+params.report = true
 params.book = false
 params.cellbender = false
 params.help = false
