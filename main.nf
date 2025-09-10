@@ -15,6 +15,8 @@ params.report = true
 params.book = false
 params.cellbender = false
 params.help = false
+params.max_mito = 20.0
+params.min_nuclear = 0.0
 
 // Help message
 def helpMessage() {
@@ -35,6 +37,8 @@ def helpMessage() {
       --gpu                  Use GPU acceleration for cellbender (requires --cellbender)
       --report               Generate Quarto QC reports for each sample
       --book                 Combine all reports into a single Quarto book
+      --max_mito             Maximum mitochondrial percentage threshold (default: 20.0)
+      --min_nuclear          Minimum nuclear fraction threshold (default: 0.0)
       --help                 Show this help message
       
     Examples:
@@ -65,6 +69,9 @@ workflow {
     GPU acceleration: ${params.gpu}
     Generate reports: ${params.report}
     Generate book: ${params.book}
+    QC Thresholds:
+      Max mitochondrial %: ${params.max_mito}
+      Min nuclear fraction: ${params.min_nuclear}
     ===================================
     """
     
@@ -106,12 +113,15 @@ workflow {
         .map { it -> tuple(it[0], it[1], it[2], it[3]) }
 
     // Provide the external R script to the Seurat process by zipping it into each tuple
-    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path) }
+    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear) }
     seurat_results = CREATE_SEURAT(seurat_input_with_script)
 
     // Prepare GENERATE_REPORTS input channel to use Seurat objects
-    // seurat_results emits: (sampleName, mappingDir, pre_rds, post_rds)
-    report_input_ch = seurat_results.map { sampleName, mappingDir, pre_rds, post_rds -> tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path) }
+    // seurat_results emits: (sampleName, pre_rds, post_rds)
+    // Need to rejoin with mappingDir from sampleChannelBase for reports
+    report_input_ch = sampleChannelBase
+        .join(seurat_results)
+        .map { sampleName, mappingDir, pre_rds, post_rds -> tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path) }
 
     // Debug: Print contents of report_input_ch
 

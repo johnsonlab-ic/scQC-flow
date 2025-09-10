@@ -3,19 +3,31 @@ suppressPackageStartupMessages({
   library(Seurat)
   library(Matrix)
   library(dplyr)
+  library(argparse)
 })
 
-args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 4) {
-  stop("Usage: Rscript make_seurat.R <sample_name> <mapping_dir> <dropletqc_csv> <scdbl_csv>")
-}
+# Set up argument parser
+parser <- ArgumentParser(description = 'Create Seurat objects with QC filtering')
+parser$add_argument('sample_name', help = 'Sample name')
+parser$add_argument('mapping_dir', help = 'Path to mapping directory')
+parser$add_argument('dropletqc_csv', help = 'Path to DropletQC metrics CSV')
+parser$add_argument('scdbl_csv', help = 'Path to scDbl metrics CSV')
+parser$add_argument('--max_mito', type = 'double', default = 20.0, 
+                   help = 'Maximum mitochondrial percentage threshold (default: 20)')
+parser$add_argument('--min_nuclear', type = 'double', default = 0.0,
+                   help = 'Minimum nuclear fraction threshold (default: 0.0)')
 
-sample_name <- args[1]
-mapping_dir_arg <- args[2]
-dropletqc_file <- args[3]
-scdbl_file <- args[4]
+args <- parser$parse_args()
+
+sample_name <- args$sample_name
+mapping_dir_arg <- args$mapping_dir
+dropletqc_file <- args$dropletqc_csv
+scdbl_file <- args$scdbl_csv
+max_mito <- args$max_mito
+min_nuclear <- args$min_nuclear
 
 cat("make_seurat.R: sample:", sample_name, "mapping_dir_arg:", mapping_dir_arg, "\n")
+cat("QC thresholds: max_mito =", max_mito, ", min_nuclear =", min_nuclear, "\n")
 
 # Try to find data path: prefer a local symlink in the workdir that contains outs/filtered_feature_bc_matrix
 workdir_candidates <- list.files(path = getwd(), full.names = TRUE)
@@ -101,15 +113,17 @@ cat("Saved pre-QC Seurat object to:", pre_path, "\n")
 post_obj <- seurat_obj
 min_features <- 200
 min_counts <- 500
-max_mito <- 20
 keep <- rep(TRUE, ncol(post_obj))
 if ("nFeature_RNA" %in% colnames(post_obj@meta.data)) keep <- keep & (post_obj@meta.data$nFeature_RNA >= min_features)
 if ("nCount_RNA" %in% colnames(post_obj@meta.data)) keep <- keep & (post_obj@meta.data$nCount_RNA >= min_counts)
 if ("percent.mt" %in% colnames(post_obj@meta.data)) keep <- keep & (post_obj@meta.data$percent.mt <= max_mito)
+if ("nuclear_fraction" %in% colnames(post_obj@meta.data)) keep <- keep & (post_obj@meta.data$nuclear_fraction >= min_nuclear)
 if ("doublet_class" %in% colnames(post_obj@meta.data)) {
   dc <- tolower(as.character(post_obj@meta.data$doublet_class))
   keep <- keep & (dc != "doublet")
 }
+cat("Applied QC filters: max_mito =", max_mito, ", min_nuclear =", min_nuclear, "\n")
+cat("Cells before filtering:", ncol(seurat_obj), ", after filtering:", sum(keep), "\n")
 post_obj <- subset(post_obj, cells = colnames(post_obj)[which(keep)])
 post_path <- file.path(getwd(), paste0(sample_name, "_seurat_object_postqc.rds"))
 saveRDS(post_obj, post_path)
