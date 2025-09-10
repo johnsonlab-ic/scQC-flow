@@ -105,15 +105,22 @@ workflow {
     // Always run scDblFinder doublet detection
     scdbl_results = SCDBL(scdbl_input_ch)
 
-    // After DropletQC and scDbl, create Seurat objects that include metadata
+    // Run CellBender ambient RNA removal
+    cellbender_results = CELLBENDER(sampleChannelBase)
+    
+    // Convert CellBender H5 to Seurat-compatible format
+    cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
+
+    // After DropletQC, scDbl, and CellBender, create Seurat objects that include metadata
     seurat_input_ch = sampleChannelBase
         .join(dropletqc_results.metrics)
         .join(scdbl_results.metrics)
-        // structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics]
-        .map { it -> tuple(it[0], it[1], it[2], it[3]) }
+        .join(cellbender_h5_results.seurat_h5)
+        // structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, cellbender_h5]
+        .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
 
     // Provide the external R script to the Seurat process by zipping it into each tuple
-    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear) }
+    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, cellbender_h5 -> tuple(sampleName, mappingDir, dropletqc, scdbl, cellbender_h5, seurat_script_path, params.max_mito, params.min_nuclear) }
     seurat_results = CREATE_SEURAT(seurat_input_with_script)
 
     // Prepare GENERATE_REPORTS input channel to use Seurat objects
