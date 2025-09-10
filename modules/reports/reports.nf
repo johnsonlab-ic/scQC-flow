@@ -8,7 +8,7 @@ process GENERATE_REPORTS {
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd)
+    tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd), val(max_mito), val(min_nuclear)
 
     output:
     tuple val(sampleName), path("${sampleName}_qc_report.html"), emit: html_report
@@ -20,6 +20,7 @@ process GENERATE_REPORTS {
     echo "Mapping directory: ${mappingDir}"
     echo "Pre-QC Seurat RDS: ${seurat_preqc_rds}"
     echo "Post-QC Seurat RDS: ${seurat_postqc_rds}"
+    echo "QC thresholds: max_mito=${max_mito}, min_nuclear=${min_nuclear}"
 
     # Copy the template from input path to a new file and replace placeholders
     cp ${template_qmd} ${sampleName}_qc_report.qmd
@@ -34,6 +35,10 @@ process GENERATE_REPORTS {
     SEURAT_POST_PATH=\$(realpath ${seurat_postqc_rds})
     sed -i "s|SEURAT_PRE_PATH_PLACEHOLDER|\$SEURAT_PRE_PATH|g" ${sampleName}_qc_report.qmd
     sed -i "s|SEURAT_POST_PATH_PLACEHOLDER|\$SEURAT_POST_PATH|g" ${sampleName}_qc_report.qmd
+    
+    # Replace QC threshold placeholders
+    sed -i "s|MAX_MITO_PLACEHOLDER|${max_mito}|g" ${sampleName}_qc_report.qmd
+    sed -i "s|MIN_NUCLEAR_PLACEHOLDER|${min_nuclear}|g" ${sampleName}_qc_report.qmd
 
     # Render the report
     echo "Rendering Quarto report..."

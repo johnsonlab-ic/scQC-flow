@@ -15,8 +15,8 @@ params.report = true
 params.book = false
 params.cellbender = false
 params.help = false
-params.max_mito = 20.0
-params.min_nuclear = 0.0
+params.max_mito = 10.0
+params.min_nuclear = 0.4
 
 // Help message
 def helpMessage() {
@@ -121,7 +121,7 @@ workflow {
     // Need to rejoin with mappingDir from sampleChannelBase for reports
     report_input_ch = sampleChannelBase
         .join(seurat_results)
-        .map { sampleName, mappingDir, pre_rds, post_rds -> tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path) }
+        .map { sampleName, mappingDir, pre_rds, post_rds -> tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path, params.max_mito, params.min_nuclear) }
 
     // Debug: Print contents of report_input_ch
 
