@@ -2,7 +2,7 @@
 // This module provides both CPU and GPU variants of CellBender
 
 process CELLBENDER {
-    label "process_high_memory"
+    label "process_cellbender"
     tag { sampleName }
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
@@ -24,11 +24,7 @@ process CELLBENDER {
 
     cellbender remove-background \\
                  --input ${mappingDir}/outs/raw_feature_bc_matrix.h5 \\
-                 --output ${sampleName}_cellbender_output/cellbender_out.h5 \\
-                 --expected-cells 5000 \\
-                 --total-droplets-included 25000 \\
-                 --fpr 0.01 \\
-                 --epochs 150
+                 --output ${sampleName}_cellbender_output/cellbender_out.h5
 
     echo "CellBender processing completed" > ${sampleName}_cellbender_output/summary.txt
     echo "CellBender (CPU) completed for ${sampleName}"
