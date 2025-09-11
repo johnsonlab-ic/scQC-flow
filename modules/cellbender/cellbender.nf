@@ -55,10 +55,6 @@ process CELLBENDER_GPU {
     cellbender remove-background \\
                  --input ${mappingDir}/outs/raw_feature_bc_matrix.h5 \\
                  --output ${sampleName}_cellbender_output/cellbender_out.h5 \\
-                 --expected-cells 5000 \\
-                 --total-droplets-included 25000 \\
-                 --fpr 0.01 \\
-                 --epochs 150 \\
                  --cuda
 
     echo "CellBender processing completed" > ${sampleName}_cellbender_output/summary.txt

@@ -105,8 +105,14 @@ workflow {
     // Always run scDblFinder doublet detection
     scdbl_results = SCDBL(scdbl_input_ch)
 
-    // Run CellBender ambient RNA removal
-    cellbender_results = CELLBENDER(sampleChannelBase)
+    // Run CellBender ambient RNA removal - choose GPU or CPU version based on params.gpu
+    if (params.gpu) {
+        log.info "Running CellBender with GPU acceleration"
+        cellbender_results = CELLBENDER_GPU(sampleChannelBase)
+    } else {
+        log.info "Running CellBender with CPU"
+        cellbender_results = CELLBENDER(sampleChannelBase)
+    }
     
     // Convert CellBender H5 to Seurat-compatible format
     cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
