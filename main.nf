@@ -65,6 +65,7 @@ workflow {
     scQC-flow pipeline
     ===================================
     Mapping directories: ${params.mapping_dirs}
+    Metadata file: ${params.metadata}
     Output directory: ${params.outputDir}
     CellBender: ${params.cellbender}
     GPU acceleration: ${params.gpu}
