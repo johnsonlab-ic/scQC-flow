@@ -17,6 +17,7 @@ params.cellbender = false
 params.help = false
 params.max_mito = 10.0
 params.min_nuclear = 0.4
+params.metadata = null // Optional metadata CSV file
 
 // Help message
 def helpMessage() {
@@ -113,7 +114,7 @@ workflow {
         .map { it -> tuple(it[0], it[1], it[2], it[3]) }
 
     // Provide the external R script to the Seurat process by zipping it into each tuple
-    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear) }
+    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear, params.metadata) }
     seurat_results = CREATE_SEURAT(seurat_input_with_script)
 
     // Prepare GENERATE_REPORTS input channel to use Seurat objects

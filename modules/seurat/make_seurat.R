@@ -16,8 +16,11 @@ parser$add_argument('--max_mito', type = 'double', default = 20.0,
                    help = 'Maximum mitochondrial percentage threshold (default: 20)')
 parser$add_argument('--min_nuclear', type = 'double', default = 0.0,
                    help = 'Minimum nuclear fraction threshold (default: 0.0)')
+parser$add_argument('--metadata', type = 'character', default = NULL,
+                   help = 'Optional metadata CSV file (sampleid column must match sample_name)')
 
 args <- parser$parse_args()
+
 
 sample_name <- args$sample_name
 mapping_dir_arg <- args$mapping_dir
@@ -25,9 +28,12 @@ dropletqc_file <- args$dropletqc_csv
 scdbl_file <- args$scdbl_csv
 max_mito <- args$max_mito
 min_nuclear <- args$min_nuclear
+metadata_file <- args$metadata
+
 
 cat("make_seurat.R: sample:", sample_name, "mapping_dir_arg:", mapping_dir_arg, "\n")
 cat("QC thresholds: max_mito =", max_mito, ", min_nuclear =", min_nuclear, "\n")
+if (!is.null(metadata_file)) cat("Using metadata file:", metadata_file, "\n")
 
 # Try to find data path: prefer a local symlink in the workdir that contains outs/filtered_feature_bc_matrix
 workdir_candidates <- list.files(path = getwd(), full.names = TRUE)
@@ -104,10 +110,33 @@ if (file.exists(scdbl_file)) {
   }
 }
 
+
+# Add user metadata if provided
+if (!is.null(metadata_file) && file.exists(metadata_file)) {
+  meta <- tryCatch(read.csv(metadata_file, stringsAsFactors = FALSE), error = function(e) NULL)
+  if (!is.null(meta) && "sampleid" %in% colnames(meta)) {
+    meta_row <- meta[meta$sampleid == sample_name, , drop = FALSE]
+    if (nrow(meta_row) == 1) {
+      # Add all columns except sampleid as metadata (repeat for all cells)
+      meta_fields <- setdiff(colnames(meta_row), "sampleid")
+      for (field in meta_fields) {
+        value <- meta_row[[field]][1]
+        seurat_obj[[field]] <- rep(value, ncol(seurat_obj))
+      }
+      cat("Added user metadata fields:", paste(meta_fields, collapse=", "), "\n")
+    } else {
+      cat("No matching row in metadata for sampleid:", sample_name, "\n")
+    }
+  } else {
+    cat("Metadata file missing sampleid column or could not be read\n")
+  }
+}
+
 # Write pre-QC object
 pre_path <- file.path(getwd(), paste0(sample_name, "_seurat_object.rds"))
 saveRDS(seurat_obj, pre_path)
 cat("Saved pre-QC Seurat object to:", pre_path, "\n")
+
 
 # Simple post-QC filtering
 post_obj <- seurat_obj
@@ -125,6 +154,23 @@ if ("doublet_class" %in% colnames(post_obj@meta.data)) {
 cat("Applied QC filters: max_mito =", max_mito, ", min_nuclear =", min_nuclear, "\n")
 cat("Cells before filtering:", ncol(seurat_obj), ", after filtering:", sum(keep), "\n")
 post_obj <- subset(post_obj, cells = colnames(post_obj)[which(keep)])
+
+# Add user metadata to post-QC object as well
+if (!is.null(metadata_file) && file.exists(metadata_file)) {
+  meta <- tryCatch(read.csv(metadata_file, stringsAsFactors = FALSE), error = function(e) NULL)
+  if (!is.null(meta) && "sampleid" %in% colnames(meta)) {
+    meta_row <- meta[meta$sampleid == sample_name, , drop = FALSE]
+    if (nrow(meta_row) == 1) {
+      meta_fields <- setdiff(colnames(meta_row), "sampleid")
+      for (field in meta_fields) {
+        value <- meta_row[[field]][1]
+        post_obj[[field]] <- rep(value, ncol(post_obj))
+      }
+      cat("Added user metadata fields to post-QC object:\n")
+    }
+  }
+}
+
 post_path <- file.path(getwd(), paste0(sample_name, "_seurat_object_postqc.rds"))
 saveRDS(post_obj, post_path)
 cat("Saved post-QC Seurat object to:", post_path, "\n")
