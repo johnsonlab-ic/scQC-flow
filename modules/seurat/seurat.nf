@@ -19,16 +19,16 @@ process CREATE_SEURAT {
   echo "DropletQC metrics: ${dropletqc_metrics}"
   echo "scDbl metrics: ${scdbl_metrics}"
   echo "QC thresholds: max_mito=${max_mito}, min_nuclear=${min_nuclear}"
-  if [ ! -z "${metadata_file}" ] && [ "${metadata_file}" != "null" ]; then
-    echo "Using metadata file: ${metadata_file}"
-    METADATA_ARG="--metadata ${metadata_file}"
-  else
-    METADATA_ARG=""
-  fi
 
   # Run the external R script with QC parameters and optional metadata
-  Rscript ${seurat_script} "${sampleName}" "${mappingDir}" "${dropletqc_metrics}" "${scdbl_metrics}" \
-    --max_mito ${max_mito} --min_nuclear ${min_nuclear} $METADATA_ARG
+  if [ ! -z "${metadata_file}" ] && [ "${metadata_file}" != "null" ]; then
+    echo "Using metadata file: ${metadata_file}"
+    Rscript ${seurat_script} "${sampleName}" "${mappingDir}" "${dropletqc_metrics}" "${scdbl_metrics}" \
+      --max_mito ${max_mito} --min_nuclear ${min_nuclear} --metadata "${metadata_file}"
+  else
+    Rscript ${seurat_script} "${sampleName}" "${mappingDir}" "${dropletqc_metrics}" "${scdbl_metrics}" \
+      --max_mito ${max_mito} --min_nuclear ${min_nuclear}
+  fi
 
   echo "Seurat objects created for ${sampleName}"
   """
