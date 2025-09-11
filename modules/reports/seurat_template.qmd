@@ -49,8 +49,37 @@ cells_lost <- ncol(seurat_obj_preqc) - ncol(seurat_obj_postqc)
 cells_retained_pct <- round(100 * ncol(seurat_obj_postqc) / ncol(seurat_obj_preqc), 2)
 cells_lost_pct <- round(100 * cells_lost / ncol(seurat_obj_preqc), 2)
 
+# Calculate cells lost to specific filtering criteria
+# Cells lost to doublet filtering (if doublet_class column exists)
+if ("doublet_class" %in% colnames(seurat_obj_preqc@meta.data)) {
+  doublets_removed <- sum(seurat_obj_preqc@meta.data$doublet_class == "doublet", na.rm = TRUE)
+  doublets_removed_pct <- round(100 * doublets_removed / ncol(seurat_obj_preqc), 2)
+} else {
+  doublets_removed <- 0
+  doublets_removed_pct <- 0
+}
+
+# Cells lost to nuclear fraction filtering (if nuclear_fraction column exists)
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc@meta.data)) {
+  # Estimate nuclear fraction threshold from the data
+  min_nuclear_threshold <- min(seurat_obj_postqc@meta.data$nuclear_fraction, na.rm = TRUE)
+  nuclear_fraction_filtered <- sum(seurat_obj_preqc@meta.data$nuclear_fraction < min_nuclear_threshold, na.rm = TRUE)
+  nuclear_fraction_filtered_pct <- round(100 * nuclear_fraction_filtered / ncol(seurat_obj_preqc), 2)
+} else {
+  nuclear_fraction_filtered <- 0
+  nuclear_fraction_filtered_pct <- 0
+}
+
+# Cells lost to mitochondrial filtering
+max_mito_threshold <- max(seurat_obj_postqc@meta.data$percent.mt, na.rm = TRUE)
+mito_filtered <- sum(seurat_obj_preqc@meta.data$percent.mt > max_mito_threshold, na.rm = TRUE)
+mito_filtered_pct <- round(100 * mito_filtered / ncol(seurat_obj_preqc), 2)
+
 cat("Cells retained after QC filtering:", cells_retained_pct, "% (", ncol(seurat_obj_postqc), "cells)\n")
 cat("Cells lost after QC filtering:", cells_lost_pct, "% (", cells_lost, "cells)\n")
+cat("Cells lost to doublet filtering:", doublets_removed, "(", doublets_removed_pct, "%)\n")
+cat("Cells lost to nuclear fraction filtering:", nuclear_fraction_filtered, "(", nuclear_fraction_filtered_pct, "%)\n")
+cat("Cells lost to mitochondrial filtering:", mito_filtered, "(", mito_filtered_pct, "%)\n")
 
 # Calculate y-axis limits from pre-QC data for consistent scaling between plots
 qc_features_for_limits <- c("nFeature_RNA", "nCount_RNA", "percent.mt")
@@ -98,6 +127,12 @@ cat("Calculated y-axis limits for consistent scaling between pre-QC and post-QC 
 - **Post-QC cells:** `r format(ncol(seurat_obj_postqc), big.mark = ",")`
 - **Cells retained:** `r cells_retained_pct`% (`r format(ncol(seurat_obj_postqc), big.mark = ",")` cells)
 - **Cells lost:** `r cells_lost_pct`% (`r format(cells_lost, big.mark = ",")` cells)
+
+**Breakdown of cells lost by filtering criteria:**
+
+- **Doublet removal:** `r format(doublets_removed, big.mark = ",")` cells (`r doublets_removed_pct`%)
+- **Nuclear fraction < MIN_NUCLEAR_PLACEHOLDER:** `r format(nuclear_fraction_filtered, big.mark = ",")` cells (`r nuclear_fraction_filtered_pct`%)
+- **Mitochondrial % > MAX_MITO_PLACEHOLDER%:** `r format(mito_filtered, big.mark = ",")` cells (`r mito_filtered_pct`%)
 
 # Pre-QC Analysis
 
