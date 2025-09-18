@@ -20,8 +20,8 @@ process DROPLETQC {
     echo "Mapping directory: ${mappingDir}"
 
     # Run the R script with arguments
-    echo "Executing DropletQC analysis with 10 cores..."
-    Rscript ${run_dropletqc_R} --mapping_dir ${mappingDir} --sample_name ${sampleName} --cores 10
+    echo "Executing DropletQC analysis with 20 cores..."
+    Rscript ${run_dropletqc_R} --mapping_dir ${mappingDir} --sample_name ${sampleName} --cores 20
 
     echo "DropletQC analysis completed for ${sampleName}"
     """
