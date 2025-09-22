@@ -136,6 +136,12 @@ workflow {
         // // Generate combined report for side-by-side comparison
         // log.info "Generating combined QC report for all samples"
         // combined_report_output = GENERATE_COMBINED_REPORT(
+
+        // Conditionally run CellBender if requested
+        if (params.cellbender) {
+            log.info "Running CellBender for all samples"
+            cellbender_results = CELLBENDER(sampleChannelBase)
+        }
         //     report_input_ch.map { it -> it[0] }.collect(),
         //     report_input_ch.map { it -> it[1] }.collect(),
         //     report_input_ch.map { it -> it[2] }.collect(),
