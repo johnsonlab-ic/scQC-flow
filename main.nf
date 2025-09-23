@@ -140,7 +140,12 @@ workflow {
         // Conditionally run CellBender if requested
         if (params.cellbender) {
             log.info "Running CellBender for all samples"
-            cellbender_results = CELLBENDER(sampleChannelBase)
+            if (params.gpu) {
+                log.info "GPU acceleration enabled for CellBender"
+                cellbender_results = CELLBENDER_GPU(sampleChannelBase)
+            } else {
+                cellbender_results = CELLBENDER(sampleChannelBase)
+            }
         }
         //     report_input_ch.map { it -> it[0] }.collect(),
         //     report_input_ch.map { it -> it[1] }.collect(),
