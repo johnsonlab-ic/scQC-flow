@@ -10,6 +10,7 @@ suppressPackageStartupMessages({
 parser <- ArgumentParser(description = 'Create Seurat objects with QC filtering')
 parser$add_argument('sample_name', help = 'Sample name')
 parser$add_argument('mapping_dir', help = 'Path to mapping directory')
+parser$add_argument('--h5_path', type = 'character', default = NULL, help = 'Path to H5 counts file (CellBender or 10X)')
 parser$add_argument('dropletqc_csv', help = 'Path to DropletQC metrics CSV')
 parser$add_argument('scdbl_csv', help = 'Path to scDbl metrics CSV')
 parser$add_argument('--max_mito', type = 'double', default = 20.0, 
@@ -24,6 +25,7 @@ args <- parser$parse_args()
 
 sample_name <- args$sample_name
 mapping_dir_arg <- args$mapping_dir
+h5_path <- args$h5_path
 dropletqc_file <- args$dropletqc_csv
 scdbl_file <- args$scdbl_csv
 max_mito <- args$max_mito
@@ -35,27 +37,32 @@ cat("make_seurat.R: sample:", sample_name, "mapping_dir_arg:", mapping_dir_arg, 
 cat("QC thresholds: max_mito =", max_mito, ", min_nuclear =", min_nuclear, "\n")
 if (!is.null(metadata_file)) cat("Using metadata file:", metadata_file, "\n")
 
-# Try to find data path: prefer a local symlink in the workdir that contains outs/filtered_feature_bc_matrix
-workdir_candidates <- list.files(path = getwd(), full.names = TRUE)
-data_path <- NULL
-for (cand in workdir_candidates) {
-  if (dir.exists(file.path(cand, "outs/filtered_feature_bc_matrix"))) {
-    data_path <- file.path(cand, "outs/filtered_feature_bc_matrix")
-    break
+
+# Load counts from H5 if provided, else fallback to directory
+if (!is.null(h5_path) && file.exists(h5_path)) {
+  cat("Loading counts from H5 file:", h5_path, "\n")
+  counts <- Read10X_h5(h5_path)
+} else {
+  # Try to find data path: prefer a local symlink in the workdir that contains outs/filtered_feature_bc_matrix
+  workdir_candidates <- list.files(path = getwd(), full.names = TRUE)
+  data_path <- NULL
+  for (cand in workdir_candidates) {
+    if (dir.exists(file.path(cand, "outs/filtered_feature_bc_matrix"))) {
+      data_path <- file.path(cand, "outs/filtered_feature_bc_matrix")
+      break
+    }
   }
+  # fallback to provided mapping_dir_arg
+  if (is.null(data_path)) {
+    possible <- file.path(mapping_dir_arg, "outs/filtered_feature_bc_matrix")
+    if (dir.exists(possible)) data_path <- possible
+  }
+  if (is.null(data_path) || !dir.exists(data_path)) {
+    stop(paste("Data directory not found for sample", sample_name, "tried:", paste(c(workdir_candidates, mapping_dir_arg), collapse = ", ")))
+  }
+  cat("Loading counts from:", data_path, "\n")
+  counts <- Read10X(data.dir = data_path)
 }
-# fallback to provided mapping_dir_arg
-if (is.null(data_path)) {
-  possible <- file.path(mapping_dir_arg, "outs/filtered_feature_bc_matrix")
-  if (dir.exists(possible)) data_path <- possible
-}
-
-if (is.null(data_path) || !dir.exists(data_path)) {
-  stop(paste("Data directory not found for sample", sample_name, "tried:", paste(c(workdir_candidates, mapping_dir_arg), collapse = ", ")))
-}
-
-cat("Loading counts from:", data_path, "\n")
-counts <- Read10X(data.dir = data_path)
 
 seurat_obj <- CreateSeuratObject(counts = counts, project = sample_name, min.cells = 3, min.features = 200)
 seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")

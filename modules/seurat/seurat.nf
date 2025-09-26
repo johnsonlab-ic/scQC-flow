@@ -7,7 +7,7 @@ process CREATE_SEURAT {
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
 
   input:
-  tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics), path(seurat_script), val(max_mito), val(min_nuclear), val(metadata_file)
+  tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics), path(seurat_script), val(max_mito), val(min_nuclear), val(metadata_file), path(h5_path)
 
   output:
   tuple val(sampleName), path("${sampleName}_seurat_object.rds"), path("${sampleName}_seurat_object_postqc.rds")
@@ -19,15 +19,16 @@ process CREATE_SEURAT {
   echo "DropletQC metrics: ${dropletqc_metrics}"
   echo "scDbl metrics: ${scdbl_metrics}"
   echo "QC thresholds: max_mito=${max_mito}, min_nuclear=${min_nuclear}"
+  echo "H5 counts file: ${h5_path}"
 
-  # Run the external R script with QC parameters and optional metadata
+  # Run the external R script with QC parameters, H5 path, and optional metadata
   if [ ! -z "${metadata_file}" ] && [ "${metadata_file}" != "null" ]; then
     echo "Using metadata file: ${metadata_file}"
     Rscript ${seurat_script} "${sampleName}" "${mappingDir}" "${dropletqc_metrics}" "${scdbl_metrics}" \
-      --max_mito ${max_mito} --min_nuclear ${min_nuclear} --metadata "${metadata_file}"
+      --max_mito ${max_mito} --min_nuclear ${min_nuclear} --metadata "${metadata_file}" --h5_path "${h5_path}"
   else
     Rscript ${seurat_script} "${sampleName}" "${mappingDir}" "${dropletqc_metrics}" "${scdbl_metrics}" \
-      --max_mito ${max_mito} --min_nuclear ${min_nuclear}
+      --max_mito ${max_mito} --min_nuclear ${min_nuclear} --h5_path "${h5_path}"
   fi
 
   echo "Seurat objects created for ${sampleName}"
