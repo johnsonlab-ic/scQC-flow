@@ -146,6 +146,8 @@ workflow {
             } else {
                 cellbender_results = CELLBENDER(sampleChannelBase)
             }
+            // Run H5 conversion after CellBender (CPU or GPU)
+            cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
         }
         //     report_input_ch.map { it -> it[0] }.collect(),
         //     report_input_ch.map { it -> it[1] }.collect(),
