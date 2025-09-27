@@ -165,18 +165,7 @@ workflow {
         // log.info "Generating combined QC report for all samples"
         // combined_report_output = GENERATE_COMBINED_REPORT(
 
-        // Conditionally run CellBender if requested
-        if (params.cellbender) {
-            log.info "Running CellBender for all samples"
-            if (params.gpu) {
-                log.info "GPU acceleration enabled for CellBender"
-                cellbender_results = CELLBENDER_GPU(sampleChannelBase)
-            } else {
-                cellbender_results = CELLBENDER(sampleChannelBase)
-            }
-            // Run H5 conversion after CellBender (CPU or GPU)
-            cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
-        }
+        // CellBender logic is handled above; do not repeat here
         //     report_input_ch.map { it -> it[0] }.collect(),
         //     report_input_ch.map { it -> it[1] }.collect(),
         //     report_input_ch.map { it -> it[2] }.collect(),
