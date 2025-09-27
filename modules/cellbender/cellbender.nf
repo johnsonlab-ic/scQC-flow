@@ -80,8 +80,8 @@ process CELLBENDER_H5_CONVERT {
     
     cd ${cellbender_output}
     
-    # Use ptrepack to create Seurat-compatible H5 file
-    ptrepack --complevel 5 cellbender_out_filtered.h5:/matrix ${sampleName}_cellbender_output_seurat.h5:/matrix
+    # Use ptrepack to create Seurat-compatible H5 file, overwriting nodes if needed
+    ptrepack --complevel 5 --overwrite-nodes cellbender_out_filtered.h5:/matrix ${sampleName}_cellbender_output_seurat.h5:/matrix
     
     echo "H5 conversion completed for ${sampleName}"
     """
