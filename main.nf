@@ -107,28 +107,44 @@ workflow {
     // Always run scDblFinder doublet detection
     scdbl_results = SCDBL(scdbl_input_ch)
 
-    // Determine H5 path for each sample: use CellBender output if run, else default 10X
-    h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
-        def cellbender_h5 = file("${params.outputDir}/${sampleName}/cellbender_filtered.h5")
-        def default_h5 = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
-        if (params.cellbender && cellbender_h5.exists()) {
-            tuple(sampleName, cellbender_h5)
+    // Link CellBender and Seurat processes so Seurat waits for CellBender/H5 conversion if requested
+    if (params.cellbender) {
+        log.info "Running CellBender for all samples"
+        if (params.gpu) {
+            log.info "GPU acceleration enabled for CellBender"
+            cellbender_results = CELLBENDER_GPU(sampleChannelBase)
         } else {
+            cellbender_results = CELLBENDER(sampleChannelBase)
+        }
+        // Run H5 conversion after CellBender (CPU or GPU)
+        cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
+
+        // After DropletQC and scDbl, create Seurat objects using CellBender H5
+        seurat_input_ch = sampleChannelBase
+            .join(dropletqc_results.metrics)
+            .join(scdbl_results.metrics)
+            .join(cellbender_h5_results.seurat_h5)
+            // structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, cellbender_h5]
+            .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
+
+        seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear, params.metadata, h5_path) }
+        seurat_results = CREATE_SEURAT(seurat_input_with_script)
+    } else {
+        // Use default 10X H5 if CellBender is not run
+        h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
+            def default_h5 = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
             tuple(sampleName, default_h5)
         }
+        seurat_input_ch = sampleChannelBase
+            .join(dropletqc_results.metrics)
+            .join(scdbl_results.metrics)
+            .join(h5_path_ch)
+            // structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, h5_path]
+            .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
+
+        seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear, params.metadata, h5_path) }
+        seurat_results = CREATE_SEURAT(seurat_input_with_script)
     }
-
-    // After DropletQC and scDbl, create Seurat objects that include metadata
-    seurat_input_ch = sampleChannelBase
-        .join(dropletqc_results.metrics)
-        .join(scdbl_results.metrics)
-        .join(h5_path_ch)
-        // structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, h5_path]
-        .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
-
-    // Provide the external R script to the Seurat process by zipping it into each tuple
-    seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear, params.metadata, h5_path) }
-    seurat_results = CREATE_SEURAT(seurat_input_with_script)
 
     // Prepare GENERATE_REPORTS input channel to use Seurat objects
     // seurat_results emits: (sampleName, pre_rds, post_rds)
