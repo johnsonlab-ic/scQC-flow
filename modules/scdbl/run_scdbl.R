@@ -6,25 +6,25 @@ library(Seurat)
 
 # Parse command line arguments
 parser <- ArgumentParser(description='Run scDblFinder doublet detection')
-parser$add_argument('--mapping_dir', type='character', required=TRUE,
-                    help='Path to Cell Ranger mapping directory')
+parser$add_argument('--h5_file', type='character', required=TRUE,
+                    help='Path to H5 counts matrix file')
 parser$add_argument('--sample_name', type='character', required=TRUE,
                     help='Sample name for output files')
 
 args <- parser$parse_args()
 
 # Set up paths
-data_path <- file.path(args$mapping_dir, "outs/filtered_feature_bc_matrix")
+h5_file <- args$h5_file
 
-cat("Loading data from:", data_path, "\n")
+cat("Loading data from H5 file:", h5_file, "\n")
 
-# Check if data directory exists
-if (!dir.exists(data_path)) {
-  stop("Data directory not found: ", data_path)
+# Check if H5 file exists
+if (!file.exists(h5_file)) {
+  stop("H5 file not found: ", h5_file)
 }
 
-# Load Cell Ranger data
-counts <- Read10X(data.dir = data_path)
+# Load H5 data
+counts <- Read10X_h5(h5_file)
 cat("Loaded", ncol(counts), "cells and", nrow(counts), "features\n")
 
 # Create SingleCellExperiment object

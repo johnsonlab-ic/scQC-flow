@@ -97,29 +97,39 @@ workflow {
     book_template_path = file("${projectDir}/modules/reports/book_template/")
     seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
 
-    // Expand sampleChannel to include script inputs using map
-    dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> tuple(sampleName, mappingDir, dropletqc_script_path) }
-    scdbl_input_ch = sampleChannelBase.map { sampleName, mappingDir -> tuple(sampleName, mappingDir, scdbl_script_path) }
-
-    // Always run DropletQC nuclear fraction analysis
-    dropletqc_results = DROPLETQC(dropletqc_input_ch)
-
-    // Always run scDblFinder doublet detection
-    scdbl_results = SCDBL(scdbl_input_ch)
-
-    // Link CellBender and Seurat processes so Seurat waits for CellBender/H5 conversion if requested
+    // Conditional workflow based on CellBender usage
     if (params.cellbender) {
-        log.info "Running CellBender for all samples"
+        log.info "Running CellBender workflow for all samples"
+        
+        // Run CellBender first
         if (params.gpu) {
             log.info "GPU acceleration enabled for CellBender"
             cellbender_results = CELLBENDER_GPU(sampleChannelBase)
         } else {
             cellbender_results = CELLBENDER(sampleChannelBase)
         }
+        
         // Run H5 conversion after CellBender (CPU or GPU)
         cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
 
-        // After DropletQC and scDbl, create Seurat objects using CellBender H5
+        // Prepare DropletQC inputs: BAM file + CellBender barcodes
+        dropletqc_input_ch = sampleChannelBase
+            .join(cellbender_results.cellbender_output)
+            .map { sampleName, mappingDir, cellbenderOutput -> 
+                def bamFile = file("${mappingDir}/outs/possorted_genome_bam.bam")
+                def barcodesFile = file("${cellbenderOutput}/cellbender_out_cell_barcodes.csv")
+                tuple(sampleName, bamFile, barcodesFile, dropletqc_script_path)
+            }
+
+        // Prepare scDbl inputs: CellBender H5 file
+        scdbl_input_ch = cellbender_h5_results.seurat_h5
+            .map { sampleName, h5File -> tuple(sampleName, h5File, scdbl_script_path) }
+
+        // Run DropletQC and scDbl with CellBender outputs
+        dropletqc_results = DROPLETQC(dropletqc_input_ch)
+        scdbl_results = SCDBL(scdbl_input_ch)
+
+        // Create Seurat objects using CellBender H5 and updated QC metrics
         seurat_input_ch = sampleChannelBase
             .join(dropletqc_results.metrics)
             .join(scdbl_results.metrics)
@@ -129,12 +139,33 @@ workflow {
 
         seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, params.max_mito, params.min_nuclear, params.metadata, h5_path) }
         seurat_results = CREATE_SEURAT(seurat_input_with_script)
+        
     } else {
+        log.info "Running standard workflow without CellBender"
+        
+        // Prepare DropletQC inputs: BAM file + Cell Ranger barcodes
+        dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
+            def bamFile = file("${mappingDir}/outs/possorted_genome_bam.bam")
+            def barcodesFile = file("${mappingDir}/outs/filtered_feature_bc_matrix/barcodes.tsv.gz")
+            tuple(sampleName, bamFile, barcodesFile, dropletqc_script_path)
+        }
+
+        // Prepare scDbl inputs: Cell Ranger H5 file
+        scdbl_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
+            def h5File = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
+            tuple(sampleName, h5File, scdbl_script_path)
+        }
+
+        // Run DropletQC and scDbl with Cell Ranger outputs
+        dropletqc_results = DROPLETQC(dropletqc_input_ch)
+        scdbl_results = SCDBL(scdbl_input_ch)
+
         // Use default 10X H5 if CellBender is not run
         h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
             def default_h5 = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
             tuple(sampleName, default_h5)
         }
+        
         seurat_input_ch = sampleChannelBase
             .join(dropletqc_results.metrics)
             .join(scdbl_results.metrics)

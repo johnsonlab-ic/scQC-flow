@@ -20,16 +20,12 @@ process CELLBENDER {
     echo "Running CellBender (CPU) for sample: ${sampleName}"
     echo "Mapping directory: ${mappingDir}"
 
-    # Extract estimated number of cells from metrics file
-    ESTIMATED_CELLS=\$(awk -F'"' 'NR==2 {gsub(/,/, "", \$2); print \$2}' ${mappingDir}/outs/metrics_summary.csv)
-    echo "Estimated cells from metrics: \$ESTIMATED_CELLS"
 
     mkdir -p ${sampleName}_cellbender_output
 
     cellbender remove-background \\
                  --input ${mappingDir}/outs/raw_feature_bc_matrix.h5 \\
-                 --output ${sampleName}_cellbender_output/cellbender_out.h5 \\
-                 --expected-cells \$ESTIMATED_CELLS
+                 --output ${sampleName}_cellbender_output/cellbender_out.h5
 
     echo "CellBender processing completed" > ${sampleName}_cellbender_output/summary.txt
     echo "CellBender (CPU) completed for ${sampleName}"
@@ -55,17 +51,12 @@ process CELLBENDER_GPU {
     echo "Running CellBender (GPU) for sample: ${sampleName}"
     echo "Mapping directory: ${mappingDir}"
 
-    # Extract estimated number of cells from metrics file
-    ESTIMATED_CELLS=\$(awk -F'"' 'NR==2 {gsub(/,/, "", \$2); print \$2}' ${mappingDir}/outs/metrics_summary.csv)
-    echo "Estimated cells from metrics: \$ESTIMATED_CELLS"
-
     mkdir -p ${sampleName}_cellbender_output
 
     cellbender remove-background \\
                  --input ${mappingDir}/outs/raw_feature_bc_matrix.h5 \\
                  --output ${sampleName}_cellbender_output/cellbender_out.h5 \\
-                 --cuda \\
-                 --expected-cells \$ESTIMATED_CELLS
+                 --cuda
 
     echo "CellBender processing completed" > ${sampleName}_cellbender_output/summary.txt
     echo "CellBender (GPU) completed for ${sampleName}"

@@ -8,7 +8,7 @@ process DROPLETQC {
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sampleName), path(mappingDir), path(run_dropletqc_R)
+    tuple val(sampleName), path(bamFile), path(barcodesFile), path(run_dropletqc_R)
 
     output:
     tuple val(sampleName), path("${sampleName}_dropletqc_metrics.csv"), emit: metrics
@@ -17,11 +17,12 @@ process DROPLETQC {
     script:
     """
     echo "Running DropletQC analysis for sample: ${sampleName}"
-    echo "Mapping directory: ${mappingDir}"
+    echo "BAM file: ${bamFile}"
+    echo "Barcodes file: ${barcodesFile}"
 
     # Run the R script with arguments
     echo "Executing DropletQC analysis with 20 cores..."
-    Rscript ${run_dropletqc_R} --mapping_dir ${mappingDir} --sample_name ${sampleName} --cores 20
+    Rscript ${run_dropletqc_R} --bam_file ${bamFile} --barcodes_file ${barcodesFile} --sample_name ${sampleName} --cores 20
 
     echo "DropletQC analysis completed for ${sampleName}"
     """

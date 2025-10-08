@@ -8,7 +8,7 @@ process SCDBL {
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
 
     input:
-    tuple val(sampleName), path(mappingDir), path(run_scdbl_R)
+    tuple val(sampleName), path(h5File), path(run_scdbl_R)
 
     output:
     tuple val(sampleName), path("${sampleName}_scdbl_metrics.csv"), emit: metrics
@@ -17,11 +17,11 @@ process SCDBL {
     script:
     """
     echo "Running scDblFinder analysis for sample: ${sampleName}"
-    echo "Mapping directory: ${mappingDir}"
+    echo "H5 file: ${h5File}"
 
     # Run the R script with arguments
     echo "Executing scDblFinder doublet detection..."
-    Rscript ${run_scdbl_R} --mapping_dir ${mappingDir} --sample_name ${sampleName}
+    Rscript ${run_scdbl_R} --h5_file ${h5File} --sample_name ${sampleName}
 
     echo "scDblFinder analysis completed for ${sampleName}"
     """

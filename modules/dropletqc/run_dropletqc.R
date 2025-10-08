@@ -13,8 +13,8 @@ parser$add_argument('--cores', type='integer', default=1,
 args <- parser$parse_args()
 
 # Set up paths
-bam_file <- file.path(args$mapping_dir, "outs/possorted_genome_bam.bam")
-barcodes_file <- file.path(args$mapping_dir, "outs/filtered_feature_bc_matrix/barcodes.tsv.gz")
+bam_file <- args$bam_file
+barcodes_file <- args$barcodes_file
 
 cat("BAM file:", bam_file, "\n")
 cat("Barcodes file:", barcodes_file, "\n")
