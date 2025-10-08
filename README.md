@@ -107,10 +107,3 @@ This pipeline is maintained in a public repository:
 - [johnsonlab-ic/scQC-flow](https://github.com/johnsonlab-ic/scQC-flow)
 
 ---
-
-## 📞 Support
-
-For questions or issues, please:
-- Open an issue on the [GitHub repository](https://github.com/johnsonlab-ic/scQC-flow/issues)
-- Contact the Johnson Lab at Imperial College London
-
