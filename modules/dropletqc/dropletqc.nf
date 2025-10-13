@@ -23,7 +23,7 @@ process DROPLETQC {
 
     # Copy BAM index into workdir (some compute environments don't stage sidecar files in the same dir)
     echo "Copying BAM index into workdir"
-    cp -v ${bamIndex} .
+    touch ${bamIndex} .
 
     # Run the R script with arguments
     echo "Executing DropletQC analysis with 20 cores..."
