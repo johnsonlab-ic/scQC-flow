@@ -112,13 +112,14 @@ workflow {
         // Run H5 conversion after CellBender (CPU or GPU)
         cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
 
-        // Prepare DropletQC inputs: BAM file + CellBender barcodes
+        // Prepare DropletQC inputs: BAM file + BAM index + CellBender barcodes
         dropletqc_input_ch = sampleChannelBase
             .join(cellbender_results.cellbender_output)
             .map { sampleName, mappingDir, cellbenderOutput -> 
                 def bamFile = file("${mappingDir}/outs/possorted_genome_bam.bam")
+                def bamIndex = file("${mappingDir}/outs/possorted_genome_bam.bam.bai")
                 def barcodesFile = file("${cellbenderOutput}/cellbender_out_cell_barcodes.csv")
-                tuple(sampleName, bamFile, barcodesFile, dropletqc_script_path)
+                tuple(sampleName, bamFile, bamIndex, barcodesFile, dropletqc_script_path)
             }
 
         // Prepare scDbl inputs: CellBender H5 file
@@ -143,11 +144,12 @@ workflow {
     } else {
         log.info "Running standard workflow without CellBender"
         
-        // Prepare DropletQC inputs: BAM file + Cell Ranger barcodes
+        // Prepare DropletQC inputs: BAM file + BAM index + Cell Ranger barcodes
         dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
             def bamFile = file("${mappingDir}/outs/possorted_genome_bam.bam")
+            def bamIndex = file("${mappingDir}/outs/possorted_genome_bam.bam.bai")
             def barcodesFile = file("${mappingDir}/outs/filtered_feature_bc_matrix/barcodes.tsv.gz")
-            tuple(sampleName, bamFile, barcodesFile, dropletqc_script_path)
+            tuple(sampleName, bamFile, bamIndex, barcodesFile, dropletqc_script_path)
         }
 
         // Prepare scDbl inputs: Cell Ranger H5 file
