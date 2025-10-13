@@ -27,7 +27,7 @@ process DROPLETQC {
 
     # Run the R script with arguments
     echo "Executing DropletQC analysis with 20 cores..."
-    Rscript ${run_dropletqc_R} --bam_file ${bamFile} --bam_index $(basename ${bamIndex}) --barcodes_file ${barcodesFile} --sample_name ${sampleName} --cores 20
+    Rscript ${run_dropletqc_R} --bam_file ${bamFile} --barcodes_file ${barcodesFile} --sample_name ${sampleName} --cores 20
 
     echo "DropletQC analysis completed for ${sampleName}"
     """
