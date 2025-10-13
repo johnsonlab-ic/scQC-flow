@@ -3,8 +3,10 @@ library(argparse)
 
 # Parse command line arguments
 parser <- ArgumentParser(description='Run DropletQC nuclear fraction analysis')
-parser$add_argument('--mapping_dir', type='character', required=TRUE,
-                    help='Path to Cell Ranger mapping directory')
+parser$add_argument('--bam_file', type='character', required=TRUE,
+                    help='Path to BAM file')
+parser$add_argument('--barcodes_file', type='character', required=TRUE,
+                    help='Path to barcodes file (TSV or CSV)')
 parser$add_argument('--sample_name', type='character', required=TRUE,
                     help='Sample name for output files')
 parser$add_argument('--cores', type='integer', default=1,
