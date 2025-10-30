@@ -50,6 +50,26 @@ nextflow run johnsonlab-ic/scQC-flow \
 | `--mapping_dirs`  | CSV with `samplename` and `path` columns    | `personal/mapping_dirs.csv` |
 | `--outputDir`     | Output directory for results                | `results`       |
 
+### Pipeline Options (optional)
+
+The pipeline accepts the following optional parameters. Defaults shown in parentheses.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--cellbender` | Run CellBender ambient RNA removal for all samples. When enabled, downstream QC and Seurat use CellBender outputs. | `false` |
+| `--gpu` | Use GPU acceleration for CellBender (requires `--cellbender` and a CUDA-enabled environment). | `false` |
+| `--report` | Generate per-sample Quarto QC reports (HTML). | `true` |
+| `--book` | Combine all per-sample reports into a single Quarto book. | `false` |
+| `--max_mito` | Maximum mitochondrial percentage threshold used during Seurat QC (percent). | `10.0` |
+| `--min_nuclear` | Minimum nuclear fraction threshold used during Seurat QC (0-1). | `0.4` |
+| `--metadata` | Optional path to a CSV metadata file (will be passed into Seurat/reporting). | `null` |
+| `--help` | Show the pipeline help message and exit. | `false` |
+
+Notes:
+- `--cellbender` will cause the workflow to run CellBender (CPU or GPU) and convert the CellBender HDF5 output to a Seurat-compatible H5. DropletQC and scDblFinder will use CellBender barcodes/H5 when this flag is set.
+- `--gpu` only affects CellBender execution. Ensure your environment has a compatible GPU, drivers, and that the container image supports GPU access (or run on a node with GPU passthrough and use the appropriate container runtime flags).
+- Common Nextflow flags such as `-profile <profile>` and `-resume` are also supported as usual.
+
 ### Required Input Format
 
 The mapping CSV should look like:
