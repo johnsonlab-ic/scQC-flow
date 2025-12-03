@@ -1,2 +1,5 @@
 personal/
 .nextflow/
+
+# Copilot instructions (private)
+.github/copilot-instructions.md
