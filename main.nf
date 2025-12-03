@@ -15,7 +15,7 @@ params.report = true
 params.book = false
 params.cellbender = false
 params.help = false
-params.max_mito = 10.0
+params.max_mito = 20.0
 params.min_nuclear = 0.4
 params.metadata = null // Optional metadata CSV file
 
