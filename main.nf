@@ -98,11 +98,17 @@ workflow {
 
     // Prepare script/template files as value channels
     dropletqc_script_path = file("${projectDir}/modules/dropletqc/run_dropletqc.R")
-    scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
-    seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
     report_template_path = file("${projectDir}/modules/reports/seurat_template.qmd")
     combined_template_path = file("${projectDir}/modules/reports/combined_template.qmd")
     book_template_path = file("${projectDir}/modules/reports/book_template/")
+
+    // Standard module scripts
+    scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
+    seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
+
+    // Multiome-specific scripts (extract Gene Expression modality from H5)
+    scdbl_multiome_script_path = file("${projectDir}/modules/multiome/run_scdbl_multiome.R")
+    seurat_multiome_script_path = file("${projectDir}/modules/multiome/make_seurat_multiome.R")
 
     // =========================================================================
     // RUN APPROPRIATE WORKFLOW
@@ -112,8 +118,13 @@ workflow {
         MULTIOME_WORKFLOW(
             sampleChannelBase,
             dropletqc_script_path,
-            scdbl_script_path,
-            seurat_script_path
+            scdbl_multiome_script_path,
+            seurat_multiome_script_path,
+            params.cellbender,
+            params.gpu,
+            params.max_mito,
+            params.min_nuclear,
+            params.metadata
         )
         seurat_results = MULTIOME_WORKFLOW.out.seurat_results
     } else {
@@ -122,7 +133,12 @@ workflow {
             sampleChannelBase,
             dropletqc_script_path,
             scdbl_script_path,
-            seurat_script_path
+            seurat_script_path,
+            params.cellbender,
+            params.gpu,
+            params.max_mito,
+            params.min_nuclear,
+            params.metadata
         )
         seurat_results = STANDARD_WORKFLOW.out.seurat_results
     }
@@ -135,6 +151,10 @@ workflow {
         seurat_results,
         report_template_path,
         combined_template_path,
-        book_template_path
+        book_template_path,
+        params.max_mito,
+        params.min_nuclear,
+        params.report,
+        params.book
     )
 }
