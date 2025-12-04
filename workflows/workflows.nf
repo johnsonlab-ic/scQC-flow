@@ -15,6 +15,8 @@ include { SCDBL } from '../modules/scdbl/scdbl'
 // Import multiome-specific modules
 include { SCDBL_MULTIOME } from '../modules/multiome/scdbl_multiome'
 include { CREATE_SEURAT_MULTIOME } from '../modules/multiome/seurat_multiome'
+include { EXTRACT_GEX_H5 } from '../modules/multiome/extract_gex'
+include { CELLBENDER_MULTIOME; CELLBENDER_MULTIOME_GPU } from '../modules/multiome/cellbender_multiome'
 
 // =============================================================================
 // STANDARD SINGLE-CELL WORKFLOW
@@ -128,6 +130,7 @@ workflow MULTIOME_WORKFLOW {
         dropletqc_script_path
         scdbl_script_path       // multiome version: run_scdbl_multiome.R
         seurat_script_path      // multiome version: make_seurat_multiome.R
+        extract_gex_script_path // R script to extract Gene Expression from multiome H5
         cellbender              // boolean
         gpu                     // boolean
         max_mito                // double
@@ -138,12 +141,19 @@ workflow MULTIOME_WORKFLOW {
         if (cellbender) {
             log.info "Running CellBender workflow for multiome samples"
             
-            // Run CellBender first
+            // First, extract Gene Expression from multiome raw H5
+            // This creates a single-modality H5 that CellBender can process
+            extract_input_ch = sampleChannelBase.map { sampleName, mappingDir ->
+                tuple(sampleName, mappingDir, extract_gex_script_path)
+            }
+            extract_results = EXTRACT_GEX_H5(extract_input_ch)
+            
+            // Run CellBender on the extracted Gene Expression H5
             if (gpu) {
                 log.info "GPU acceleration enabled for CellBender"
-                cellbender_results = CELLBENDER_GPU(sampleChannelBase)
+                cellbender_results = CELLBENDER_MULTIOME_GPU(extract_results.gex_h5)
             } else {
-                cellbender_results = CELLBENDER(sampleChannelBase)
+                cellbender_results = CELLBENDER_MULTIOME(extract_results.gex_h5)
             }
             
             // Run H5 conversion after CellBender

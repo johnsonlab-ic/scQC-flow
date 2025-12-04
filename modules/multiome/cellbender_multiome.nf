@@ -1,14 +1,14 @@
-// CellBender module for ambient RNA removal and empty droplet filtering
-// This module provides both CPU and GPU variants of CellBender
+// CellBender module for multiome data
+// Uses extracted Gene Expression H5 instead of raw multiome H5
 
-process CELLBENDER {
+process CELLBENDER_MULTIOME {
     label "process_cellbender"
     tag { sampleName }
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     // No publishDir - intermediate files not needed in final output
     
     input:
-    tuple val(sampleName), path(mappingDir)
+    tuple val(sampleName), path(gex_h5)
 
     output:
     tuple val(sampleName), path("${sampleName}_cellbender_output"), emit: cellbender_output
@@ -17,14 +17,13 @@ process CELLBENDER {
 
     script:
     """
-    echo "Running CellBender (CPU) for sample: ${sampleName}"
-    echo "Mapping directory: ${mappingDir}"
-
+    echo "Running CellBender (CPU) for multiome sample: ${sampleName}"
+    echo "Input GEX H5: ${gex_h5}"
 
     mkdir -p ${sampleName}_cellbender_output
 
     cellbender remove-background \\
-                 --input ${mappingDir}/outs/raw_feature_bc_matrix.h5 \\
+                 --input ${gex_h5} \\
                  --output ${sampleName}_cellbender_output/cellbender_out.h5
 
     echo "CellBender processing completed" > ${sampleName}_cellbender_output/summary.txt
@@ -32,14 +31,14 @@ process CELLBENDER {
     """
 }
 
-process CELLBENDER_GPU {
+process CELLBENDER_MULTIOME_GPU {
     label "process_gpu"
     tag { sampleName }
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     // No publishDir - intermediate files not needed in final output
     
     input:
-    tuple val(sampleName), path(mappingDir)
+    tuple val(sampleName), path(gex_h5)
 
     output:
     tuple val(sampleName), path("${sampleName}_cellbender_output"), emit: cellbender_output
@@ -48,40 +47,17 @@ process CELLBENDER_GPU {
 
     script:
     """
-    echo "Running CellBender (GPU) for sample: ${sampleName}"
-    echo "Mapping directory: ${mappingDir}"
+    echo "Running CellBender (GPU) for multiome sample: ${sampleName}"
+    echo "Input GEX H5: ${gex_h5}"
 
     mkdir -p ${sampleName}_cellbender_output
 
     cellbender remove-background \\
-                 --input ${mappingDir}/outs/raw_feature_bc_matrix.h5 \\
+                 --input ${gex_h5} \\
                  --output ${sampleName}_cellbender_output/cellbender_out.h5 \\
                  --cuda
 
     echo "CellBender processing completed" > ${sampleName}_cellbender_output/summary.txt
     echo "CellBender (GPU) completed for ${sampleName}"
-    """
-}
-
-process CELLBENDER_H5_CONVERT {
-    label "process_low"
-    tag { sampleName }
-    container "ah3918/pilot-analyses:latest"
-    // No publishDir - intermediate files not needed in final output
-    
-    input:
-    tuple val(sampleName), path(cellbender_output)
-
-    output:
-    tuple val(sampleName), path("${sampleName}_cellbender_output_seurat.h5"), emit: seurat_h5
-
-    script:
-    """
-    echo "Converting CellBender H5 to Seurat-compatible format for: ${sampleName}"
-    
-    # Use ptrepack to create Seurat-compatible H5 file, overwriting nodes if needed
-    ptrepack --complevel 5 ${cellbender_output}/cellbender_out_filtered.h5:/matrix ${sampleName}_cellbender_output_seurat.h5:/matrix
-    
-    echo "H5 conversion completed for ${sampleName}"
     """
 }

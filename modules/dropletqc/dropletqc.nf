@@ -5,7 +5,7 @@ process DROPLETQC {
     label "process_dropletqc"
     tag { sampleName }
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
+    // No publishDir - intermediate files not needed in final output
 
     input:
     tuple val(sampleName), path(bamFile), path(bamIndex), path(barcodesFile), path(run_dropletqc_R)

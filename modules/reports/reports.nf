@@ -5,7 +5,7 @@ process GENERATE_REPORTS {
     label "process_reports"
     tag { sampleName }
         container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true, pattern: "*.html"
 
     input:
     tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd), val(max_mito), val(min_nuclear)

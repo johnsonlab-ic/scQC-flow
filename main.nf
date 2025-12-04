@@ -109,6 +109,7 @@ workflow {
     // Multiome-specific scripts (extract Gene Expression modality from H5)
     scdbl_multiome_script_path = file("${projectDir}/modules/multiome/run_scdbl_multiome.R")
     seurat_multiome_script_path = file("${projectDir}/modules/multiome/make_seurat_multiome.R")
+    extract_gex_script_path = file("${projectDir}/modules/multiome/extract_gex_h5.R")
 
     // =========================================================================
     // RUN APPROPRIATE WORKFLOW
@@ -120,6 +121,7 @@ workflow {
             dropletqc_script_path,
             scdbl_multiome_script_path,
             seurat_multiome_script_path,
+            extract_gex_script_path,
             params.cellbender,
             params.gpu,
             params.max_mito,

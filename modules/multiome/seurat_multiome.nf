@@ -1,5 +1,6 @@
 // Seurat module for Multiome data: create Seurat objects pre- and post-QC
 // Extracts Gene Expression modality from multiome H5 files
+// Also copies ATAC files for downstream analysis
 
 process CREATE_SEURAT_MULTIOME {
     label "process_seurat"
@@ -12,6 +13,7 @@ process CREATE_SEURAT_MULTIOME {
 
   output:
   tuple val(sampleName), path("${sampleName}_seurat_object.rds"), path("${sampleName}_seurat_object_postqc.rds")
+  path "atac/", emit: atac_files
 
   script:
   """
@@ -33,5 +35,16 @@ process CREATE_SEURAT_MULTIOME {
   fi
 
   echo "Seurat objects created for ${sampleName}"
+
+  # Copy ATAC files for downstream multiome analysis
+  echo "Copying ATAC files..."
+  mkdir -p atac
+  cp ${mappingDir}/outs/atac_* atac/ 2>/dev/null || echo "No atac_* files found"
+  
+  # List what was copied
+  echo "ATAC files copied:"
+  ls -la atac/
+
+  echo "Multiome Seurat processing completed for ${sampleName}"
   """
 }
