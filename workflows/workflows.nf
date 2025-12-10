@@ -7,7 +7,7 @@
 
 // Import standard modules
 include { CELLBENDER; CELLBENDER_GPU; CELLBENDER_H5_CONVERT } from '../modules/cellbender/cellbender'
-include { GENERATE_REPORTS; COMBINE_REPORTS; GENERATE_COMBINED_REPORT } from '../modules/reports/reports'
+include { GENERATE_REPORTS; COMBINE_REPORTS; GENERATE_COMBINED_REPORT; GENERATE_ATAC_REPORT } from '../modules/reports/reports'
 include { CREATE_SEURAT } from '../modules/seurat/seurat'
 include { DROPLETQC } from '../modules/dropletqc/dropletqc'
 include { SCDBL } from '../modules/scdbl/scdbl'
@@ -15,7 +15,7 @@ include { SCDBL } from '../modules/scdbl/scdbl'
 // Import multiome-specific modules
 include { SCDBL_MULTIOME } from '../modules/multiome/scdbl_multiome'
 include { CREATE_SEURAT_MULTIOME } from '../modules/multiome/seurat_multiome'
-include { EXTRACT_GEX_H5 } from '../modules/multiome/extract_gex'
+include { EXTRACT_MODALITIES } from '../modules/multiome/extract_modalities'
 include { CELLBENDER_MULTIOME; CELLBENDER_MULTIOME_GPU } from '../modules/multiome/cellbender_multiome'
 
 // =============================================================================
@@ -130,7 +130,7 @@ workflow MULTIOME_WORKFLOW {
         dropletqc_script_path
         scdbl_script_path       // multiome version: run_scdbl_multiome.R
         seurat_script_path      // multiome version: make_seurat_multiome.R
-        extract_gex_script_path // R script to extract Gene Expression from multiome H5
+        extract_modalities_script_path // R script to extract Gene Expression and ATAC from multiome H5
         cellbender              // boolean
         gpu                     // boolean
         max_mito                // double
@@ -141,12 +141,12 @@ workflow MULTIOME_WORKFLOW {
         if (cellbender) {
             log.info "Running CellBender workflow for multiome samples"
             
-            // First, extract Gene Expression from multiome raw H5
-            // This creates a single-modality H5 that CellBender can process
+            // First, extract Gene Expression and ATAC modalities from multiome raw H5
+            // GEX H5 is used for CellBender, ATAC H5 is passed to Seurat for ChromatinAssay
             extract_input_ch = sampleChannelBase.map { sampleName, mappingDir ->
-                tuple(sampleName, mappingDir, extract_gex_script_path)
+                tuple(sampleName, mappingDir, extract_modalities_script_path)
             }
-            extract_results = EXTRACT_GEX_H5(extract_input_ch)
+            extract_results = EXTRACT_MODALITIES(extract_input_ch)
             
             // Run CellBender on the extracted Gene Expression H5
             if (gpu) {
@@ -178,20 +178,32 @@ workflow MULTIOME_WORKFLOW {
             dropletqc_results = DROPLETQC(dropletqc_input_ch)
             scdbl_results = SCDBL_MULTIOME(scdbl_input_ch)
 
-            // Create Seurat objects using CellBender H5 and multiome module
+            // Create Seurat objects using CellBender H5, ATAC H5, and multiome module
+            // Join: sampleChannelBase + dropletqc + scdbl + cellbender_h5 + atac_h5
             seurat_input_ch = sampleChannelBase
                 .join(dropletqc_results.metrics)
                 .join(scdbl_results.metrics)
                 .join(cellbender_h5_results.seurat_h5)
-                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
+                .join(extract_results.atac_h5)
+                // Structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, gex_h5, atac_h5]
+                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4], it[5]) }
 
-            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> 
-                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path) 
+            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path, atac_h5_path -> 
+                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path, atac_h5_path) 
             }
-            seurat_results = CREATE_SEURAT_MULTIOME(seurat_input_with_script)
+            seurat_multiome_output = CREATE_SEURAT_MULTIOME(seurat_input_with_script)
+            seurat_results = seurat_multiome_output.seurat_rds
+            atac_files = seurat_multiome_output.atac_files
             
         } else {
             log.info "Running multiome workflow without CellBender"
+            
+            // For non-CellBender multiome, we still need to extract the ATAC modality
+            // from the raw H5 for Seurat ChromatinAssay creation
+            extract_input_ch = sampleChannelBase.map { sampleName, mappingDir ->
+                tuple(sampleName, mappingDir, extract_modalities_script_path)
+            }
+            extract_results = EXTRACT_MODALITIES(extract_input_ch)
             
             // Prepare DropletQC inputs: GEX BAM file + BAM index + Cell Ranger barcodes
             // Note: Multiome uses gex_possorted_bam.bam instead of possorted_genome_bam.bam
@@ -218,20 +230,27 @@ workflow MULTIOME_WORKFLOW {
                 tuple(sampleName, default_h5)
             }
             
+            // Join: sampleChannelBase + dropletqc + scdbl + gex_h5 + atac_h5
             seurat_input_ch = sampleChannelBase
                 .join(dropletqc_results.metrics)
                 .join(scdbl_results.metrics)
                 .join(h5_path_ch)
-                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
+                .join(extract_results.atac_h5)
+                // Structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, gex_h5, atac_h5]
+                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4], it[5]) }
 
-            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> 
-                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path) 
+            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path, atac_h5_path -> 
+                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path, atac_h5_path) 
             }
-            seurat_results = CREATE_SEURAT_MULTIOME(seurat_input_with_script)
+            seurat_multiome_output = CREATE_SEURAT_MULTIOME(seurat_input_with_script)
+            seurat_results = seurat_multiome_output.seurat_rds
+            atac_files = seurat_multiome_output.atac_files
         }
 
     emit:
         seurat_results = seurat_results
+        atac_files = atac_files
+        sample_channel = sampleChannelBase
 }
 
 // =============================================================================
@@ -269,5 +288,36 @@ workflow REPORTING {
 
                 combined_book = COMBINE_REPORTS(all_html_reports, all_qmd_sources, book_template_path)
             }
+        }
+}
+
+// =============================================================================
+// ATAC REPORTING WORKFLOW (Multiome only)
+// =============================================================================
+workflow ATAC_REPORTING {
+    take:
+        sampleChannelBase       // tuple(sampleName, mappingDir)
+        seurat_results          // tuple(sampleName, pre_rds, post_rds)
+        atac_files              // path to atac/ directory containing fragment and peak files
+        atac_template_path      // path to atac_template.qmd
+        run_report              // boolean
+
+    main:
+        if (run_report) {
+            log.info "Generating ATAC QC reports for multiome samples"
+            
+            // Join seurat results with sampleChannelBase to get the post-QC RDS
+            // seurat_results: tuple(sampleName, pre_rds, post_rds)
+            // We need: tuple(sampleName, post_rds, fragment_file, peak_file, template)
+            
+            atac_report_input_ch = sampleChannelBase
+                .join(seurat_results)
+                .map { sampleName, mappingDir, pre_rds, post_rds ->
+                    def fragment_file = file("${mappingDir}/outs/atac_fragments.tsv.gz")
+                    def peak_file = file("${mappingDir}/outs/atac_peaks.bed")
+                    tuple(sampleName, post_rds, fragment_file, peak_file, atac_template_path)
+                }
+            
+            atac_reports_output = GENERATE_ATAC_REPORT(atac_report_input_ch)
         }
 }

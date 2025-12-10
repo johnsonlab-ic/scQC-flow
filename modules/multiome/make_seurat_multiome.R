@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 suppressPackageStartupMessages({
   library(Seurat)
+  library(Signac)
   library(Matrix)
   library(dplyr)
   library(argparse)
@@ -10,7 +11,8 @@ suppressPackageStartupMessages({
 parser <- ArgumentParser(description = 'Create Seurat objects with QC filtering for Multiome data')
 parser$add_argument('sample_name', help = 'Sample name')
 parser$add_argument('mapping_dir', help = 'Path to mapping directory')
-parser$add_argument('--h5_path', type = 'character', default = NULL, help = 'Path to H5 counts file (CellBender or 10X)')
+parser$add_argument('--h5_path', type = 'character', default = NULL, help = 'Path to H5 counts file (CellBender or 10X) for Gene Expression')
+parser$add_argument('--atac_h5_path', type = 'character', default = NULL, help = 'Path to ATAC/Peaks H5 file for ChromatinAssay')
 parser$add_argument('dropletqc_csv', help = 'Path to DropletQC metrics CSV')
 parser$add_argument('scdbl_csv', help = 'Path to scDbl metrics CSV')
 parser$add_argument('--max_mito', type = 'double', default = 20.0, 
@@ -26,6 +28,7 @@ args <- parser$parse_args()
 sample_name <- args$sample_name
 mapping_dir_arg <- args$mapping_dir
 h5_path <- args$h5_path
+atac_h5_path <- args$atac_h5_path
 dropletqc_file <- args$dropletqc_csv
 scdbl_file <- args$scdbl_csv
 max_mito <- args$max_mito
@@ -35,6 +38,8 @@ metadata_file <- args$metadata
 
 cat("make_seurat_multiome.R: sample:", sample_name, "mapping_dir_arg:", mapping_dir_arg, "\n")
 cat("QC thresholds: max_mito =", max_mito, ", min_nuclear =", min_nuclear, "\n")
+cat("GEX H5 path:", h5_path, "\n")
+cat("ATAC H5 path:", atac_h5_path, "\n")
 if (!is.null(metadata_file)) cat("Using metadata file:", metadata_file, "\n")
 
 
@@ -83,6 +88,105 @@ if (!is.null(h5_path) && file.exists(h5_path)) {
 seurat_obj <- CreateSeuratObject(counts = counts, project = sample_name, min.cells = 3, min.features = 200, assay = "RNA")
 seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
 seurat_obj[["percent.rb"]] <- PercentageFeatureSet(seurat_obj, pattern = "^RP[SL]")
+
+# =============================================================================
+# Add ATAC ChromatinAssay if ATAC H5 is provided
+# =============================================================================
+if (!is.null(atac_h5_path) && file.exists(atac_h5_path)) {
+  cat("\n=== Adding ATAC ChromatinAssay ===\n")
+  cat("Loading ATAC counts from:", atac_h5_path, "\n")
+  
+  # Read ATAC counts
+  atac_counts <- Read10X_h5(atac_h5_path)
+  
+  # If it's a list (shouldn't be since we extracted Peaks only), get Peaks
+  if (is.list(atac_counts)) {
+    if ("Peaks" %in% names(atac_counts)) {
+      atac_counts <- atac_counts$Peaks
+    } else {
+      stop("No 'Peaks' modality found in ATAC H5 file")
+    }
+  }
+  
+  cat("ATAC matrix dimensions (before filtering):", nrow(atac_counts), "peaks x", ncol(atac_counts), "barcodes\n")
+  
+  # Get barcodes from the GEX Seurat object (these are the CellBender-filtered cells)
+  gex_barcodes <- colnames(seurat_obj)
+  cat("GEX cells (CellBender-filtered):", length(gex_barcodes), "\n")
+  
+  # Match barcodes between ATAC and GEX
+  # Clean barcodes (remove suffix like -1) for matching
+  clean_gex_bcs <- sub("-.*$", "", gex_barcodes)
+  clean_atac_bcs <- sub("-.*$", "", colnames(atac_counts))
+  
+  # Find common barcodes
+  common_bcs_clean <- intersect(clean_gex_bcs, clean_atac_bcs)
+  cat("Common barcodes after cleaning:", length(common_bcs_clean), "\n")
+  
+  # Get the original barcode names that correspond to common barcodes
+  gex_match_idx <- match(common_bcs_clean, clean_gex_bcs)
+  atac_match_idx <- match(common_bcs_clean, clean_atac_bcs)
+  
+  gex_common_bcs <- gex_barcodes[gex_match_idx]
+  atac_common_bcs <- colnames(atac_counts)[atac_match_idx]
+  
+  # Subset ATAC counts to only include cells present in GEX
+  atac_counts_subset <- atac_counts[, atac_match_idx, drop = FALSE]
+  
+  # Rename ATAC barcodes to match GEX barcodes exactly
+  colnames(atac_counts_subset) <- gex_common_bcs
+  
+  cat("ATAC matrix dimensions (after filtering to GEX cells):", nrow(atac_counts_subset), "peaks x", ncol(atac_counts_subset), "barcodes\n")
+  
+  # Subset the Seurat object to only include cells with ATAC data
+  if (length(gex_common_bcs) < length(gex_barcodes)) {
+    cat("Subsetting Seurat object to cells with ATAC data\n")
+    seurat_obj <- subset(seurat_obj, cells = gex_common_bcs)
+    cat("Seurat object now has", ncol(seurat_obj), "cells\n")
+  }
+  
+  # Try to find fragments file for ChromatinAssay
+  fragpath <- file.path(mapping_dir_arg, "outs/atac_fragments.tsv.gz")
+  if (!file.exists(fragpath)) {
+    # Try alternative locations
+    fragpath_alt <- list.files(path = getwd(), pattern = "atac_fragments.tsv.gz", 
+                                full.names = TRUE, recursive = TRUE)
+    if (length(fragpath_alt) > 0) {
+      fragpath <- fragpath_alt[1]
+    } else {
+      fragpath <- NULL
+    }
+  }
+  
+  # Create ChromatinAssay
+  # Note: Without annotation and fragments, we create a basic assay
+  if (!is.null(fragpath) && file.exists(fragpath)) {
+    cat("Creating ChromatinAssay with fragments file:", fragpath, "\n")
+    atac_assay <- CreateChromatinAssay(
+      counts = atac_counts_subset,
+      sep = c(":", "-"),
+      fragments = fragpath,
+      min.cells = 1,
+      min.features = 0
+    )
+  } else {
+    cat("Creating ChromatinAssay without fragments file\n")
+    atac_assay <- CreateChromatinAssay(
+      counts = atac_counts_subset,
+      sep = c(":", "-"),
+      min.cells = 1,
+      min.features = 0
+    )
+  }
+  
+  # Add ATAC assay to Seurat object
+  seurat_obj[["ATAC"]] <- atac_assay
+  cat("Added ATAC assay to Seurat object\n")
+  cat("ATAC assay features:", nrow(seurat_obj[["ATAC"]]), "\n")
+  cat("=== ATAC ChromatinAssay added successfully ===\n\n")
+} else {
+  cat("No ATAC H5 path provided or file not found, skipping ATAC assay creation\n")
+}
 
 # Add DropletQC nuclear fraction if available
 if (file.exists(dropletqc_file)) {

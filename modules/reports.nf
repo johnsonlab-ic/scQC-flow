@@ -4,7 +4,7 @@
 process GENERATE_REPORTS {
     label "process_reports"
     tag { sampleName }
-    container "ah3918/pilot-analyses:latest"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
     
     input:

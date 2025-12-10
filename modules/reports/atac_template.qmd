@@ -1,0 +1,425 @@
+---
+title: "SAMPLE_NAME_PLACEHOLDER ATAC QC Report"
+subtitle: "Sample: SAMPLE_NAME_PLACEHOLDER"
+author: "scQC-flow Pipeline"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+suppressPackageStartupMessages({
+  library(Signac)
+  library(Seurat)
+  library(EnsDb.Hsapiens.v86)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(ggplot2)
+  library(dplyr)
+  library(patchwork)
+  library(knitr)
+  library(DT)
+  library(future)
+})
+
+# Set up parallelization
+plan("multicore", workers = 4)
+options(future.globals.maxSize = 20 * 1024^3)
+
+# Set sample name and paths from placeholders
+sample_name <- "SAMPLE_NAME_PLACEHOLDER"
+seurat_object_path <- "SEURAT_PATH_PLACEHOLDER"
+fragment_path <- "FRAGMENT_PATH_PLACEHOLDER"
+peak_path <- "PEAK_PATH_PLACEHOLDER"
+
+cat("Processing ATAC QC for sample:", sample_name, "\n")
+cat("Seurat object path:", seurat_object_path, "\n")
+cat("Fragment path:", fragment_path, "\n")
+cat("Peak path:", peak_path, "\n")
+```
+
+# Overview
+
+This report provides quality control metrics for the ATAC-seq component of the multiome sample **`r sample_name`**.
+
+## Load Data
+
+```{r}
+#| label: load-data
+
+# Load the Seurat object
+so <- readRDS(seurat_object_path)
+cat("Loaded Seurat object with", ncol(so), "cells\n")
+
+# Check if ATAC assay exists
+if (!"ATAC" %in% names(so@assays)) {
+  stop("No ATAC assay found in Seurat object. Please ensure the multiome workflow was run correctly.")
+}
+
+DefaultAssay(so) <- "ATAC"
+cat("ATAC assay has", nrow(so[["ATAC"]]), "peaks\n")
+```
+
+## Fragment File Setup
+
+```{r}
+#| label: setup-fragments
+
+# Check if fragments object already exists in the ATAC assay
+has_fragments <- !is.null(Fragments(so[["ATAC"]])) && length(Fragments(so[["ATAC"]])) > 0
+
+if (!has_fragments && file.exists(fragment_path)) {
+  cat("Loading fragment file:", fragment_path, "\n")
+  
+  # Create fragment object
+  fragments <- CreateFragmentObject(fragment_path, cells = colnames(so))
+  
+  # Update the ATAC assay with fragment object
+  Fragments(so[["ATAC"]]) <- fragments
+  has_fragments <- TRUE
+  cat("Fragment object created successfully\n")
+} else if (has_fragments) {
+  cat("Using existing fragment object from Seurat object\n")
+} else {
+  cat("Warning: No fragment file available. Some QC metrics cannot be calculated.\n")
+}
+```
+
+# ATAC QC Metrics
+
+## Calculate Nucleosome Signal
+
+The nucleosome signal represents the ratio of mononucleosomal to nucleosome-free fragments. Higher values indicate poor quality cells.
+
+```{r}
+#| label: nucleosome-signal
+
+if (!"nucleosome_signal" %in% colnames(so@meta.data)) {
+  cat("Calculating nucleosome signal...\n")
+  so <- NucleosomeSignal(so)
+  cat("Nucleosome signal calculation complete\n")
+} else {
+  cat("Using existing nucleosome signal values\n")
+}
+
+# Summary statistics
+nucleosome_stats <- summary(so$nucleosome_signal)
+cat("\nNucleosome Signal Summary:\n")
+print(nucleosome_stats)
+```
+
+## Calculate TSS Enrichment
+
+TSS enrichment score measures the ratio of fragments at transcription start sites compared to flanking regions. Higher values indicate better quality.
+
+```{r}
+#| label: tss-enrichment
+
+if (!"TSS.enrichment" %in% colnames(so@meta.data)) {
+  cat("Calculating TSS enrichment score...\n")
+  
+  # Get human gene annotation
+  annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+  seqlevelsStyle(annotation) <- 'UCSC'
+  
+  # Add annotation to assay
+  Annotation(so[["ATAC"]]) <- annotation
+  
+  so <- TSSEnrichment(so, fast = FALSE)
+  cat("TSS enrichment calculation complete\n")
+} else {
+  cat("Using existing TSS enrichment values\n")
+}
+
+# Summary statistics
+tss_stats <- summary(so$TSS.enrichment)
+cat("\nTSS Enrichment Summary:\n")
+print(tss_stats)
+```
+
+## Calculate Total Fragments
+
+```{r}
+#| label: total-fragments
+
+if (has_fragments && (!"fragments" %in% colnames(so@meta.data))) {
+  cat("Counting total fragments per cell...\n")
+  total_fragments <- CountFragments(fragment_path)
+  rownames(total_fragments) <- total_fragments$CB
+  
+  # Match to Seurat object cells
+  matched_cells <- intersect(colnames(so), rownames(total_fragments))
+  so$fragments <- NA
+  so$fragments[matched_cells] <- total_fragments[matched_cells, "frequency_count"]
+  
+  cat("Fragment counting complete\n")
+} else if ("fragments" %in% colnames(so@meta.data)) {
+  cat("Using existing fragment counts\n")
+} else {
+  cat("Fragment file not available; skipping fragment counting\n")
+}
+```
+
+## Calculate FRiP (Fraction of Reads in Peaks)
+
+```{r}
+#| label: frip
+
+if (has_fragments && (!"FRiP" %in% colnames(so@meta.data)) && ("fragments" %in% colnames(so@meta.data))) {
+  cat("Calculating FRiP (Fraction of Reads in Peaks)...\n")
+  so <- FRiP(
+    object = so,
+    assay = 'ATAC',
+    total.fragments = 'fragments'
+  )
+  cat("FRiP calculation complete\n")
+} else if ("FRiP" %in% colnames(so@meta.data)) {
+  cat("Using existing FRiP values\n")
+} else {
+  cat("Cannot calculate FRiP; required data not available\n")
+}
+```
+
+## Calculate Blacklist Fraction
+
+```{r}
+#| label: blacklist
+
+if (!"blacklist_fraction" %in% colnames(so@meta.data)) {
+  cat("Calculating blacklist region fraction...\n")
+  so$blacklist_fraction <- FractionCountsInRegion(
+    object = so,
+    assay = 'ATAC',
+    regions = blacklist_hg38
+  )
+  cat("Blacklist fraction calculation complete\n")
+} else {
+  cat("Using existing blacklist fraction values\n")
+}
+```
+
+# QC Visualizations
+
+## Summary Statistics Table
+
+```{r}
+#| label: summary-table
+
+# Create summary statistics table
+atac_metrics <- c("nCount_ATAC", "nFeature_ATAC", "nucleosome_signal", "TSS.enrichment")
+if ("fragments" %in% colnames(so@meta.data)) atac_metrics <- c(atac_metrics, "fragments")
+if ("FRiP" %in% colnames(so@meta.data)) atac_metrics <- c(atac_metrics, "FRiP")
+if ("blacklist_fraction" %in% colnames(so@meta.data)) atac_metrics <- c(atac_metrics, "blacklist_fraction")
+
+summary_df <- data.frame(
+  Metric = atac_metrics,
+  Min = sapply(atac_metrics, function(m) round(min(so@meta.data[[m]], na.rm = TRUE), 3)),
+  Q1 = sapply(atac_metrics, function(m) round(quantile(so@meta.data[[m]], 0.25, na.rm = TRUE), 3)),
+  Median = sapply(atac_metrics, function(m) round(median(so@meta.data[[m]], na.rm = TRUE), 3)),
+  Mean = sapply(atac_metrics, function(m) round(mean(so@meta.data[[m]], na.rm = TRUE), 3)),
+  Q3 = sapply(atac_metrics, function(m) round(quantile(so@meta.data[[m]], 0.75, na.rm = TRUE), 3)),
+  Max = sapply(atac_metrics, function(m) round(max(so@meta.data[[m]], na.rm = TRUE), 3))
+)
+rownames(summary_df) <- NULL
+
+DT::datatable(summary_df, options = list(pageLength = 10, dom = 't'), 
+              caption = "ATAC QC Metrics Summary")
+```
+
+## Violin Plots
+
+```{r}
+#| label: violin-plots
+#| fig-width: 12
+#| fig-height: 10
+
+# Determine which metrics are available
+plot_metrics <- c("nCount_ATAC", "nFeature_ATAC")
+if ("TSS.enrichment" %in% colnames(so@meta.data)) plot_metrics <- c(plot_metrics, "TSS.enrichment")
+if ("nucleosome_signal" %in% colnames(so@meta.data)) plot_metrics <- c(plot_metrics, "nucleosome_signal")
+if ("fragments" %in% colnames(so@meta.data)) plot_metrics <- c(plot_metrics, "fragments")
+if ("FRiP" %in% colnames(so@meta.data)) plot_metrics <- c(plot_metrics, "FRiP")
+if ("blacklist_fraction" %in% colnames(so@meta.data)) plot_metrics <- c(plot_metrics, "blacklist_fraction")
+
+# Create violin plots
+VlnPlot(
+  object = so,
+  features = plot_metrics,
+  ncol = 3,
+  pt.size = 0
+) & 
+  theme_minimal() &
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+```
+
+## TSS Enrichment vs ATAC Counts
+
+```{r}
+#| label: tss-vs-counts
+#| fig-width: 8
+#| fig-height: 6
+
+if ("TSS.enrichment" %in% colnames(so@meta.data)) {
+  DensityScatter(so, x = 'nCount_ATAC', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE) +
+    labs(
+      title = paste("TSS Enrichment vs ATAC Counts -", sample_name),
+      x = "ATAC Counts (log scale)",
+      y = "TSS Enrichment Score"
+    ) +
+    theme_minimal()
+} else {
+  cat("TSS enrichment not available for plotting\n")
+}
+```
+
+## Nucleosome Signal vs ATAC Counts
+
+```{r}
+#| label: nucleosome-vs-counts
+#| fig-width: 8
+#| fig-height: 6
+
+if ("nucleosome_signal" %in% colnames(so@meta.data)) {
+  DensityScatter(so, x = 'nCount_ATAC', y = 'nucleosome_signal', log_x = TRUE, quantiles = TRUE) +
+    labs(
+      title = paste("Nucleosome Signal vs ATAC Counts -", sample_name),
+      x = "ATAC Counts (log scale)",
+      y = "Nucleosome Signal"
+    ) +
+    theme_minimal()
+} else {
+  cat("Nucleosome signal not available for plotting\n")
+}
+```
+
+## FRiP Distribution
+
+```{r}
+#| label: frip-distribution
+#| fig-width: 8
+#| fig-height: 5
+
+if ("FRiP" %in% colnames(so@meta.data)) {
+  ggplot(so@meta.data, aes(x = FRiP)) +
+    geom_histogram(bins = 50, fill = "steelblue", color = "black", alpha = 0.7) +
+    geom_vline(xintercept = median(so$FRiP, na.rm = TRUE), 
+               linetype = "dashed", color = "red", linewidth = 1) +
+    labs(
+      title = paste("FRiP Distribution -", sample_name),
+      subtitle = paste("Median FRiP:", round(median(so$FRiP, na.rm = TRUE), 3)),
+      x = "Fraction of Reads in Peaks",
+      y = "Number of Cells"
+    ) +
+    theme_minimal()
+} else {
+  cat("FRiP not available for plotting\n")
+}
+```
+
+## Fragment Length Distribution
+
+```{r}
+#| label: fragment-length
+#| fig-width: 10
+#| fig-height: 5
+
+if (has_fragments) {
+  cat("Generating fragment length distribution plot...\n")
+  tryCatch({
+    FragmentHistogram(so, group.by = 'orig.ident', region = 'chr1-1-2000000') +
+      labs(title = paste("Fragment Length Distribution -", sample_name)) +
+      theme_minimal()
+  }, error = function(e) {
+    cat("Could not generate fragment length histogram:", conditionMessage(e), "\n")
+  })
+} else {
+  cat("Fragment file not available; cannot generate fragment length distribution\n")
+}
+```
+
+# Quality Thresholds
+
+## Suggested QC Thresholds
+
+Based on the data, the following thresholds are commonly used for ATAC QC filtering:
+
+```{r}
+#| label: thresholds
+
+thresholds <- data.frame(
+  Metric = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal", "FRiP", "blacklist_fraction"),
+  `Typical Threshold` = c(">1000 and <100000", ">500", ">2", "<4", ">0.15", "<0.05"),
+  Description = c(
+    "Total ATAC fragment counts per cell",
+    "Number of unique peaks per cell", 
+    "TSS enrichment score (higher = better)",
+    "Nucleosome signal (lower = better)",
+    "Fraction of reads in peaks (higher = better)",
+    "Fraction in blacklist regions (lower = better)"
+  )
+)
+
+DT::datatable(thresholds, options = list(pageLength = 10, dom = 't'),
+              caption = "Suggested ATAC QC Thresholds")
+```
+
+## Cells Passing QC
+
+```{r}
+#| label: cells-passing
+
+# Calculate cells passing typical thresholds
+n_total <- ncol(so)
+
+# Apply filters
+pass_counts <- so$nCount_ATAC > 1000 & so$nCount_ATAC < 100000
+pass_features <- so$nFeature_ATAC > 500
+
+# TSS and nucleosome (if available)
+pass_tss <- if ("TSS.enrichment" %in% colnames(so@meta.data)) so$TSS.enrichment > 2 else rep(TRUE, n_total)
+pass_nucleosome <- if ("nucleosome_signal" %in% colnames(so@meta.data)) so$nucleosome_signal < 4 else rep(TRUE, n_total)
+pass_blacklist <- if ("blacklist_fraction" %in% colnames(so@meta.data)) so$blacklist_fraction < 0.05 else rep(TRUE, n_total)
+
+# Combined
+pass_all <- pass_counts & pass_features & pass_tss & pass_nucleosome & pass_blacklist
+
+# Summary
+filter_summary <- data.frame(
+  Filter = c("ATAC Counts (1K-100K)", "ATAC Features (>500)", "TSS Enrichment (>2)", 
+             "Nucleosome Signal (<4)", "Blacklist Fraction (<0.05)", "All Filters"),
+  `Cells Passing` = c(sum(pass_counts), sum(pass_features), sum(pass_tss), 
+                      sum(pass_nucleosome), sum(pass_blacklist), sum(pass_all)),
+  `Percent` = c(
+    round(100 * sum(pass_counts) / n_total, 1),
+    round(100 * sum(pass_features) / n_total, 1),
+    round(100 * sum(pass_tss) / n_total, 1),
+    round(100 * sum(pass_nucleosome) / n_total, 1),
+    round(100 * sum(pass_blacklist) / n_total, 1),
+    round(100 * sum(pass_all) / n_total, 1)
+  )
+)
+
+DT::datatable(filter_summary, options = list(pageLength = 10, dom = 't'),
+              caption = paste("Cells Passing QC Filters (Total:", n_total, ")"))
+```
+
+# Session Info
+
+```{r}
+#| label: session-info
+
+sessionInfo()
+```

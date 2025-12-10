@@ -4,6 +4,7 @@ nextflow.enable.dsl=2
 include { STANDARD_WORKFLOW } from './workflows/workflows'
 include { MULTIOME_WORKFLOW } from './workflows/workflows'
 include { REPORTING } from './workflows/workflows'
+include { ATAC_REPORTING } from './workflows/workflows'
 
 // =============================================================================
 // PARAMETERS
@@ -101,15 +102,16 @@ workflow {
     report_template_path = file("${projectDir}/modules/reports/seurat_template.qmd")
     combined_template_path = file("${projectDir}/modules/reports/combined_template.qmd")
     book_template_path = file("${projectDir}/modules/reports/book_template/")
+    atac_template_path = file("${projectDir}/modules/reports/atac_template.qmd")
 
     // Standard module scripts
     scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
     seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
 
-    // Multiome-specific scripts (extract Gene Expression modality from H5)
+    // Multiome-specific scripts (extract Gene Expression and ATAC modalities from H5)
     scdbl_multiome_script_path = file("${projectDir}/modules/multiome/run_scdbl_multiome.R")
     seurat_multiome_script_path = file("${projectDir}/modules/multiome/make_seurat_multiome.R")
-    extract_gex_script_path = file("${projectDir}/modules/multiome/extract_gex_h5.R")
+    extract_modalities_script_path = file("${projectDir}/modules/multiome/extract_modalities.R")
 
     // =========================================================================
     // RUN APPROPRIATE WORKFLOW
@@ -121,7 +123,7 @@ workflow {
             dropletqc_script_path,
             scdbl_multiome_script_path,
             seurat_multiome_script_path,
-            extract_gex_script_path,
+            extract_modalities_script_path,
             params.cellbender,
             params.gpu,
             params.max_mito,
@@ -129,6 +131,7 @@ workflow {
             params.metadata
         )
         seurat_results = MULTIOME_WORKFLOW.out.seurat_results
+        atac_files = MULTIOME_WORKFLOW.out.atac_files
     } else {
         log.info "Running STANDARD single-cell workflow"
         STANDARD_WORKFLOW(
@@ -159,4 +162,17 @@ workflow {
         params.report,
         params.book
     )
+
+    // =========================================================================
+    // ATAC REPORTING (Multiome only)
+    // =========================================================================
+    if (params.multiome && params.report) {
+        ATAC_REPORTING(
+            sampleChannelBase,
+            seurat_results,
+            atac_files,
+            atac_template_path,
+            params.report
+        )
+    }
 }

@@ -66,7 +66,7 @@ process CELLBENDER_GPU {
 process CELLBENDER_H5_CONVERT {
     label "process_low"
     tag { sampleName }
-    container "ah3918/pilot-analyses:latest"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     // No publishDir - intermediate files not needed in final output
     
     input:
