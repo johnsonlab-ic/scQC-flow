@@ -11,6 +11,7 @@ include { GENERATE_REPORTS; COMBINE_REPORTS; GENERATE_COMBINED_REPORT; GENERATE_
 include { CREATE_SEURAT } from '../modules/seurat/seurat'
 include { DROPLETQC } from '../modules/dropletqc/dropletqc'
 include { SCDBL } from '../modules/scdbl/scdbl'
+include { CELLBENDER_COMPARISON; CELLBENDER_COMPARISON_STATS_ONLY } from '../modules/cellbender_comparison/cellbender_comparison'
 
 // Import multiome-specific modules
 include { SCDBL_MULTIOME } from '../modules/multiome/scdbl_multiome'
@@ -66,6 +67,14 @@ workflow STANDARD_WORKFLOW {
             dropletqc_results = DROPLETQC(dropletqc_input_ch)
             scdbl_results = SCDBL(scdbl_input_ch)
 
+            // Run CellBender Comparison to analyze droplet calling differences
+            cellbender_comparison_input_ch = sampleChannelBase
+                .join(cellbender_h5_results.seurat_h5)
+                .map { sampleName, mappingDir, h5File -> 
+                    tuple(sampleName, mappingDir, h5File)
+                }
+            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch)
+
             // Create Seurat objects using CellBender H5 and updated QC metrics
             seurat_input_ch = sampleChannelBase
                 .join(dropletqc_results.metrics)
@@ -98,6 +107,9 @@ workflow STANDARD_WORKFLOW {
             // Run DropletQC and scDbl with Cell Ranger outputs
             dropletqc_results = DROPLETQC(dropletqc_input_ch)
             scdbl_results = SCDBL(scdbl_input_ch)
+
+            // Run CellBender Comparison stats (Cell Ranger only) to analyze droplet calling
+            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase)
 
             // Use default 10X H5 if CellBender is not run
             h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
@@ -178,6 +190,14 @@ workflow MULTIOME_WORKFLOW {
             dropletqc_results = DROPLETQC(dropletqc_input_ch)
             scdbl_results = SCDBL_MULTIOME(scdbl_input_ch)
 
+            // Run CellBender Comparison to analyze droplet calling differences (multiome + cellbender)
+            cellbender_comparison_input_ch = sampleChannelBase
+                .join(cellbender_h5_results.seurat_h5)
+                .map { sampleName, mappingDir, h5File -> 
+                    tuple(sampleName, mappingDir, h5File)
+                }
+            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch)
+
             // Create Seurat objects using CellBender H5, ATAC H5, and multiome module
             // Join: sampleChannelBase + dropletqc + scdbl + cellbender_h5 + atac_h5
             seurat_input_ch = sampleChannelBase
@@ -223,6 +243,9 @@ workflow MULTIOME_WORKFLOW {
             // Run DropletQC (same process) and scDbl with multiome module
             dropletqc_results = DROPLETQC(dropletqc_input_ch)
             scdbl_results = SCDBL_MULTIOME(scdbl_input_ch)
+
+            // Run CellBender Comparison stats (Cell Ranger only) for multiome
+            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase)
 
             // Use default 10X H5 if CellBender is not run
             h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
