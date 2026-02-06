@@ -12,8 +12,7 @@ process CELLBENDER_COMPARISON {
     tuple val(sampleName), path(mappingDir), path(cellbender_h5)
 
     output:
-    tuple val(sampleName), path("${sampleName}_cellbender_comparison_metrics.csv"), emit: metrics
-    path "${sampleName}_cellbender_comparison_kneeplot.png", emit: kneeplot, optional: true
+    tuple val(sampleName), path("${sampleName}_cellbender_comparison_metrics.csv"), path("${sampleName}_cellbender_comparison_kneeplot.png"), emit: comparison_results
 
     script:
     """
@@ -43,8 +42,7 @@ process CELLBENDER_COMPARISON_STATS_ONLY {
     tuple val(sampleName), path(mappingDir)
 
     output:
-    tuple val(sampleName), path("${sampleName}_cellbender_comparison_metrics.csv"), emit: metrics
-    path "${sampleName}_cellbender_comparison_kneeplot.png", emit: kneeplot, optional: true
+    tuple val(sampleName), path("${sampleName}_cellbender_comparison_metrics.csv"), path("${sampleName}_cellbender_comparison_kneeplot.png"), emit: comparison_results
 
     script:
     """

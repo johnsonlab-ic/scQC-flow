@@ -132,6 +132,7 @@ workflow {
         )
         seurat_results = MULTIOME_WORKFLOW.out.seurat_results
         atac_files = MULTIOME_WORKFLOW.out.atac_files
+        cellbender_comparison_results = MULTIOME_WORKFLOW.out.cellbender_comparison_results
     } else {
         log.info "Running STANDARD single-cell workflow"
         STANDARD_WORKFLOW(
@@ -146,6 +147,7 @@ workflow {
             params.metadata
         )
         seurat_results = STANDARD_WORKFLOW.out.seurat_results
+        cellbender_comparison_results = STANDARD_WORKFLOW.out.cellbender_comparison_results
     }
 
     // =========================================================================
@@ -154,6 +156,7 @@ workflow {
     REPORTING(
         sampleChannelBase,
         seurat_results,
+        cellbender_comparison_results,
         report_template_path,
         combined_template_path,
         book_template_path,

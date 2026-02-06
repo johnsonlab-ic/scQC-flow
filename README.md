@@ -1,136 +1,134 @@
 
-# 🧬 scQC-flow
+# scQC-flow
 
-<img src="https://img.shields.io/badge/Nextflow-v22.10.0+-green.svg" alt="Nextflow Version">
-<img src="https://img.shields.io/badge/Containers-Docker%2FSingularity-orange.svg" alt="Container Support">
+Nextflow pipeline for single-cell/single-nucleus RNA-seq quality control and reporting.
 
-**A Nextflow pipeline for single-cell RNA-seq quality control and reporting**
-
-scQC-flow automates nuclear fraction analysis (DropletQC), doublet detection (scDblFinder), Seurat object creation (pre/post QC), and generates per-sample and combined HTML reports using Quarto.
-
----
-
-## 🚀 Quick Start
-
-### Installation
-
-```bash
-# Install Nextflow
-curl -s https://get.nextflow.io | bash
-```
-
-### Running the Pipeline (from the website)
-
-```bash
-nextflow run johnsonlab-ic/scQC-flow \
-	--mapping_dirs <path/to/mapping_dirs.csv> \
-	--outputDir <output_directory> \
-	-profile <profile> \
-	-resume
-```
-
-Replace `<path/to/mapping_dirs.csv>`, `<output_directory>`, and `<profile>` as needed. For example:
-
-```bash
-nextflow run johnsonlab-ic/scQC-flow \
-	--mapping_dirs personal/test_mapping_dirs.csv \
-	--outputDir personal/outs \
-	-profile offline \
-	-resume
-```
+**Features:**
+- Cell Ranger output processing
+- Optional CellBender ambient RNA removal (CPU/GPU)
+- Nuclear fraction analysis (DropletQC)
+- Doublet detection (scDblFinder)
+- CellBender vs Cell Ranger droplet calling comparison with knee-plots
+- Seurat object creation with pre/post-QC filtering
+- Automated HTML reports
+- Support for 10x Multiome (GEX + ATAC)
 
 ---
 
-## 📁 Input Files & Parameters
+## Quick Start
 
-### Input and Output Paths
+### Requirements
+- Nextflow
+- Docker or Singularity
 
-| Parameter         | Description                                 | Example/Default |
-|-------------------|---------------------------------------------|-----------------|
-| `--mapping_dirs`  | CSV with `samplename` and `path` columns    | `personal/mapping_dirs.csv` |
-| `--outputDir`     | Output directory for results                | `results`       |
+### Basic Usage
 
-### Pipeline Options (optional)
+```bash
+nextflow run /path/to/scQC-flow \
+  --mapping_dirs mapping_dirs.csv \
+  --outputDir results
+```
 
-The pipeline accepts the following optional parameters. Defaults shown in parentheses.
+### With CellBender (GPU)
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--cellbender` | Run CellBender ambient RNA removal for all samples. When enabled, downstream QC and Seurat use CellBender outputs. | `false` |
-| `--gpu` | Use GPU acceleration for CellBender (requires `--cellbender` and a CUDA-enabled environment). | `false` |
-| `--report` | Generate per-sample Quarto QC reports (HTML). | `true` |
-| `--book` | Combine all per-sample reports into a single Quarto book. | `false` |
-| `--max_mito` | Maximum mitochondrial percentage threshold used during Seurat QC (percent). | `10.0` |
-| `--min_nuclear` | Minimum nuclear fraction threshold used during Seurat QC (0-1). | `0.4` |
-| `--metadata` | Optional path to a CSV metadata file (will be passed into Seurat/reporting). | `null` |
-| `--help` | Show the pipeline help message and exit. | `false` |
+```bash
+nextflow run /path/to/scQC-flow \
+  --mapping_dirs mapping_dirs.csv \
+  --outputDir results \
+  --cellbender \
+  --gpu \
+  -profile imperial
+```
 
-Notes:
-- `--cellbender` will cause the workflow to run CellBender (CPU or GPU) and convert the CellBender HDF5 output to a Seurat-compatible H5. DropletQC and scDblFinder will use CellBender barcodes/H5 when this flag is set.
-- `--gpu` only affects CellBender execution. Ensure your environment has a compatible GPU, drivers, and that the container image supports GPU access (or run on a node with GPU passthrough and use the appropriate container runtime flags).
-- Common Nextflow flags such as `-profile <profile>` and `-resume` are also supported as usual.
+### Multiome Data
 
-### Required Input Format
+```bash
+nextflow run /path/to/scQC-flow \
+  --mapping_dirs mapping_dirs.csv \
+  --outputDir results \
+  --multiome \
+  --cellbender
+```
 
-The mapping CSV should look like:
+---
+
+## Input Format
+
+CSV file with sample names and Cell Ranger output paths:
 
 ```csv
 samplename,path
-LM0094_SN1,/path/to/LM0094_SN1_snRNA_mapped
-LM0094_SN2,/path/to/LM0094_SN2_snRNA_mapped
+sample1,/path/to/sample1_mapped
+sample2,/path/to/sample2_mapped
 ```
 
 ---
 
-## 📋 Overview
+## Parameters
 
-The pipeline performs these key steps:
-
-1. **Input Mapping**: Reads a CSV listing sample names and mapping directories (Cell Ranger outputs)
-2. **DropletQC**: Computes nuclear fraction metrics for each sample
-3. **scDblFinder**: Detects doublets and annotates cells
-4. **Seurat Object Creation**: Builds Seurat objects (pre/post QC) with DropletQC and doublet metadata
-5. **Reporting**: Generates per-sample and combined HTML reports using Quarto
-
----
-
-## 📦 Outputs
-
-| Output File/Folder                        | Description                                 |
-|-------------------------------------------|---------------------------------------------|
-| `*_dropletqc_metrics.csv`                 | Per-sample DropletQC metrics                |
-| `*_scdbl_metrics.csv`                     | Per-sample scDblFinder metrics              |
-| `*_qc_report.html`                        | Per-sample HTML QC reports                  |
-| `combined_qc_book/_book/index.html`       | Combined multi-sample HTML report/book      |
-| `*_preQC.rds`, `*_postQC.rds`             | Seurat RDS files (pre/post QC)              |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--mapping_dirs` | Required | CSV with samplename and path columns |
+| `--outputDir` | `results` | Output directory |
+| `--cellbender` | `false` | Run CellBender ambient RNA removal |
+| `--gpu` | `false` | Use GPU for CellBender |
+| `--multiome` | `false` | Process 10x Multiome data |
+| `--report` | `true` | Generate HTML QC reports |
+| `--book` | `false` | Combine reports into a book |
+| `--max_mito` | `20.0` | Max mitochondrial % threshold |
+| `--min_nuclear` | `0.4` | Min nuclear fraction threshold |
+| `--metadata` | `null` | Optional metadata CSV |
 
 ---
 
-## ⚙️ Requirements
+## Outputs
 
-- Nextflow
-- Docker or Singularity (for containers)
-
----
-
-## ⚠️ Notes & Warnings
-
-> **System Requirements**: This pipeline is computationally intensive and best run on HPC systems. It is optimized for the Imperial College HPC system but can be adapted to other systems with sufficient resources.
-
----
-
-## 📚 Repository Information
-
-<img src="https://img.shields.io/badge/GitHub-scQC--flow-lightgrey?logo=github" alt="GitHub Repo">
-
-This pipeline is maintained in a public repository:
-- [johnsonlab-ic/scQC-flow](https://github.com/johnsonlab-ic/scQC-flow)
+| File | Description |
+|------|-------------|
+| `{sample}_dropletqc_metrics.csv` | Nuclear fraction metrics |
+| `{sample}_scdbl_metrics.csv` | Doublet detection scores |
+| `{sample}_cellbender_comparison_metrics.csv` | Droplet counts: raw vs CellRanger vs CellBender |
+| `{sample}_cellbender_comparison_kneeplot.png` | Knee-plot showing droplet calling differences |
+| `{sample}_seurat_object.rds` | Seurat object (pre-QC) |
+| `{sample}_seurat_object_postqc.rds` | Seurat object (post-QC) |
+| `{sample}_qc_report.html` | Per-sample QC report |
+| `combined_qc_book/_book/index.html` | Combined report (if `--book` enabled) |
 
 ---
 
-## 📞 Support
+## Pipeline Steps
 
-For questions or issues, please:
-- Open an issue on the [GitHub repository](https://github.com/johnsonlab-ic/scQC-flow/issues)
-- Contact the Johnson Lab at Imperial College London
+1. **Input**: Read sample mappings from CSV
+2. **CellBender** (optional): Remove ambient RNA
+3. **DropletQC**: Compute nuclear fraction per cell
+4. **scDblFinder**: Detect doublets
+5. **CellBender Comparison**: Analyze droplet calling differences (raw vs Cell Ranger vs CellBender)
+6. **Seurat**: Create objects with QC metrics, apply filtering
+7. **Reporting**: Generate HTML reports
+
+---
+
+## Multiome Workflow
+
+When using `--multiome`:
+- Automatically extracts Gene Expression and ATAC modalities
+- Runs CellBender on GEX only (if enabled)
+- Creates multiome-aware Seurat objects with both assays
+- Preserves ATAC fragment and peak files
+- Generates ATAC-specific reports
+
+---
+
+## Notes
+
+- **CellBender**: Slow on CPU; use `--gpu` for reasonable runtime
+- **BAM Index**: Pipeline expects `.bai` files alongside BAM files in Cell Ranger output
+- **Profiles**: Use `-profile imperial` for Imperial HPC or configure for your system in `nextflow.config`
+- **CellBender Comparison**: When CellBender is enabled, generates metrics CSV and knee-plot showing differences in droplet calling between Cell Ranger and CellBender
+
+---
+
+## Support
+
+Issues? See the [GitHub repository](https://github.com/johnsonlab-ic/scQC-flow).
 

@@ -73,7 +73,7 @@ workflow STANDARD_WORKFLOW {
                 .map { sampleName, mappingDir, h5File -> 
                     tuple(sampleName, mappingDir, h5File)
                 }
-            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch)
+            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch).comparison_results
 
             // Create Seurat objects using CellBender H5 and updated QC metrics
             seurat_input_ch = sampleChannelBase
@@ -109,7 +109,7 @@ workflow STANDARD_WORKFLOW {
             scdbl_results = SCDBL(scdbl_input_ch)
 
             // Run CellBender Comparison stats (Cell Ranger only) to analyze droplet calling
-            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase)
+            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase).comparison_results
 
             // Use default 10X H5 if CellBender is not run
             h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
@@ -131,6 +131,7 @@ workflow STANDARD_WORKFLOW {
 
     emit:
         seurat_results = seurat_results
+        cellbender_comparison_results = cellbender_comparison_results
 }
 
 // =============================================================================
@@ -196,7 +197,7 @@ workflow MULTIOME_WORKFLOW {
                 .map { sampleName, mappingDir, h5File -> 
                     tuple(sampleName, mappingDir, h5File)
                 }
-            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch)
+            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch).comparison_results
 
             // Create Seurat objects using CellBender H5, ATAC H5, and multiome module
             // Join: sampleChannelBase + dropletqc + scdbl + cellbender_h5 + atac_h5
@@ -245,7 +246,7 @@ workflow MULTIOME_WORKFLOW {
             scdbl_results = SCDBL_MULTIOME(scdbl_input_ch)
 
             // Run CellBender Comparison stats (Cell Ranger only) for multiome
-            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase)
+            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase).comparison_results
 
             // Use default 10X H5 if CellBender is not run
             h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
@@ -274,6 +275,7 @@ workflow MULTIOME_WORKFLOW {
         seurat_results = seurat_results
         atac_files = atac_files
         sample_channel = sampleChannelBase
+        cellbender_comparison_results = cellbender_comparison_results
 }
 
 // =============================================================================
@@ -283,6 +285,7 @@ workflow REPORTING {
     take:
         sampleChannelBase       // tuple(sampleName, mappingDir)
         seurat_results          // tuple(sampleName, pre_rds, post_rds)
+        cellbender_comparison_results // tuple(sampleName, metrics_csv)
         report_template_path
         combined_template_path
         book_template_path
@@ -293,10 +296,12 @@ workflow REPORTING {
 
     main:
         // Prepare GENERATE_REPORTS input channel
+        // Join: sampleChannelBase + seurat_results + cellbender_comparison_results
         report_input_ch = sampleChannelBase
             .join(seurat_results)
-            .map { sampleName, mappingDir, pre_rds, post_rds -> 
-                tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path, max_mito, min_nuclear) 
+            .join(cellbender_comparison_results)
+            .map { sampleName, mappingDir, pre_rds, post_rds, comparison_metrics, comparison_plot -> 
+                tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path, max_mito, min_nuclear, comparison_metrics, comparison_plot) 
             }
 
         if (run_report) {

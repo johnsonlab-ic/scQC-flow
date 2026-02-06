@@ -114,6 +114,75 @@ for (feature in qc_features_for_limits) {
 cat("Calculated y-axis limits for consistent scaling between pre-QC and post-QC plots\n")
 ```
 
+# CellBender Comparison
+
+```{r}
+#| label: cellbender-comparison
+#| include: true
+
+# Load CellBender comparison metrics
+comparison_metrics_path <- "COMPARISON_METRICS_PLACEHOLDER"
+comparison_plot_path <- "COMPARISON_PLOT_PLACEHOLDER"
+
+# Check if files exist
+if (file.exists(comparison_metrics_path)) {
+  comparison_metrics <- read.csv(comparison_metrics_path)
+  
+  cat("\\n## Droplet Calling Comparison\\n\\n")
+  cat("This section compares droplet calling between Cell Ranger and CellBender.\\n\\n")
+  
+  # Display metrics table
+  knitr::kable(
+    comparison_metrics,
+    caption = "Droplet Calling Statistics",
+    format = "html"
+  )
+  
+  cat("\\n")
+  
+  # Display key findings
+  raw_droplets <- comparison_metrics$count[comparison_metrics$metric == "Total Raw Droplets"]
+  cr_cells <- comparison_metrics$count[comparison_metrics$metric == "CellRanger Called Cells"]
+  cb_cells <- comparison_metrics$count[comparison_metrics$metric == "CellBender Called Cells"]
+  
+  cat("\\n**Key Findings:**\\n\\n")
+  cat("- Total raw droplets sequenced:", format(raw_droplets, big.mark = ","), "\\n")
+  cat("- Cell Ranger called:", format(cr_cells, big.mark = ","), "cells\\n")
+  
+  if (!is.na(cb_cells)) {
+    cat("- CellBender called:", format(cb_cells, big.mark = ","), "cells\\n")
+    diff <- cb_cells - cr_cells
+    diff_pct <- round(100 * diff / cr_cells, 2)
+    if (diff > 0) {
+      cat("- CellBender called", format(abs(diff), big.mark = ","), "**more** cells than Cell Ranger (", diff_pct, "% increase)\\n")
+    } else if (diff < 0) {
+      cat("- CellBender called", format(abs(diff), big.mark = ","), "**fewer** cells than Cell Ranger (", abs(diff_pct), "% decrease)\\n")
+    } else {
+      cat("- CellBender and Cell Ranger called the same number of cells\\n")
+    }
+  }
+  
+  cat("\\n")
+} else {
+  cat("\\n*CellBender comparison metrics not available.*\\n\\n")
+}
+```
+
+```{r}
+#| label: cellbender-kneeplot
+#| fig-width: 10
+#| fig-height: 7
+
+# Display knee-plot if available
+if (file.exists(comparison_plot_path)) {
+  cat("\\n## Knee-Plot Comparison\\n\\n")
+  cat("The knee-plot shows the distribution of UMI counts across all droplets, colored by which droplets were called as cells by Cell Ranger (blue) vs CellBender (purple).\\n\\n")
+  knitr::include_graphics(comparison_plot_path)
+} else {
+  cat("\\n*Knee-plot not available.*\\n\\n")
+}
+```
+
 # QC Filtering Summary
 
 **Quality Control Filtering Thresholds:**

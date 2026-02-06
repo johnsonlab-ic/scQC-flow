@@ -8,7 +8,7 @@ process GENERATE_REPORTS {
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true, pattern: "*.html"
 
     input:
-    tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd), val(max_mito), val(min_nuclear)
+    tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd), val(max_mito), val(min_nuclear), path(comparison_metrics), path(comparison_plot)
 
     output:
     tuple val(sampleName), path("${sampleName}_qc_report.html"), emit: html_report
@@ -39,6 +39,12 @@ process GENERATE_REPORTS {
     # Replace QC threshold placeholders
     sed -i "s|MAX_MITO_PLACEHOLDER|${max_mito}|g" ${sampleName}_qc_report.qmd
     sed -i "s|MIN_NUCLEAR_PLACEHOLDER|${min_nuclear}|g" ${sampleName}_qc_report.qmd
+    
+    # Replace CellBender comparison file paths
+    COMPARISON_METRICS_PATH=\$(realpath ${comparison_metrics})
+    COMPARISON_PLOT_PATH=\$(realpath ${comparison_plot})
+    sed -i "s|COMPARISON_METRICS_PLACEHOLDER|\$COMPARISON_METRICS_PATH|g" ${sampleName}_qc_report.qmd
+    sed -i "s|COMPARISON_PLOT_PLACEHOLDER|\$COMPARISON_PLOT_PATH|g" ${sampleName}_qc_report.qmd
 
     # Render the report
     echo "Rendering Quarto report..."

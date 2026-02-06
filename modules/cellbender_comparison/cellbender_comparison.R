@@ -9,6 +9,7 @@ suppressPackageStartupMessages({
     library(Matrix)
     library(ggplot2)
     library(dplyr)
+    library(Seurat)
 })
 
 # Parse command-line arguments
@@ -36,35 +37,29 @@ if (!is.null(args$cellbender_h5)) {
     cat("CellBender H5:", args$cellbender_h5, "\n")
 }
 
-# Load H5 files using rhdf5
-library(rhdf5)
-
-# Function to read H5 and count barcodes
-read_barcodes_from_h5 <- function(h5_path) {
+# Read H5 via Seurat (uses hdf5r under the hood)
+read_matrix_from_h5 <- function(h5_path) {
     tryCatch({
-        h5file <- h5open(h5_path)
-        # Look for barcodes under different possible paths
-        if (exists("barcodes", where = h5file)) {
-            barcodes <- h5read(h5file, "barcodes")
-        } else if (exists("matrix/barcodes", where = h5file)) {
-            barcodes <- h5read(h5file, "matrix/barcodes")
-        } else {
-            # Try to find any barcodes dataset
-            barcodes_list <- h5ls(h5file)
-            barcode_indices <- grep("barcode", tolower(barcodes_list$name), ignore.case = TRUE)
-            if (length(barcode_indices) > 0) {
-                barcode_path <- barcodes_list$name[barcode_indices[1]]
-                barcodes <- h5read(h5file, barcode_path)
-            } else {
-                stop("Could not find barcodes in H5 file")
+        obj <- Seurat::Read10X_h5(h5_path)
+        if (is.list(obj)) {
+            if ("Gene Expression" %in% names(obj)) {
+                return(obj[["Gene Expression"]])
             }
+            return(obj[[1]])
         }
-        h5close(h5file)
-        return(barcodes)
+        return(obj)
     }, error = function(e) {
         cat("Error reading H5:", conditionMessage(e), "\n")
         return(NULL)
     })
+}
+
+read_barcodes_from_h5 <- function(h5_path) {
+    mat <- read_matrix_from_h5(h5_path)
+    if (is.null(mat)) {
+        return(NULL)
+    }
+    return(colnames(mat))
 }
 
 # Read barcodes from all sources
@@ -89,12 +84,21 @@ if (!is.na(n_cellbender_cells)) {
 }
 
 # Create metrics data frame
+percentage_of_raw <- function(count, total) {
+    if (is.na(total) || total == 0) {
+        return(NA)
+    }
+    return((count / total) * 100)
+}
+
 metrics_df <- data.frame(
     metric = c("Total Raw Droplets", "CellRanger Called Cells", "CellBender Called Cells"),
     count = c(n_raw_droplets, n_cellranger_cells, n_cellbender_cells),
-    percentage_of_raw = c(100.0, 
-                          (n_cellranger_cells / n_raw_droplets) * 100,
-                          if (!is.na(n_cellbender_cells)) (n_cellbender_cells / n_raw_droplets) * 100 else NA)
+    percentage_of_raw = c(
+        if (n_raw_droplets > 0) 100.0 else NA,
+        percentage_of_raw(n_cellranger_cells, n_raw_droplets),
+        if (!is.na(n_cellbender_cells)) percentage_of_raw(n_cellbender_cells, n_raw_droplets) else NA
+    )
 )
 
 cat("\n=== Metrics Summary ===\n")
@@ -108,53 +112,17 @@ cat("\nMetrics saved to:", args$output_metrics, "\n")
 # Create Knee-Plot Comparison
 # ============================================================================
 
-# Read counts for UMI/rank analysis
-read_counts_from_h5 <- function(h5_path) {
-    tryCatch({
-        h5file <- h5open(h5_path)
-        
-        # Read data matrix
-        if (exists("data", where = h5file)) {
-            data <- h5read(h5file, "data")
-        } else if (exists("matrix/data", where = h5file)) {
-            data <- h5read(h5file, "matrix/data")
-        } else {
-            data_list <- h5ls(h5file)
-            data_indices <- grep("data", tolower(data_list$name), ignore.case = TRUE)
-            if (length(data_indices) > 0) {
-                data_path <- data_list$name[data_indices[1]]
-                data <- h5read(h5file, data_path)
-            } else {
-                stop("Could not find data in H5 file")
-            }
-        }
-        
-        h5close(h5file)
-        return(data)
-    }, error = function(e) {
-        cat("Error reading counts:", conditionMessage(e), "\n")
-        return(NULL)
-    })
-}
-
 # Try to build UMI rank data for knee plot
 tryCatch({
     cat("\nGenerating knee-plot data...\n")
     
     # Read raw counts matrix to get UMI per barcode
-    raw_counts <- read_counts_from_h5(args$raw_h5)
+    raw_counts <- read_matrix_from_h5(args$raw_h5)
     
     if (!is.null(raw_counts)) {
         # Sum UMIs per barcode (column sum)
-        if (is.list(raw_counts)) {
-            # Sparse matrix format
-            umi_per_barcode <- colSums(as.matrix(raw_counts))
-        } else if (nrow(raw_counts) != length(raw_barcodes)) {
-            # Transpose if needed
-            umi_per_barcode <- rowSums(raw_counts)
-        } else {
-            umi_per_barcode <- colSums(raw_counts)
-        }
+        umi_per_barcode <- Matrix::colSums(raw_counts)
+        names(umi_per_barcode) <- colnames(raw_counts)
         
         # Sort in decreasing order for knee plot
         umi_sorted <- sort(umi_per_barcode, decreasing = TRUE)
