@@ -117,8 +117,9 @@ cat("Calculated y-axis limits for consistent scaling between pre-QC and post-QC 
 # CellBender Comparison
 
 ```{r}
-#| label: cellbender-comparison
-#| include: true
+#| label: cellbender-status
+#| results: 'asis'
+#| echo: false
 
 # Load CellBender comparison metrics
 comparison_metrics_path <- "COMPARISON_METRICS_PLACEHOLDER"
@@ -128,58 +129,111 @@ comparison_plot_path <- "COMPARISON_PLOT_PLACEHOLDER"
 if (file.exists(comparison_metrics_path)) {
   comparison_metrics <- read.csv(comparison_metrics_path)
   
-  cat("\\n## Droplet Calling Comparison\\n\\n")
-  cat("This section compares droplet calling between Cell Ranger and CellBender.\\n\\n")
-  
-  # Display metrics table
-  knitr::kable(
-    comparison_metrics,
-    caption = "Droplet Calling Statistics",
-    format = "html"
-  )
-  
-  cat("\\n")
-  
-  # Display key findings
+  # Display key findings and difference flag first
   raw_droplets <- comparison_metrics$count[comparison_metrics$metric == "Total Raw Droplets"]
   cr_cells <- comparison_metrics$count[comparison_metrics$metric == "CellRanger Called Cells"]
   cb_cells <- comparison_metrics$count[comparison_metrics$metric == "CellBender Called Cells"]
   
-  cat("\\n**Key Findings:**\\n\\n")
-  cat("- Total raw droplets sequenced:", format(raw_droplets, big.mark = ","), "\\n")
-  cat("- Cell Ranger called:", format(cr_cells, big.mark = ","), "cells\\n")
-  
-  if (!is.na(cb_cells)) {
-    cat("- CellBender called:", format(cb_cells, big.mark = ","), "cells\\n")
+  # Calculate difference percentage for status indicator
+  if (!is.na(cb_cells) && cr_cells > 0) {
     diff <- cb_cells - cr_cells
-    diff_pct <- round(100 * diff / cr_cells, 2)
-    if (diff > 0) {
-      cat("- CellBender called", format(abs(diff), big.mark = ","), "**more** cells than Cell Ranger (", diff_pct, "% increase)\\n")
-    } else if (diff < 0) {
-      cat("- CellBender called", format(abs(diff), big.mark = ","), "**fewer** cells than Cell Ranger (", abs(diff_pct), "% decrease)\\n")
+    diff_pct <- abs(round(100 * diff / cr_cells, 2))
+    
+    # Determine status text (no HTML to avoid rendering issues)
+    if (diff_pct <= 5) {
+      status_emoji <- "✅"
+      status_label <- "OK"
+      message <- "CellBender and Cell Ranger results are consistent (< 5% difference)"
+    } else if (diff_pct <= 20) {
+      status_emoji <- "⚠️"
+      status_label <- "Warning"
+      message <- paste0("Moderate difference detected (", diff_pct, "% difference)")
     } else {
-      cat("- CellBender and Cell Ranger called the same number of cells\\n")
+      status_emoji <- "🔴"
+      status_label <- "Attention"
+      message <- paste0("Large difference detected (", diff_pct, "% difference) - Review recommended")
     }
+    
+    cat(paste0("**CellBender vs Cell Ranger:** ", status_emoji, " ", status_label, " — ", message, "\n\n"))
   }
-  
-  cat("\\n")
-} else {
-  cat("\\n*CellBender comparison metrics not available.*\\n\\n")
 }
 ```
 
+## Droplet Calling Comparison
+
+This section compares droplet calling between Cell Ranger and CellBender.
+
+```{r}
+#| label: cellbender-comparison-table
+#| echo: false
+
+if (file.exists(comparison_metrics_path)) {
+  comparison_metrics <- read.csv(comparison_metrics_path)
+  
+  # Get values
+  raw_droplets <- comparison_metrics$count[comparison_metrics$metric == "Total Raw Droplets"]
+  cr_cells <- comparison_metrics$count[comparison_metrics$metric == "CellRanger Called Cells"]
+  cb_cells <- comparison_metrics$count[comparison_metrics$metric == "CellBender Called Cells"]
+  
+  # Create comparison summary table
+  if (!is.na(cb_cells)) {
+    diff <- cb_cells - cr_cells
+    diff_pct <- round(100 * diff / cr_cells, 2)
+    
+    comparison_summary <- data.frame(
+      Method = c("Cell Ranger", "CellBender", "Difference"),
+      `Cells Called` = c(
+        format(cr_cells, big.mark = ","),
+        format(cb_cells, big.mark = ","),
+        format(diff, big.mark = ",")
+      ),
+      `% of Cell Ranger` = c(
+        "100%",
+        sprintf("%.2f%%", 100 * cb_cells / cr_cells),
+        sprintf("%+.2f%%", diff_pct)
+      ),
+      `% of Total Droplets` = c(
+        sprintf("%.2f%%", 100 * cr_cells / raw_droplets),
+        sprintf("%.2f%%", 100 * cb_cells / raw_droplets),
+        ""
+      ),
+      check.names = FALSE
+    )
+  } else {
+    comparison_summary <- data.frame(
+      Method = c("Cell Ranger"),
+      `Cells Called` = c(format(cr_cells, big.mark = ",")),
+      `% of Total Droplets` = c(sprintf("%.2f%%", 100 * cr_cells / raw_droplets)),
+      check.names = FALSE
+    )
+  }
+  
+  knitr::kable(
+    comparison_summary,
+    caption = paste0("Droplet Calling Summary (Total Droplets: ", format(raw_droplets, big.mark = ","), ")"),
+    format = "html",
+    align = c("l", "r", "r", "r")
+  )
+} else {
+  cat("\n*CellBender comparison metrics not available.*\n\n")
+}
+```
+
+## Knee-Plot Comparison
+
+The knee-plots show the distribution of UMI counts across all droplets. Each plot highlights the droplets called as cells by Cell Ranger (left, blue) and CellBender (right, purple), with background droplets shown in gray.
+
 ```{r}
 #| label: cellbender-kneeplot
-#| fig-width: 10
-#| fig-height: 7
+#| fig-width: 18
+#| fig-height: 10
+#| echo: false
 
 # Display knee-plot if available
 if (file.exists(comparison_plot_path)) {
-  cat("\\n## Knee-Plot Comparison\\n\\n")
-  cat("The knee-plot shows the distribution of UMI counts across all droplets, colored by which droplets were called as cells by Cell Ranger (blue) vs CellBender (purple).\\n\\n")
   knitr::include_graphics(comparison_plot_path)
 } else {
-  cat("\\n*Knee-plot not available.*\\n\\n")
+  cat("\n*Knee-plot not available.*\n\n")
 }
 ```
 

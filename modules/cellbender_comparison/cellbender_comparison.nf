@@ -26,6 +26,8 @@ process CELLBENDER_COMPARISON {
         --cellbender_h5 "${cellbender_h5}" \\
         --output_metrics "${sampleName}_cellbender_comparison_metrics.csv" \\
         --output_plot "${sampleName}_cellbender_comparison_kneeplot.png" \\
+        --output_plot_cr "${sampleName}_cellbender_comparison_kneeplot_cr.png" \\
+        --output_plot_cb "${sampleName}_cellbender_comparison_kneeplot_cb.png" \\
         --sample_name "${sampleName}"
 
     echo "CellBender comparison completed for ${sampleName}"
@@ -54,6 +56,7 @@ process CELLBENDER_COMPARISON_STATS_ONLY {
         --filtered_h5 "${mappingDir}/outs/filtered_feature_bc_matrix.h5" \\
         --output_metrics "${sampleName}_cellbender_comparison_metrics.csv" \\
         --output_plot "${sampleName}_cellbender_comparison_kneeplot.png" \\
+        --output_plot_cr "${sampleName}_cellbender_comparison_kneeplot_cr.png" \\
         --sample_name "${sampleName}"
 
     echo "Droplet calling metrics completed for ${sampleName}"

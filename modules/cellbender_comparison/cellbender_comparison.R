@@ -10,6 +10,8 @@ suppressPackageStartupMessages({
     library(ggplot2)
     library(dplyr)
     library(Seurat)
+    library(patchwork)
+    library(scales)
 })
 
 # Parse command-line arguments
@@ -24,6 +26,10 @@ parser$add_argument("--output_metrics", type = "character", required = TRUE,
                     help = "Output CSV file for droplet metrics")
 parser$add_argument("--output_plot", type = "character", required = TRUE,
                     help = "Output PNG file for knee-plot")
+parser$add_argument("--output_plot_cr", type = "character", required = FALSE, default = NULL,
+                    help = "Output PNG file for Cell Ranger knee-plot")
+parser$add_argument("--output_plot_cb", type = "character", required = FALSE, default = NULL,
+                    help = "Output PNG file for CellBender knee-plot")
 parser$add_argument("--sample_name", type = "character", required = TRUE,
                     help = "Sample name for labeling")
 
@@ -128,45 +134,94 @@ tryCatch({
         umi_sorted <- sort(umi_per_barcode, decreasing = TRUE)
         rank <- seq_along(umi_sorted)
         
+        # Base data for all droplets
         knee_data <- data.frame(
             rank = rank,
             umi_count = umi_sorted,
-            source = "All Droplets"
+            barcode = names(umi_sorted),
+            stringsAsFactors = FALSE
         )
         
-        # Mark Cell Ranger cells
-        cr_mask <- names(umi_sorted) %in% filtered_barcodes
-        knee_data$source[cr_mask] <- "CellRanger Called"
+        # Create Cell Ranger knee plot
+        knee_data_cr <- knee_data
+        knee_data_cr$called <- ifelse(knee_data_cr$barcode %in% filtered_barcodes, 
+                                       "Cell Ranger Called", "Background")
         
-        # Mark CellBender cells if available
-        if (!is.null(cellbender_barcodes)) {
-            cb_mask <- names(umi_sorted) %in% cellbender_barcodes
-            knee_data$source[cb_mask] <- "CellBender Called"
-        }
-        
-        # Create knee plot
-        p <- ggplot(knee_data, aes(x = rank, y = umi_count, color = source)) +
-            geom_point(size = 1, alpha = 0.6) +
-            scale_x_log10(name = "Barcode Rank (log10)") +
-            scale_y_log10(name = "UMI Count (log10)") +
+        p_cr <- ggplot(knee_data_cr, aes(x = rank, y = umi_count, color = called)) +
+            geom_point(size = 0.8, alpha = 0.6) +
+            scale_x_log10(name = "Barcode Rank (log10)", 
+                         labels = scales::comma) +
+            scale_y_log10(name = "UMI Count (log10)",
+                         labels = scales::comma) +
             scale_color_manual(
-                values = c("All Droplets" = "#CCCCCC", 
-                          "CellRanger Called" = "#2E86AB",
-                          "CellBender Called" = "#A23B72"),
-                na.value = "#CCCCCC"
+                values = c("Background" = "#E0E0E0", 
+                          "Cell Ranger Called" = "#2E86AB"),
+                breaks = c("Cell Ranger Called", "Background")
             ) +
-            ggtitle(paste0("Droplet Calling Comparison - ", args$sample_name)) +
-            theme_minimal() +
+            ggtitle(paste0("Cell Ranger Droplet Calling - ", args$sample_name)) +
+            theme_minimal(base_size = 14) +
             theme(
-                plot.title = element_text(face = "bold", size = 14),
+                plot.title = element_text(face = "bold", size = 16),
+                axis.title = element_text(size = 14),
+                axis.text = element_text(size = 12),
                 legend.position = "top",
                 legend.title = element_blank(),
-                panel.grid.major = element_line(color = "#E8E8E8"),
+                legend.text = element_text(size = 12),
+                panel.grid.major = element_line(color = "#F0F0F0"),
                 panel.grid.minor = element_blank()
             )
         
-        ggsave(args$output_plot, plot = p, width = 8, height = 6, dpi = 300)
-        cat("Knee-plot saved to:", args$output_plot, "\n")
+        # Save Cell Ranger plot
+        if (!is.null(args$output_plot_cr)) {
+            ggsave(args$output_plot_cr, plot = p_cr, width = 8, height = 6, dpi = 300)
+            cat("Cell Ranger knee-plot saved to:", args$output_plot_cr, "\n")
+        }
+        
+        # Create CellBender knee plot if CellBender data available
+        if (!is.null(cellbender_barcodes)) {
+            knee_data_cb <- knee_data
+            knee_data_cb$called <- ifelse(knee_data_cb$barcode %in% cellbender_barcodes, 
+                                          "CellBender Called", "Background")
+            
+            p_cb <- ggplot(knee_data_cb, aes(x = rank, y = umi_count, color = called)) +
+                geom_point(size = 0.8, alpha = 0.6) +
+                scale_x_log10(name = "Barcode Rank (log10)",
+                             labels = scales::comma) +
+                scale_y_log10(name = "UMI Count (log10)",
+                             labels = scales::comma) +
+                scale_color_manual(
+                    values = c("Background" = "#E0E0E0", 
+                              "CellBender Called" = "#A23B72"),
+                    breaks = c("CellBender Called", "Background")
+                ) +
+                ggtitle(paste0("CellBender Droplet Calling - ", args$sample_name)) +
+                theme_minimal(base_size = 14) +
+                theme(
+                    plot.title = element_text(face = "bold", size = 16),
+                    axis.title = element_text(size = 14),
+                    axis.text = element_text(size = 12),
+                    legend.position = "top",
+                    legend.title = element_blank(),
+                    legend.text = element_text(size = 12),
+                    panel.grid.major = element_line(color = "#F0F0F0"),
+                    panel.grid.minor = element_blank()
+                )
+            
+            # Save CellBender plot
+            if (!is.null(args$output_plot_cb)) {
+                ggsave(args$output_plot_cb, plot = p_cb, width = 8, height = 6, dpi = 300)
+                cat("CellBender knee-plot saved to:", args$output_plot_cb, "\n")
+            }
+            
+            # Create combined plot (side-by-side)
+            p_combined <- p_cr + p_cb + plot_layout(ncol = 2)
+            ggsave(args$output_plot, plot = p_combined, width = 18, height = 10, dpi = 300)
+            cat("Combined knee-plot saved to:", args$output_plot, "\n")
+        } else {
+            # If no CellBender, just save the Cell Ranger plot
+            ggsave(args$output_plot, plot = p_cr, width = 10, height = 10, dpi = 300)
+            cat("Knee-plot saved to:", args$output_plot, "\n")
+        }
         
     } else {
         cat("Warning: Could not generate knee-plot (counts matrix not accessible)\n")
