@@ -3,3 +3,8 @@ personal/
 
 # GitHub folder (copilot instructions, internal docs)
 .github/
+data/
+scripts/
+.claude/
+dev/
+.vscode/

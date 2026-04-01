@@ -3,7 +3,7 @@
 
 process CELLBENDER_MULTIOME {
     label "process_cellbender"
-    tag { sampleName }
+    tag "$sampleName"
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     // No publishDir - intermediate files not needed in final output
     
@@ -33,7 +33,7 @@ process CELLBENDER_MULTIOME {
 
 process CELLBENDER_MULTIOME_GPU {
     label "process_gpu"
-    tag { sampleName }
+    tag "$sampleName"
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     // No publishDir - intermediate files not needed in final output
     

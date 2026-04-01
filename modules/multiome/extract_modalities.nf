@@ -4,7 +4,7 @@
 
 process EXTRACT_MODALITIES {
     label "process_low"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     // No publishDir - intermediate files not needed in final output
     

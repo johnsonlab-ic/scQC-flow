@@ -3,7 +3,7 @@
 
 process GENERATE_REPORTS {
     label "process_reports"
-    tag { sampleName }
+    tag "$sampleName"
         container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true, pattern: "*.html"
 
@@ -228,7 +228,7 @@ process GENERATE_COMBINED_REPORT {
 // =============================================================================
 process GENERATE_ATAC_REPORT {
     label "process_reports"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-singlecell-atac:with-radian"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true, pattern: "*.html"
 

@@ -4,7 +4,7 @@
 
 process CELLBENDER_COMPARISON {
     label "process_medium"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     publishDir "${params.outputDir}/${sampleName}/cellbender_comparison", mode: 'copy', overwrite: true
     
@@ -20,7 +20,7 @@ process CELLBENDER_COMPARISON {
     echo "Mapping directory: ${mappingDir}"
     echo "CellBender H5: ${cellbender_h5}"
 
-    Rscript ${projectDir}/modules/cellbender_comparison/cellbender_comparison.R \\
+    Rscript ${moduleDir}/cellbender_comparison.R \\
         --raw_h5 "${mappingDir}/outs/raw_feature_bc_matrix.h5" \\
         --filtered_h5 "${mappingDir}/outs/filtered_feature_bc_matrix.h5" \\
         --cellbender_h5 "${cellbender_h5}" \\
@@ -36,7 +36,7 @@ process CELLBENDER_COMPARISON {
 
 process CELLBENDER_COMPARISON_STATS_ONLY {
     label "process_medium"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     publishDir "${params.outputDir}/${sampleName}/cellbender_comparison", mode: 'copy', overwrite: true
     
@@ -51,7 +51,7 @@ process CELLBENDER_COMPARISON_STATS_ONLY {
     echo "Running droplet calling metrics for sample: ${sampleName} (Cell Ranger only)"
     echo "Mapping directory: ${mappingDir}"
 
-    Rscript ${projectDir}/modules/cellbender_comparison/cellbender_comparison.R \\
+    Rscript ${moduleDir}/cellbender_comparison.R \\
         --raw_h5 "${mappingDir}/outs/raw_feature_bc_matrix.h5" \\
         --filtered_h5 "${mappingDir}/outs/filtered_feature_bc_matrix.h5" \\
         --output_metrics "${sampleName}_cellbender_comparison_metrics.csv" \\

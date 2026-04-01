@@ -12,6 +12,41 @@ include { CREATE_SEURAT } from '../modules/seurat/seurat'
 include { DROPLETQC } from '../modules/dropletqc/dropletqc'
 include { SCDBL } from '../modules/scdbl/scdbl'
 include { CELLBENDER_COMPARISON; CELLBENDER_COMPARISON_STATS_ONLY } from '../modules/cellbender_comparison/cellbender_comparison'
+include { MAP_CELLRANGER } from '../modules/mapping/mapping'
+
+// =============================================================================
+// RNA MAPPING WORKFLOW
+// =============================================================================
+workflow RNA_MAPPING_WORKFLOW {
+    take:
+        sampleChannelFastq      // tuple(sampleId, sampleName, fastqPath)
+        mapper                  // string
+        transcriptome           // string: required path to transcriptome reference
+        cellrangerPath          // string: required path to cellranger installation
+
+    main:
+        if (mapper != 'cellranger') {
+            error "Unsupported mapper: ${mapper}. Only 'cellranger' is currently supported."
+        }
+
+        if (!transcriptome) {
+            error "--transcriptome is required for mapping with Cell Ranger."
+        }
+
+        if (!cellrangerPath) {
+            error "--cellrangerPath is required for mapping with Cell Ranger."
+        }
+
+        map_input_ch = sampleChannelFastq.map { sampleId, sampleName, fastqPath ->
+            tuple(sampleId, sampleName, file(fastqPath), cellrangerPath, transcriptome)
+        }
+
+        mapping_results = MAP_CELLRANGER(map_input_ch)
+        sample_channel = mapping_results.mapped_dirs
+
+    emit:
+        sample_channel = sample_channel
+}
 
 // Import multiome-specific modules
 include { SCDBL_MULTIOME } from '../modules/multiome/scdbl_multiome'
@@ -287,7 +322,7 @@ workflow REPORTING {
         seurat_results          // tuple(sampleName, pre_rds, post_rds)
         cellbender_comparison_results // tuple(sampleName, metrics_csv)
         report_template_path
-        combined_template_path
+        _combined_template_path
         book_template_path
         max_mito                // double
         min_nuclear             // double
@@ -311,10 +346,10 @@ workflow REPORTING {
             if (run_book) {
                 log.info "Combining reports into a Quarto book"
 
-                all_html_reports = reports_output.html_report.map { sampleName, htmlFile -> htmlFile }.collect()
-                all_qmd_sources = reports_output.qmd_source.map { sampleName, qmdFile -> qmdFile }.collect()
+                all_html_reports = reports_output.html_report.map { _sampleName, htmlFile -> htmlFile }.collect()
+                all_qmd_sources = reports_output.qmd_source.map { _sampleName, qmdFile -> qmdFile }.collect()
 
-                combined_book = COMBINE_REPORTS(all_html_reports, all_qmd_sources, book_template_path)
+                COMBINE_REPORTS(all_html_reports, all_qmd_sources, book_template_path)
             }
         }
 }
@@ -326,7 +361,7 @@ workflow ATAC_REPORTING {
     take:
         sampleChannelBase       // tuple(sampleName, mappingDir)
         seurat_results          // tuple(sampleName, pre_rds, post_rds)
-        atac_files              // path to atac/ directory containing fragment and peak files
+        _atac_files             // path to atac/ directory containing fragment and peak files
         atac_template_path      // path to atac_template.qmd
         run_report              // boolean
 
@@ -340,12 +375,12 @@ workflow ATAC_REPORTING {
             
             atac_report_input_ch = sampleChannelBase
                 .join(seurat_results)
-                .map { sampleName, mappingDir, pre_rds, post_rds ->
+                .map { sampleName, mappingDir, _pre_rds, post_rds ->
                     def fragment_file = file("${mappingDir}/outs/atac_fragments.tsv.gz")
                     def peak_file = file("${mappingDir}/outs/atac_peaks.bed")
                     tuple(sampleName, post_rds, fragment_file, peak_file, atac_template_path)
                 }
             
-            atac_reports_output = GENERATE_ATAC_REPORT(atac_report_input_ch)
+            GENERATE_ATAC_REPORT(atac_report_input_ch)
         }
 }

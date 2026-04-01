@@ -3,7 +3,7 @@
 
 process SCDBL_MULTIOME {
     label "process_dropletqc"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     // No publishDir - intermediate files not needed in final output
 

@@ -2,7 +2,7 @@
 
 process CREATE_SEURAT {
     label "process_seurat"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
 

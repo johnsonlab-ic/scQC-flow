@@ -3,7 +3,7 @@
 
 process GENERATE_REPORTS {
     label "process_reports"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
     
@@ -20,7 +20,7 @@ process GENERATE_REPORTS {
     echo "Mapping directory: ${mappingDir}"
 
     # Copy the template and replace placeholders
-    cp ${projectDir}/templates/qc_report_template.qmd ${sampleName}_qc_report.qmd
+    cp ${moduleDir}/../templates/qc_report_template.qmd ${sampleName}_qc_report.qmd
     
     # Replace placeholders with actual values
     sed -i "s|SAMPLE_NAME_PLACEHOLDER|${sampleName}|g" ${sampleName}_qc_report.qmd

@@ -3,7 +3,7 @@
 
 process CELLBENDER {
     label "process_cellbender"
-    tag { sampleName }
+    tag "$sampleName"
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     // No publishDir - intermediate files not needed in final output
     
@@ -34,7 +34,7 @@ process CELLBENDER {
 
 process CELLBENDER_GPU {
     label "process_gpu"
-    tag { sampleName }
+    tag "$sampleName"
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
     // No publishDir - intermediate files not needed in final output
     
@@ -65,7 +65,7 @@ process CELLBENDER_GPU {
 
 process CELLBENDER_H5_CONVERT {
     label "process_low"
-    tag { sampleName }
+    tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
     // No publishDir - intermediate files not needed in final output
     

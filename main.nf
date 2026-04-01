@@ -5,21 +5,12 @@ include { STANDARD_WORKFLOW } from './workflows/workflows'
 include { MULTIOME_WORKFLOW } from './workflows/workflows'
 include { REPORTING } from './workflows/workflows'
 include { ATAC_REPORTING } from './workflows/workflows'
+include { RNA_MAPPING_WORKFLOW } from './workflows/workflows'
 
 // =============================================================================
 // PARAMETERS
+// Runtime params are defined in nextflow.config and can be overridden by CLI.
 // =============================================================================
-params.mapping_dirs = "${projectDir}/personal/mapping_dirs.csv"
-params.outputDir = "results"
-params.gpu = false
-params.report = true
-params.book = false
-params.cellbender = false
-params.multiome = false
-params.help = false
-params.max_mito = 20.0
-params.min_nuclear = 0.4
-params.metadata = null
 
 // =============================================================================
 // HELP MESSAGE
@@ -31,49 +22,49 @@ def helpMessage() {
     ===================================
     
     Usage:
-    nextflow run main.nf --mapping_dirs <mapping_dirs.csv> --outputDir <output_directory>
-    
-    Required arguments:
-      --mapping_dirs        Path to mapping directories CSV file
-      --outputDir           Output directory for results
-      
-    Optional arguments:
-      --cellbender           Run CellBender ambient RNA removal
-      --gpu                  Use GPU acceleration for cellbender (requires --cellbender)
-      --multiome             Run multiome workflow for 10x Multiome data
-      --report               Generate Quarto QC reports for each sample
-      --book                 Combine all reports into a single Quarto book
-      --max_mito             Maximum mitochondrial percentage threshold (default: 20.0)
-      --min_nuclear          Minimum nuclear fraction threshold (default: 0.4)
-      --metadata             Optional metadata CSV file
-      --help                 Show this help message
-      
-    Examples:
-      nextflow run main.nf --mapping_dirs mapping_dirs.csv --outputDir results
-      nextflow run main.nf --mapping_dirs mapping_dirs.csv --outputDir results --cellbender
-      nextflow run main.nf --mapping_dirs mapping_dirs.csv --outputDir results --cellbender --gpu
-      nextflow run main.nf --mapping_dirs mapping_dirs.csv --outputDir results --multiome
-      nextflow run main.nf --mapping_dirs mapping_dirs.csv --outputDir results --report --book
-    """
-}
+        nextflow run main.nf -profile offline [params]
 
-if (params.help) {
-    helpMessage()
-    exit 0
+        Main params (set in nextflow.config, override on CLI as needed):
+            --run_mode         mapping | qc | both
+            --raw_data_dir     Directory of FASTQ sample folders (mapping or both mode)
+            --mapped_data_dir  Directory of mapped sample folders (qc mode)
+            --mapper           Mapper to use (currently: cellranger)
+            --cellrangerPath   Path to Cell Ranger binary or install directory
+            --transcriptome    Path to Cell Ranger transcriptome reference
+            --cellbender       Enable CellBender
+            --gpu              Use GPU for CellBender
+            --max_mito         Maximum mitochondrial percentage threshold
+            --min_nuclear      Minimum nuclear fraction threshold
+            --metadata         Optional metadata CSV
+            --outputDir        Output directory
+            --report           Generate per-sample reports
+            --book             Generate combined report book
+      --help                Show this help message
+
+        Examples:
+            nextflow run main.nf -profile offline --run_mode mapping --raw_data_dir /path/to/raw --cellrangerPath /path/to/cellranger --transcriptome /path/to/ref
+            nextflow run main.nf -profile offline --run_mode qc --mapped_data_dir /path/to/mapping
+            nextflow run main.nf -profile offline --run_mode both --raw_data_dir /path/to/raw --cellrangerPath /path/to/cellranger --transcriptome /path/to/ref
+    """
 }
 
 // =============================================================================
 // MAIN WORKFLOW
 // =============================================================================
 workflow {
+    if (params.help) {
+        helpMessage()
+        return
+    }
+
     // Log pipeline parameters
     log.info """
     ===================================
     scQC-flow pipeline
     ===================================
-    Mapping directories : ${params.mapping_dirs}
     Output directory    : ${params.outputDir}
-    Multiome mode       : ${params.multiome}
+    Run mode            : ${params.run_mode}
+    Mapper              : ${params.mapper}
     CellBender          : ${params.cellbender}
     GPU acceleration    : ${params.gpu}
     Generate reports    : ${params.report}
@@ -84,56 +75,76 @@ workflow {
       Min nuclear fraction: ${params.min_nuclear}
     ===================================
     """
-    
-    // Validate required parameters
-    if (!params.mapping_dirs) {
-        error "Mapping directories file not provided. Please specify --mapping_dirs"
+
+    def validRunModes = ['mapping', 'qc', 'both']
+    if (!validRunModes.contains(params.run_mode)) {
+        error "Invalid --run_mode '${params.run_mode}'. Must be one of: mapping, qc, both"
     }
-    
-    // Read mapping directory information from the CSV file
-    Channel
-        .fromPath(params.mapping_dirs)
-        .splitCsv(header: true)
-        .map { row -> tuple(row.samplename, file(row.path)) }
-        .set { sampleChannelBase }
+
+    if (params.run_mode in ['mapping', 'both']) {
+        if (!params.raw_data_dir) {
+            error "--raw_data_dir is required for run_mode: mapping or both"
+        }
+        if (!file(params.raw_data_dir).exists()) {
+            error "--raw_data_dir does not exist: ${params.raw_data_dir}"
+        }
+        if (!params.transcriptome) {
+            error "--transcriptome is required for run_mode: mapping or both"
+        }
+        if (!params.cellrangerPath) {
+            error "--cellrangerPath is required for run_mode: mapping or both"
+        }
+    }
+
+    if (params.run_mode == 'qc') {
+        if (!params.mapped_data_dir) {
+            error "--mapped_data_dir is required for run_mode: qc"
+        }
+        if (!file(params.mapped_data_dir).exists()) {
+            error "--mapped_data_dir does not exist: ${params.mapped_data_dir}"
+        }
+    }
+
+    // Build sample channels directly from Nextflow params.
+    if (params.run_mode == 'qc') {
+        channel
+            .fromPath("${params.mapped_data_dir}/*", type: 'dir')
+            .map { dir -> tuple(dir.name, dir) }
+            .set { sampleChannelBase }
+
+    } else {
+        // Each raw_data_dir subdirectory = one sample.
+        channel
+            .fromPath("${params.raw_data_dir}/*", type: 'dir')
+            .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
+            .set { sampleChannelFastq }
+
+        RNA_MAPPING_WORKFLOW(
+            sampleChannelFastq,
+            params.mapper,
+            params.transcriptome,
+            params.cellrangerPath
+        )
+
+        sampleChannelBase = RNA_MAPPING_WORKFLOW.out.sample_channel
+    }
 
     // Prepare script/template files as value channels
     dropletqc_script_path = file("${projectDir}/modules/dropletqc/run_dropletqc.R")
     report_template_path = file("${projectDir}/modules/reports/seurat_template.qmd")
     combined_template_path = file("${projectDir}/modules/reports/combined_template.qmd")
     book_template_path = file("${projectDir}/modules/reports/book_template/")
-    atac_template_path = file("${projectDir}/modules/reports/atac_template.qmd")
 
     // Standard module scripts
     scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
     seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
 
-    // Multiome-specific scripts (extract Gene Expression and ATAC modalities from H5)
-    scdbl_multiome_script_path = file("${projectDir}/modules/multiome/run_scdbl_multiome.R")
-    seurat_multiome_script_path = file("${projectDir}/modules/multiome/make_seurat_multiome.R")
-    extract_modalities_script_path = file("${projectDir}/modules/multiome/extract_modalities.R")
-
-    // =========================================================================
-    // RUN APPROPRIATE WORKFLOW
-    // =========================================================================
-    if (params.multiome) {
-        log.info "Running MULTIOME workflow"
-        MULTIOME_WORKFLOW(
-            sampleChannelBase,
-            dropletqc_script_path,
-            scdbl_multiome_script_path,
-            seurat_multiome_script_path,
-            extract_modalities_script_path,
-            params.cellbender,
-            params.gpu,
-            params.max_mito,
-            params.min_nuclear,
-            params.metadata
-        )
-        seurat_results = MULTIOME_WORKFLOW.out.seurat_results
-        atac_files = MULTIOME_WORKFLOW.out.atac_files
-        cellbender_comparison_results = MULTIOME_WORKFLOW.out.cellbender_comparison_results
+    if (params.run_mode == 'mapping') {
+        log.info "Run mode is 'mapping'. Mapping stage completed; skipping QC and reporting."
     } else {
+        // =========================================================================
+        // STANDARD RNA WORKFLOW
+        // =========================================================================
         log.info "Running STANDARD single-cell workflow"
         STANDARD_WORKFLOW(
             sampleChannelBase,
@@ -148,34 +159,23 @@ workflow {
         )
         seurat_results = STANDARD_WORKFLOW.out.seurat_results
         cellbender_comparison_results = STANDARD_WORKFLOW.out.cellbender_comparison_results
-    }
 
-    // =========================================================================
-    // REPORTING
-    // =========================================================================
-    REPORTING(
-        sampleChannelBase,
-        seurat_results,
-        cellbender_comparison_results,
-        report_template_path,
-        combined_template_path,
-        book_template_path,
-        params.max_mito,
-        params.min_nuclear,
-        params.report,
-        params.book
-    )
-
-    // =========================================================================
-    // ATAC REPORTING (Multiome only)
-    // =========================================================================
-    if (params.multiome && params.report) {
-        ATAC_REPORTING(
+        // =========================================================================
+        // REPORTING
+        // =========================================================================
+        REPORTING(
             sampleChannelBase,
             seurat_results,
-            atac_files,
-            atac_template_path,
-            params.report
+            cellbender_comparison_results,
+            report_template_path,
+            combined_template_path,
+            book_template_path,
+            params.max_mito,
+            params.min_nuclear,
+            params.report,
+            params.book
         )
     }
+
+    // ATAC reporting is intentionally disabled while pipeline scope is RNA-only.
 }
