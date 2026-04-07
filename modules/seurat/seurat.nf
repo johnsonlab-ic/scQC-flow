@@ -4,7 +4,7 @@ process CREATE_SEURAT {
     label "process_seurat"
     tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
+  publishDir "${params.outputDir}/seurat", mode: 'copy', overwrite: true
 
   input:
   tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics), path(seurat_script), val(max_mito), val(min_nuclear), val(metadata_file), path(h5_path)

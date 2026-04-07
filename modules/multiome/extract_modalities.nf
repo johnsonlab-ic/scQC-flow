@@ -6,7 +6,7 @@ process EXTRACT_MODALITIES {
     label "process_low"
     tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    // No publishDir - intermediate files not needed in final output
+    publishDir "${params.outputDir}/extract_modalities", mode: 'copy', overwrite: true
     
     input:
     tuple val(sampleName), path(mappingDir), path(extract_script)

@@ -28,6 +28,7 @@ process GENERATE_REPORTS {
 
     # Render the report
     echo "Rendering Quarto report..."
+    export HOME="\$PWD"
     quarto render ${sampleName}_qc_report.qmd
 
     echo "QC report completed for ${sampleName}"

@@ -6,13 +6,16 @@
  */
 
 // Import standard modules
-include { CELLBENDER; CELLBENDER_GPU; CELLBENDER_H5_CONVERT } from '../modules/cellbender/cellbender'
-include { GENERATE_REPORTS; COMBINE_REPORTS; GENERATE_COMBINED_REPORT; GENERATE_ATAC_REPORT } from '../modules/reports/reports'
+include { CELLBENDER; CELLBENDER_GPU; CELLBENDER_H5_CONVERT; CELLBENDER_FROM_H5 } from '../modules/cellbender/cellbender'
+include { GENERATE_ATAC_REPORT } from '../modules/reports/reports'
 include { CREATE_SEURAT } from '../modules/seurat/seurat'
 include { DROPLETQC } from '../modules/dropletqc/dropletqc'
 include { SCDBL } from '../modules/scdbl/scdbl'
 include { CELLBENDER_COMPARISON; CELLBENDER_COMPARISON_STATS_ONLY } from '../modules/cellbender_comparison/cellbender_comparison'
 include { MAP_CELLRANGER } from '../modules/mapping/mapping'
+include { SIMPLEAF_INDEX; SIMPLEAF_PREP_WHITELIST; SIMPLEAF_QUANT } from '../modules/alevinfry/alevinfry'
+include { BARCODE_ESTIMATION; BARCODE_REPORT } from '../modules/barcode_estimation/barcode_estimation'
+include { DECONTX; DECONTX_REPORT } from '../modules/decontx/decontx'
 
 // =============================================================================
 // RNA MAPPING WORKFLOW
@@ -46,6 +49,89 @@ workflow RNA_MAPPING_WORKFLOW {
 
     emit:
         sample_channel = sample_channel
+}
+
+// =============================================================================
+// ALEVIN-FRY MAPPING WORKFLOW
+// =============================================================================
+workflow ALEVINFRY_MAPPING_WORKFLOW {
+    take:
+        sampleChannelFastq        // tuple(sampleId, sampleName, fastqPath)
+        cellrangerPath            // string: path to Cell Ranger install/bin for whitelist extraction
+        alevinfry_index           // string or null: path to pre-built index dir
+        alevinfry_t2g             // string or null: path to t2g file
+        alevinfry_whitelist       // string or null: optional whitelist override
+        alevinfry_chemistry       // string: chemistry (e.g. 10xv3)
+        alevinfry_orientation     // string: orientation (fw, rc, both)
+        alevinfry_fasta           // string or null: FASTA for building index
+        alevinfry_gtf             // string or null: GTF for building index
+
+    main:
+        // Map explicit chemistry names to simpleaf chemistry argument.
+        def chemistryMap = [
+            '3v2': '10xv2',
+            '5v1': '10xv2',
+            '5v2': '10xv2',
+            '3v3': '10xv3',
+            '5v3': '10xv3',
+            '3v4': '10xv4-3p',
+            '3LT': '10xv3LT',
+            'multiome': '10xmultiome'
+        ]
+        af_chemistry = chemistryMap[alevinfry_chemistry]
+
+        // Derive default orientation from explicit chemistry if requested.
+        // 5' chemistries are reverse-complement; others default to forward.
+        af_orientation = alevinfry_orientation == 'auto'
+            ? (['5v1', '5v2', '5v3'].contains(alevinfry_chemistry) ? 'rc' : 'fw')
+            : alevinfry_orientation
+
+        // Resolve index: build if not provided, otherwise use pre-built
+        if (alevinfry_index) {
+            index_ch = channel.value(file("${alevinfry_index}/index"))
+            t2g_ch   = channel.value(file(alevinfry_t2g))
+        } else {
+            SIMPLEAF_INDEX(alevinfry_fasta, alevinfry_gtf)
+            index_ch = SIMPLEAF_INDEX.out.index_dir.map { it -> file("${it}/index") }
+            t2g_ch   = SIMPLEAF_INDEX.out.index_dir.map { it -> file("${it}/ref/t2g_3col.tsv") }
+        }
+
+        if (alevinfry_whitelist) {
+            whitelist_ch = channel.value(file(alevinfry_whitelist))
+        } else {
+            SIMPLEAF_PREP_WHITELIST(cellrangerPath, alevinfry_chemistry)
+            whitelist_ch = SIMPLEAF_PREP_WHITELIST.out.whitelist
+        }
+
+        // Build per-sample quant input channel
+        quant_input_ch = sampleChannelFastq
+            .combine(index_ch)
+            .combine(t2g_ch)
+            .combine(whitelist_ch)
+            .map { sampleId, sampleName, fastqPath, idx, t2g, wl ->
+                tuple(sampleId, sampleName, file(fastqPath), idx, t2g, wl, af_chemistry, af_orientation)
+            }
+
+        quant_results = SIMPLEAF_QUANT(quant_input_ch)
+
+        // Barcode estimation: H5 conversion + nuclear_fraction + knee params.
+        // Mirrors scprocess save_alevin_to_h5 — this is the last step of mapping,
+        // not the first step of QC.
+        barcode_script     = channel.value(file("${projectDir}/modules/barcode_estimation/run_barcode_estimation.R"))
+        barcode_report_qmd = channel.value(file("${projectDir}/modules/barcode_estimation/barcode_estimation.qmd"))
+        BARCODE_ESTIMATION(quant_results.quant_dirs, barcode_script)
+        BARCODE_REPORT(
+            BARCODE_ESTIMATION.out.knee_data.map { _id, csv -> csv }.collect(),
+            BARCODE_ESTIMATION.out.nuclear_fraction.map { _id, csv -> csv }.collect(),
+            barcode_report_qmd
+        )
+
+    emit:
+        quant_dirs       = quant_results.quant_dirs
+        h5_files         = BARCODE_ESTIMATION.out.h5_files
+        knee_data        = BARCODE_ESTIMATION.out.knee_data
+        knee_params      = BARCODE_ESTIMATION.out.knee_params
+        nuclear_fraction = BARCODE_ESTIMATION.out.nuclear_fraction
 }
 
 // Import multiome-specific modules
@@ -314,73 +400,94 @@ workflow MULTIOME_WORKFLOW {
 }
 
 // =============================================================================
-// REPORTING WORKFLOW
+// ALEVIN-FRY QC WORKFLOW
 // =============================================================================
-workflow REPORTING {
+// Runs QC without BAM files. Barcode estimation (H5 + nuclear_fraction + knee
+// params) is performed as the last step of ALEVINFRY_MAPPING_WORKFLOW (mirroring
+// scprocess save_alevin_to_h5), so this workflow receives those outputs directly.
+// Ambient RNA removal is switchable: params.ambient_method = 'decontx' | 'cellbender'
+workflow ALEVINFRY_QC_WORKFLOW {
     take:
-        sampleChannelBase       // tuple(sampleName, mappingDir)
-        seurat_results          // tuple(sampleName, pre_rds, post_rds)
-        cellbender_comparison_results // tuple(sampleName, metrics_csv)
-        report_template_path
-        _combined_template_path
-        book_template_path
-        max_mito                // double
-        min_nuclear             // double
-        run_report              // boolean
-        run_book                // boolean
+        h5_files            // tuple(sampleId, h5)  — raw count matrix from BARCODE_ESTIMATION
+        knee_data           // tuple(sampleId, csv) — knee plot data from BARCODE_ESTIMATION
+        knee_params         // tuple(sampleId, txt) — CellBender/decontX params from BARCODE_ESTIMATION
+        nuclear_fraction    // tuple(sampleId, csv) — nuclear fraction from BARCODE_ESTIMATION
+        quant_dirs          // tuple(sampleId, dir) — quant dir; passed as mappingDir to Seurat
+        scdbl_script_path
+        seurat_script_path
+        ambient_method      // string: 'decontx' or 'cellbender'
+        gpu                 // boolean: enable CellBender GPU (only used if ambient_method == 'cellbender')
+        max_mito            // double
+        min_nuclear         // double
+        max_nuclear         // double
+        metadata            // string or null
 
     main:
-        // Prepare GENERATE_REPORTS input channel
-        // Join: sampleChannelBase + seurat_results + cellbender_comparison_results
-        report_input_ch = sampleChannelBase
-            .join(seurat_results)
-            .join(cellbender_comparison_results)
-            .map { sampleName, mappingDir, pre_rds, post_rds, comparison_metrics, comparison_plot -> 
-                tuple(sampleName, mappingDir, pre_rds, post_rds, report_template_path, max_mito, min_nuclear, comparison_metrics, comparison_plot) 
-            }
+        // ---------------------------------------------------------------
+        // 1. Ambient RNA correction (decontX or CellBender)
+        //    h5_files and knee outputs come from BARCODE_ESTIMATION,
+        //    which ran at the end of ALEVINFRY_MAPPING_WORKFLOW.
+        // ---------------------------------------------------------------
+        if (ambient_method == 'decontx') {
+            log.info "Ambient correction: decontX (barcodeRanks cell calling, CPU)"
+            decontx_script     = channel.value(file("${projectDir}/modules/decontx/run_decontx.R"))
+            decontx_report_qmd = channel.value(file("${projectDir}/modules/decontx/decontx_report.qmd"))
+            decontx_input_ch = h5_files
+                .join(knee_data)
+                .map { sampleId, h5File, kneeCsv -> tuple(sampleId, h5File, kneeCsv) }
+            DECONTX(decontx_input_ch, decontx_script)
+            filtered_h5_ch = DECONTX.out.filtered_h5
+            DECONTX_REPORT(
+                DECONTX.out.usa_metrics.map { _id, csv -> csv }.collect(),
+                DECONTX.out.barcodes.map    { _id, csv -> csv }.collect(),
+                knee_data.map               { _id, csv -> csv }.collect(),
+                decontx_report_qmd
+            )
 
-        if (run_report) {
-            reports_output = GENERATE_REPORTS(report_input_ch)
-
-            // Optionally combine all reports into a single book
-            if (run_book) {
-                log.info "Combining reports into a Quarto book"
-
-                all_html_reports = reports_output.html_report.map { _sampleName, htmlFile -> htmlFile }.collect()
-                all_qmd_sources = reports_output.qmd_source.map { _sampleName, qmdFile -> qmdFile }.collect()
-
-                COMBINE_REPORTS(all_html_reports, all_qmd_sources, book_template_path)
-            }
-        }
-}
-
-// =============================================================================
-// ATAC REPORTING WORKFLOW (Multiome only)
-// =============================================================================
-workflow ATAC_REPORTING {
-    take:
-        sampleChannelBase       // tuple(sampleName, mappingDir)
-        seurat_results          // tuple(sampleName, pre_rds, post_rds)
-        _atac_files             // path to atac/ directory containing fragment and peak files
-        atac_template_path      // path to atac_template.qmd
-        run_report              // boolean
-
-    main:
-        if (run_report) {
-            log.info "Generating ATAC QC reports for multiome samples"
-            
-            // Join seurat results with sampleChannelBase to get the post-QC RDS
-            // seurat_results: tuple(sampleName, pre_rds, post_rds)
-            // We need: tuple(sampleName, post_rds, fragment_file, peak_file, template)
-            
-            atac_report_input_ch = sampleChannelBase
-                .join(seurat_results)
-                .map { sampleName, mappingDir, _pre_rds, post_rds ->
-                    def fragment_file = file("${mappingDir}/outs/atac_fragments.tsv.gz")
-                    def peak_file = file("${mappingDir}/outs/atac_peaks.bed")
-                    tuple(sampleName, post_rds, fragment_file, peak_file, atac_template_path)
+        } else if (ambient_method == 'cellbender') {
+            log.info "Ambient correction: CellBender (${gpu ? 'GPU' : 'CPU'})"
+            knee_vals_ch = knee_params
+                .map { sampleId, paramsFile ->
+                    def parts = paramsFile.text.trim().split(',')
+                    tuple(sampleId, parts[0] as Integer, parts[1] as Integer, parts[2] as Integer)
                 }
-            
-            GENERATE_ATAC_REPORT(atac_report_input_ch)
+            cellbender_input_ch = h5_files
+                .join(knee_vals_ch)
+                .map { sampleId, h5File, ec, td, lct -> tuple(sampleId, h5File, ec, td, lct) }
+            CELLBENDER_FROM_H5(cellbender_input_ch)
+            filtered_h5_ch = CELLBENDER_FROM_H5.out.filtered_h5
+
+        } else {
+            error "Unknown ambient_method: ${ambient_method}. Choose 'decontx' or 'cellbender'."
         }
+
+        // ---------------------------------------------------------------
+        // 2. Doublet detection on the ambient-corrected H5
+        // ---------------------------------------------------------------
+        scdbl_input_ch = filtered_h5_ch
+            .map { sampleId, h5File ->
+                tuple(sampleId, h5File, scdbl_script_path)
+            }
+        scdbl_results = SCDBL(scdbl_input_ch)
+
+        // ---------------------------------------------------------------
+        // 3. Seurat object creation
+        //    nuclear_fraction substitutes for dropletqc_metrics.
+        //    quant_dirs is passed as mappingDir (unused when h5_path is provided).
+        // ---------------------------------------------------------------
+        seurat_input_ch = filtered_h5_ch
+            .join(nuclear_fraction)
+            .join(scdbl_results.metrics)
+            .join(quant_dirs)
+            .map { sampleId, h5File, nf_csv, scdbl_csv, quantDir ->
+                tuple(sampleId, quantDir, nf_csv, scdbl_csv,
+                      seurat_script_path, max_mito, min_nuclear, metadata, h5File)
+            }
+        seurat_results = CREATE_SEURAT(seurat_input_ch)
+
+    emit:
+        seurat_results   = seurat_results
+        nuclear_fraction = nuclear_fraction
+        h5_files         = h5_files
+        filtered_h5      = filtered_h5_ch
 }

@@ -8,3 +8,6 @@ scripts/
 .claude/
 dev/
 .vscode/
+resources/
+.nextflow.log*
+CALUDE.

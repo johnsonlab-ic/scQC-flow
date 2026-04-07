@@ -5,7 +5,7 @@ process CELLBENDER_MULTIOME {
     label "process_cellbender"
     tag "$sampleName"
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
-    // No publishDir - intermediate files not needed in final output
+    publishDir "${params.outputDir}/cellbender", mode: 'copy', overwrite: true
     
     input:
     tuple val(sampleName), path(gex_h5)
@@ -35,7 +35,7 @@ process CELLBENDER_MULTIOME_GPU {
     label "process_gpu"
     tag "$sampleName"
     container "us.gcr.io/broad-dsde-methods/cellbender:latest"
-    // No publishDir - intermediate files not needed in final output
+    publishDir "${params.outputDir}/cellbender", mode: 'copy', overwrite: true
     
     input:
     tuple val(sampleName), path(gex_h5)

@@ -2,7 +2,7 @@
 // Produces Cell Ranger-style mapped directories for downstream QC.
 
 process MAP_CELLRANGER {
-    label "process_higher_memory"
+    label "process_cellranger"
     tag "$sampleId"
     publishDir "${params.outputDir}/mapping", mode: 'copy', overwrite: true
 
@@ -41,7 +41,8 @@ process MAP_CELLRANGER {
       --create-bam true \
       --fastqs="${fastqPath}" \
       --sample="${sampleName}" \
-      --transcriptome="\$TRANSCRIPTOME_DIR"
+      --transcriptome="${transcriptome}" \
+      --localcores=${task.cpus}
 
     # Keep only outs/ to reduce footprint in published mapping outputs.
     if [ -d "${sampleId}_mapped" ]; then

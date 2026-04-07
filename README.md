@@ -17,45 +17,78 @@ Nextflow pipeline for single-cell/single-nucleus RNA-seq quality control and rep
 ## Quick Start
 
 ### Requirements
-- Nextflow
+- Nextflow (>=25.04)
 - Docker or Singularity
 
-### Configuration
+### Basic Usage
 
-All run parameters live in the `params {}` block at the top of `nextflow.config`. Edit that file to set your inputs and options, then run:
-
-```bash
-nextflow run main.nf -profile offline
-```
-
-Or override any param from the CLI:
-
-```bash
-nextflow run main.nf -profile offline --run_mode mapping \
-  --raw_data_dir /path/to/raw_fastq_dirs \
-  --cellrangerPath /path/to/cellranger \
-  --transcriptome /path/to/refdata-gex-GRCh38-2024-A \
-  --outputDir results
-```
-
-### Run Mode: QC Only (pre-mapped data)
+The recommended way to run the pipeline is to specify the output directory and work directory separately:
 
 ```bash
 nextflow run main.nf -profile offline \
+  -w ./my_project/work \
   --run_mode qc \
   --mapped_data_dir /path/to/mapped_dirs \
-  --outputDir results
+  --outputDir ./my_project/outputs
 ```
 
-### Run Mode: Mapping + QC
+**Where:**
+- `-w ./my_project/work` — Nextflow work directory (temporary files, intermediate results)
+- `--outputDir ./my_project/outputs` — Final results and reports
 
+This keeps your project organized with a clean separation:
+```
+my_project/
+├── work/              # Nextflow work directory (can be safely deleted after run)
+└── outputs/           # Final results
+    ├── mapping/
+    ├── cellbender/
+    ├── dropletqc/
+    ├── scdblfinder/
+    ├── seurat/
+    ├── reports/
+    └── pipeline_info/ # Execution timeline, report, trace, DAG
+```
+
+All execution artifacts (timeline, report, trace, DAG) are collected into `pipeline_info/` for easier debugging.
+
+### Run Mode Examples
+
+**QC Only (pre-mapped data):**
 ```bash
+MY_PROJECT="/data/my_project"
+mkdir -p "$MY_PROJECT/work" "$MY_PROJECT/outputs"
+
 nextflow run main.nf -profile offline \
+  -w "$MY_PROJECT/work" \
+  --run_mode qc \
+  --mapped_data_dir /path/to/mapped_dirs \
+  --outputDir "$MY_PROJECT/outputs"
+```
+
+**Mapping + QC:**
+```bash
+MY_PROJECT="/data/my_project"
+mkdir -p "$MY_PROJECT/work" "$MY_PROJECT/outputs"
+
+nextflow run main.nf -profile offline \
+  -w "$MY_PROJECT/work" \
   --run_mode both \
   --raw_data_dir /path/to/raw_fastq_dirs \
   --cellrangerPath /path/to/cellranger \
   --transcriptome /path/to/refdata-gex-GRCh38-2024-A \
-  --outputDir results
+  --outputDir "$MY_PROJECT/outputs"
+```
+
+**With CellBender and GPU:**
+```bash
+nextflow run main.nf -profile offline \
+  -w "$MY_PROJECT/work" \
+  --run_mode qc \
+  --mapped_data_dir /path/to/mapped_dirs \
+  --cellbender true \
+  --gpu true \
+  --outputDir "$MY_PROJECT/outputs"
 ```
 
 ---
@@ -66,6 +99,22 @@ nextflow run main.nf -profile offline \
 - For `run_mode = qc`: set `--mapped_data_dir`. Each subdirectory is treated as one mapped sample (name = folder name).
 
 No samplesheet CSV is needed — the pipeline discovers samples automatically from the directory structure.
+
+---
+
+## Execution Artifacts
+
+The pipeline automatically generates execution reports collected in `${outputDir}/pipeline_info/`:
+
+- **execution_timeline_*.html** — Interactive timeline showing task execution order and duration
+- **execution_report_*.html** — Comprehensive execution summary (CPU, memory, retries, etc.)
+- **execution_trace_*.txt** — Detailed task execution trace for debugging
+- **pipeline_dag_*.html** — Visual DAG showing workflow dependencies
+
+These are timestamped to prevent collisions across multiple runs. They are useful for:
+- Understanding bottlenecks and resource usage
+- Debugging failed tasks
+- Auditing pipeline execution history
 
 ---
 

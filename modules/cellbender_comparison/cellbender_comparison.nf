@@ -6,7 +6,7 @@ process CELLBENDER_COMPARISON {
     label "process_medium"
     tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/${sampleName}/cellbender_comparison", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/cellbender_comparison", mode: 'copy', overwrite: true
     
     input:
     tuple val(sampleName), path(mappingDir), path(cellbender_h5)
@@ -38,7 +38,7 @@ process CELLBENDER_COMPARISON_STATS_ONLY {
     label "process_medium"
     tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/${sampleName}/cellbender_comparison", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/cellbender_comparison", mode: 'copy', overwrite: true
     
     input:
     tuple val(sampleName), path(mappingDir)

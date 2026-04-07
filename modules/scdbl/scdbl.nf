@@ -5,7 +5,7 @@ process SCDBL {
     label "process_dropletqc"
     tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    // No publishDir - intermediate files not needed in final output
+    publishDir "${params.outputDir}/scdblfinder", mode: 'copy', overwrite: true
 
     input:
     tuple val(sampleName), path(h5File), path(run_scdbl_R)

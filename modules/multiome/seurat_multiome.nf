@@ -6,7 +6,7 @@ process CREATE_SEURAT_MULTIOME {
     label "process_seurat"
     tag "$sampleName"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true
+  publishDir "${params.outputDir}/seurat_multiome", mode: 'copy', overwrite: true
 
   input:
   tuple val(sampleName), path(mappingDir), path(dropletqc_metrics), path(scdbl_metrics), path(seurat_script), val(max_mito), val(min_nuclear), val(metadata_file), path(h5_path), path(atac_h5_path)
@@ -39,13 +39,11 @@ process CREATE_SEURAT_MULTIOME {
 
   echo "Seurat objects created for ${sampleName}"
 
-  # Copy ATAC files for downstream multiome analysis (excluding BAM files to save space)
-  echo "Copying ATAC files (excluding BAM files)..."
+  # Copy ATAC files for downstream multiome analysis (including BAM files)
+  echo "Copying ATAC files (including BAM files)..."
   mkdir -p atac
   for f in ${mappingDir}/outs/atac_*; do
-    if [[ ! "\$f" == *bam* ]]; then
-      cp "\$f" atac/ 2>/dev/null || true
-    fi
+    cp "\$f" atac/ 2>/dev/null || true
   done
   
   # List what was copied

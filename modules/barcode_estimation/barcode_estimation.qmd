@@ -1,0 +1,311 @@
+---
+title: "Barcode Estimation"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+suppressPackageStartupMessages({
+    library(data.table)
+    library(ggplot2)
+    library(ggrepel)
+    library(dplyr)
+    library(patchwork)
+})
+```
+
+```{r}
+#| label: load-data
+
+# Discover all knee_data and nuclear_fraction CSVs staged into the work dir
+knee_data_files <- list.files(".", pattern = "_knee_data\\.csv$", full.names = TRUE)
+nf_files        <- list.files(".", pattern = "_nuclear_fraction\\.csv$", full.names = TRUE)
+
+# Extract sample IDs from file names
+.sample_id_from_file <- function(paths, suffix) {
+    sub(suffix, "", basename(paths))
+}
+
+knee_data_ids <- .sample_id_from_file(knee_data_files, "_knee_data.csv")
+nf_ids        <- .sample_id_from_file(nf_files,        "_nuclear_fraction.csv")
+
+# Named lists keyed by sample ID (matches scprocess pattern)
+knee_fs <- setNames(as.list(knee_data_files), knee_data_ids)
+nf_fs   <- setNames(as.list(nf_files),        nf_ids)
+
+# Aggregate knee params into a single data.frame (one row per sample)
+# Select only the summary columns — avoids loading per-barcode data
+rna_knee_params_df <- lapply(names(knee_fs), function(s) {
+    dt <- fread(knee_fs[[s]], select = c("sample_id", "knee1", "shin1", "knee2", "shin2",
+                                          "total_droplets_included", "expected_cells"))
+    unique(dt)
+}) |> rbindlist()
+
+sample_var <- "sample_id"
+all_samples <- names(knee_fs)
+
+# Chunk samples into groups of 8 for faceted plots (matches scprocess chunking)
+chunk_size <- 8
+slope_ratio_split_l <- split(
+    all_samples,
+    ceiling(seq_along(all_samples) / chunk_size)
+)
+```
+
+## Barcode rank plots
+
+Each panel shows the UMI rank plot (log–log scale) for one sample.
+Horizontal lines mark the four knee/shin estimates:
+
+- **knee1** / **shin1**: upper boundary of cell-containing droplets (first knee and inflection)
+- **knee2** / **shin2**: lower boundary of cells / upper boundary of empty droplets (second knee and inflection)
+
+Vertical lines show:
+
+- **expected_cells**: rank at the first inflection (starting point for cell calling)
+- **empty_plateau_middle**: geometric midpoint between shin1 and knee2 (total droplets included threshold)
+
+```{r}
+#| label: plot-functions
+
+# Ported from scprocess/scripts/mapping.R: plot_barcode_ranks_w_params()
+plot_barcode_ranks_w_params <- function(knee_fs, ambient_knees_df,
+                                         sample_var = "sample_id",
+                                         show_lines = TRUE) {
+    s_ord <- names(knee_fs)
+
+    # Build rank data for each sample (unique UMI -> cumulative barcode rank)
+    # Only load the `total` column — all other columns are unused for plotting
+    knee_data <- lapply(s_ord, function(s) {
+        dt <- fread(knee_fs[[s]], select = "total")
+        dt[, .(n_bc = .N), by = .(lib_size = total)] |>
+            setorder(-lib_size) |>
+            _[, bc_rank := cumsum(n_bc)] |>
+            _[, (sample_var) := s]
+    }) |> rbindlist()
+
+    knee_vars <- c(sample_var, "knee1", "shin1", "knee2", "shin2",
+                   "total_droplets_included", "expected_cells")
+
+    lines_knees <- as.data.table(ambient_knees_df)[
+        get(sample_var) %in% s_ord, ..knee_vars
+    ] |>
+        setnames("total_droplets_included", "empty_plateau_middle") |>
+        melt(id.vars = sample_var) |>
+        _[, `:=`(
+            axis = fifelse(
+                variable %in% c("knee1", "knee2", "shin1", "shin2"), "y", "x"
+            ),
+            type = fifelse(
+                variable %in% c("knee1", "knee2", "shin1", "shin2"),
+                "knee/shin estimate",
+                "cellbender parameter"
+            )
+        )]
+
+    hlines <- lines_knees[axis == "y"]
+    vlines <- lines_knees[axis == "x"]
+
+    p_labels <- c("1", "10", "100", "1k", "10k", "100k", "1M")
+    p_breaks <- c(1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6)
+
+    knee_data[[sample_var]] <- factor(knee_data[[sample_var]], levels = s_ord)
+    if (show_lines) {
+        hlines[[sample_var]] <- factor(hlines[[sample_var]], levels = s_ord)
+        vlines[[sample_var]] <- factor(vlines[[sample_var]], levels = s_ord)
+    }
+
+    p <- ggplot(knee_data) +
+        aes(x = bc_rank, y = lib_size) +
+        geom_line(linewidth = 0.3, color = "#283747") +
+        facet_wrap(~get(sample_var), ncol = 4) +
+        scale_x_log10(labels = p_labels, breaks = p_breaks) +
+        scale_y_log10(labels = p_labels, breaks = p_breaks) +
+        scale_color_manual(
+            values = c("#7c4b73", "#88a0dc"),
+            breaks = c("knee/shin estimate", "cellbender parameter")
+        ) +
+        theme_classic(base_size = 9) +
+        theme(legend.position = "none") +
+        labs(x = "barcode rank", y = "library size", color = NULL)
+
+    if (show_lines) {
+        p <- p +
+            geom_hline(
+                data    = hlines,
+                mapping = aes(yintercept = value, color = type)
+            ) +
+            geom_vline(
+                data    = vlines,
+                mapping = aes(xintercept = value, color = type)
+            ) +
+            geom_text_repel(
+                data    = hlines,
+                mapping = aes(y = value, x = 10, label = variable),
+                size    = 2.5
+            ) +
+            geom_text_repel(
+                data    = vlines,
+                mapping = aes(x = value, y = 100, label = variable),
+                size    = 2.5, angle = 90
+            )
+    }
+
+    p
+}
+```
+
+```{r}
+#| label: knee-plots
+#| results: asis
+#| fig-width: 10
+#| fig-height: 4
+
+for (i in seq_along(slope_ratio_split_l)) {
+    samples  <- slope_ratio_split_l[[i]]
+    name     <- sprintf("sample chunk #%d", i)
+    knee_fs_chunk <- knee_fs[samples]
+
+    cat("####", name, "\n")
+    suppressWarnings(print(
+        plot_barcode_ranks_w_params(
+            knee_fs_chunk,
+            rna_knee_params_df,
+            sample_var = sample_var
+        )
+    ))
+    cat("\n\n")
+}
+```
+
+## QC metrics: cells vs empties
+
+Per-sample violin plots comparing UMI counts and spliced fraction between
+barcodes called as **cells** (rank ≤ `expected_cells`) and **empty** droplets
+(`in_empty_plateau == TRUE`). Cells should have higher UMI counts and — for
+nuclear/single-nucleus data — a higher spliced fraction than empties.
+
+```{r}
+#| label: qc-metrics-cells-empties
+#| fig-width: 12
+#| fig-height: 5
+
+# Build long-format table: one row per (sample, barcode, qc_metric)
+# mirroring scprocess/scripts/mapping.R plot_qc_metrics_split_by_cells_empties()
+umis_brks   <- log10(c(1, 10, 30, 100, 300, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6))
+umis_labs   <- c("1", "10", "30", "100", "300", "1k", "3k", "10k", "30k", "100k", "300k", "1M")
+splice_brks <- qlogis(c(0.01, 0.03, 0.1, 0.3, 0.5, 0.7, 0.9, 0.97, 0.99))
+splice_labs <- c("1%", "3%", "10%", "30%", "50%", "70%", "90%", "97%", "99%")
+
+cells_empties_dt <- lapply(all_samples, function(s) {
+    dt <- fread(knee_fs[[s]],
+                select = c("sample_id", "barcode", "rank", "total",
+                           "spliced", "unspliced",
+                           "expected_cells", "in_empty_plateau"))
+    dt[rank <= expected_cells | in_empty_plateau == TRUE][
+        , .(
+            sample_id  = s,
+            barcode,
+            umis       = log10(total),
+            splice_pct = qlogis((spliced + 1) / (spliced + unspliced + 2)),
+            what       = fifelse(rank <= expected_cells, "cell", "empty")
+        )
+    ]
+}) |> rbindlist()
+
+cells_empties_dt[, sample_id := factor(sample_id, levels = all_samples)]
+
+g_umis <- ggplot(cells_empties_dt[!is.na(umis)]) +
+    aes(x = sample_id, y = umis, fill = what) +
+    geom_violin(colour = NA, kernel = "rectangular",
+                adjust = 0.1, scale = "width", width = 0.8) +
+    scale_y_continuous(breaks = umis_brks, labels = umis_labs) +
+    scale_fill_manual(values = c(cell = "#1965B0", empty = "grey70")) +
+    coord_flip() +
+    theme_classic(base_size = 9) +
+    theme(legend.position = "none") +
+    labs(x = NULL, y = "no. of UMIs", fill = NULL)
+
+g_spl <- ggplot(cells_empties_dt[!is.na(splice_pct)]) +
+    aes(x = sample_id, y = splice_pct, fill = what) +
+    geom_violin(colour = NA, kernel = "rectangular",
+                adjust = 0.1, scale = "width", width = 0.8) +
+    scale_y_continuous(breaks = splice_brks, labels = splice_labs) +
+    scale_fill_manual(values = c(cell = "#1965B0", empty = "grey70")) +
+    coord_flip() +
+    theme_classic(base_size = 9) +
+    theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+    labs(x = NULL, y = "spliced pct.", fill = "barcode type")
+
+g_umis + g_spl + plot_layout(widths = c(1.2, 1))
+```
+
+## Knee parameter summary
+
+```{r}
+#| label: knee-summary-table
+
+knitr::kable(
+    rna_knee_params_df[order(rna_knee_params_df$sample_id), ],
+    caption = "Knee and shin estimates per sample",
+    format.args = list(big.mark = ",")
+)
+```
+
+## Nuclear fraction
+
+Per-barcode nuclear fraction (U / (S+U)) across all samples.
+High nuclear fraction indicates predominantly unspliced / nuclear RNA.
+
+```{r}
+#| label: nuclear-fraction-plot
+#| fig-width: 10
+#| fig-height: 4
+
+nf_dt <- lapply(names(nf_fs), function(s) {
+    dt <- fread(nf_fs[[s]], select = "nuclear_fraction")
+    dt[, (sample_var) := s]
+}) |> rbindlist()
+
+nf_dt[[sample_var]] <- factor(nf_dt[[sample_var]], levels = all_samples)
+
+ggplot(nf_dt, aes(x = nuclear_fraction, fill = get(sample_var))) +
+    geom_density(alpha = 0.5, color = NA) +
+    facet_wrap(~get(sample_var), ncol = 4, scales = "free_y") +
+    scale_fill_viridis_d(option = "D") +
+    theme_classic(base_size = 9) +
+    theme(legend.position = "none") +
+    labs(
+        x = "nuclear fraction  [U / (S+U)]",
+        y = "density",
+        title = "Per-barcode nuclear fraction distribution"
+    )
+```
+
+```{r}
+#| label: nuclear-fraction-summary
+
+nf_summary <- nf_dt[, .(
+    n_barcodes = .N,
+    median_nf  = round(median(nuclear_fraction), 3),
+    mean_nf    = round(mean(nuclear_fraction), 3),
+    pct_high   = round(mean(nuclear_fraction > 0.8) * 100, 1)
+), by = sample_var]
+
+knitr::kable(
+    nf_summary[order(nf_summary$sample_id), ],
+    col.names = c("Sample", "Barcodes", "Median NF", "Mean NF", "% NF > 0.8"),
+    caption   = "Nuclear fraction summary per sample"
+)
+```
