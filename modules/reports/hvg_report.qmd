@@ -1,0 +1,246 @@
+---
+title: "HVG selection diagnostics"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({
+    library(data.table)
+    library(ggplot2)
+    library(SummarizedExperiment)
+})
+source("hvg_plots.R")
+
+n_hvg <- as.integer(Sys.getenv("N_HVG", "4000"))
+```
+
+```{r load_data}
+hvg_f <- "hvg_stats.csv.gz"
+de_f  <- "edger_dt.csv.gz"
+pb_f  <- "pb_empties.rds"
+
+stopifnot("hvg_stats.csv.gz not found" = file.exists(hvg_f))
+hvg_dt <- fread(hvg_f)
+hvg_dt[, highly_variable := as.logical(highly_variable)]
+
+# Try to load DE results and pseudobulk
+has_de    <- file.exists(de_f)
+has_pb    <- file.exists(pb_f)
+
+if (has_de) {
+    de_dt <- fread(de_f)
+} else {
+    de_dt <- NULL
+}
+
+if (has_pb) {
+    pb_empty_se <- readRDS(pb_f)
+} else {
+    pb_empty_se <- NULL
+}
+
+n_total    <- nrow(hvg_dt)
+n_selected <- sum(hvg_dt$highly_variable, na.rm = TRUE)
+has_nbatches <- "highly_variable_nbatches" %in% names(hvg_dt)
+```
+
+## Overview
+
+The selection of highly variable genes (HVGs) is a crucial step in integration and clustering.
+This report evaluates HVG properties and their relationship to ambient RNA contamination.
+
+- **Total genes**: `r n_total`
+- **Selected HVGs**: `r n_selected` (top `r n_hvg`)
+- **Ambient DE available**: `r ifelse(has_de, "Yes", "No")`
+- **Pseudobulk empties available**: `r ifelse(has_pb, "Yes", "No")`
+
+## Are highly variable genes "ambient"?
+
+HVG selection was performed using scanpy's `seurat_v3` method with `batch_key = sample_id`,
+selecting the top **`r n_hvg`** highly variable genes.
+
+The plot below shows the mean-variance relationship used for HVG selection. Each point represents
+a gene, colored by HVG selection status.
+
+```{r plot_mean_var, fig.height=6, fig.width=8}
+if (all(c("means", "variances_norm") %in% names(hvg_dt))) {
+    plot_mean_variance(hvg_dt)
+} else {
+    cat("Columns 'means' or 'variances_norm' not present — skipping mean-variance plot.\n")
+}
+```
+
+## Ambient Differential Expression {.tabset}
+
+Differential expression analysis was performed on pseudobulk profiles:
+- **Empty droplets**: aggregated counts from low-rank (ambient) barcodes
+- **Cells**: aggregated counts from decontX-filtered cell barcodes
+
+Ambient genes are defined as those significantly upregulated in empty droplets (FDR < 0.05, logFC > 0).
+
+### Volcano plot
+
+```{r plot_volcano, fig.height=6, fig.width=8}
+if (!is.null(de_dt)) {
+    de_dt[, is_ambient := FDR < 0.05 & logFC > 0]
+    de_dt[, is_cell := FDR < 0.05 & logFC < 0]
+    
+    ggplot(de_dt, aes(x = logFC, y = -log10(PValue))) +
+        geom_point(aes(color = is_ambient), size = 2, alpha = 0.6) +
+        scale_color_manual(values = c("TRUE" = "#E74C3C", "FALSE" = "#95A5A6"),
+                           labels = c("TRUE" = "Ambient", "FALSE" = "Not significant")) +
+        geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray50") +
+        geom_vline(xintercept = 0, linetype = "solid", color = "gray50") +
+        theme_minimal(base_size = 12) +
+        theme(plot.title = element_text(face = "bold", size = 14)) +
+        labs(title = "Empty droplets vs. Cells differential expression",
+             x = "log2(FC)",
+             y = "-log10(p-value)",
+             color = "Gene type")
+} else {
+    cat("Ambient DE results not available.\n")
+}
+```
+
+### Ambient genes summary
+
+```{r ambient_genes_summary}
+if (!is.null(de_dt)) {
+    ambient_genes <- de_dt[FDR < 0.05 & logFC > 0, ]
+    n_ambient <- nrow(ambient_genes)
+    
+    cat(sprintf("**Ambient genes (FDR<0.05, logFC>0)**: %d\n", n_ambient))
+    
+    if (n_ambient > 0) {
+        # Check overlap with HVGs
+        hvg_ids <- hvg_dt[highly_variable == TRUE, gene_id]
+        ambient_in_hvg <- sum(ambient_genes$gene_id %in% hvg_ids)
+        cat(sprintf("**Ambient genes that are HVGs**: %d (%.1f%%)\n",
+                    ambient_in_hvg, 100 * ambient_in_hvg / n_ambient))
+        
+        # Top ambient genes
+        top_ambient <- ambient_genes[order(-logFC)][seq_len(min(10, .N))]
+        cat("\n**Top 10 ambient genes**:\n\n")
+        knitr::kable(top_ambient[, .(symbol_ensembl, logFC, PValue, FDR)],
+                     digits = 4,
+                     col.names = c("Gene", "log2FC", "p-value", "FDR"))
+    }
+} else {
+    cat("Ambient DE results not available.\n")
+}
+```
+
+### Ambient genes ranked by logFC
+
+```{r plot_ambient_logfc, fig.height=8, fig.width=8}
+if (!is.null(de_dt)) {
+    ambient_genes <- de_dt[FDR < 0.05 & logFC > 0, ]
+    if (nrow(ambient_genes) > 0) {
+        top_genes <- ambient_genes[order(-logFC)][seq_len(min(40, .N))]
+        
+        ggplot(top_genes, aes(x = reorder(symbol_ensembl, logFC), y = logFC)) +
+            geom_bar(stat = "identity", fill = "#E74C3C", alpha = 0.7) +
+            coord_flip() +
+            theme_minimal(base_size = 11) +
+            theme(plot.title = element_text(face = "bold", size = 12)) +
+            labs(title = "Top ambient genes (ranked by log2FC)",
+                 x = "Gene",
+                 y = "log2(FC) — empty droplets vs. cells")
+    } else {
+        cat("No significant ambient genes found.\n")
+    }
+} else {
+    cat("Ambient DE results not available.\n")
+}
+```
+
+## HVG quality metrics {.tabset}
+
+### HVG rank distribution
+
+Distribution of scanpy HVG ranks among the **`r n_selected`** selected genes.
+Genes with lower ranks were more consistently variable across batches.
+
+```{r plot_rank, fig.height=5, fig.width=6}
+if ("hvg_rank" %in% names(hvg_dt)) {
+    plot_hvg_ranks(hvg_dt)
+}
+```
+
+### Batch prevalence
+
+For each selected HVG, the number of batches (samples) in which it was independently called as
+highly variable. Genes consistently called in many batches are robust HVGs.
+
+```{r plot_nbatches, fig.height=5, fig.width=6}
+if (has_nbatches) {
+    plot_hvg_nbatches(hvg_dt)
+} else {
+    cat("Batch-level HVG prevalence not available.\n")
+}
+```
+
+### Top 50 HVGs
+
+```{r top_hvgs_table}
+top_hvg <- hvg_dt[highly_variable == TRUE][order(hvg_rank)][seq_len(min(50, .N))]
+if (nrow(top_hvg) > 0) {
+    cols <- intersect(c("gene_id", "hvg_rank", "highly_variable_nbatches",
+                        "means", "variances", "variances_norm"),
+                      names(top_hvg))
+    knitr::kable(top_hvg[, ..cols], digits = 4,
+                 caption = "Top 50 highly variable genes (ranked by HVG rank)")
+}
+```
+
+### Highest variance genes
+
+Top 40 genes by normalised variance, colored by HVG selection status.
+
+```{r plot_top_var, fig.height=8, fig.width=7}
+if ("variances_norm" %in% names(hvg_dt)) {
+    plot_top_genes_bar(hvg_dt, rank_by = "variances_norm", n_top = 40)
+}
+```
+
+### Highest mean expression genes
+
+Top 40 genes by mean expression, colored by HVG selection status.
+
+```{r plot_top_mean, fig.height=8, fig.width=7}
+if ("means" %in% names(hvg_dt)) {
+    plot_top_genes_bar(hvg_dt, rank_by = "means", n_top = 40)
+}
+```
+
+## Pseudobulk ambient profiles
+
+```{r pb_summary}
+if (!is.null(pb_empty_se)) {
+    cat(sprintf("**Pseudobulk empty counts**: %d genes × %d samples\n",
+                nrow(pb_empty_se), ncol(pb_empty_se)))
+    cat("**Samples**:", paste(colnames(pb_empty_se), collapse = ", "))
+} else {
+    cat("Pseudobulk empty droplet SE not available.\n")
+}
+```
+
+## Session info
+
+<details>
+```{r session_info, echo=TRUE}
+sessionInfo()
+```
+</details>
+

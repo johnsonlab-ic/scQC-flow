@@ -1,493 +1,317 @@
-/*
- * scQC-flow Workflow Definitions
- * 
- * This file contains the main workflow logic for both standard single-cell
- * and multiome data processing.
- */
+// workflows.nf
 
-// Import standard modules
-include { CELLBENDER; CELLBENDER_GPU; CELLBENDER_H5_CONVERT; CELLBENDER_FROM_H5 } from '../modules/cellbender/cellbender'
-include { GENERATE_ATAC_REPORT } from '../modules/reports/reports'
-include { CREATE_SEURAT } from '../modules/seurat/seurat'
-include { DROPLETQC } from '../modules/dropletqc/dropletqc'
-include { SCDBL } from '../modules/scdbl/scdbl'
-include { CELLBENDER_COMPARISON; CELLBENDER_COMPARISON_STATS_ONLY } from '../modules/cellbender_comparison/cellbender_comparison'
-include { MAP_CELLRANGER } from '../modules/mapping/mapping'
-include { SIMPLEAF_INDEX; SIMPLEAF_PREP_WHITELIST; SIMPLEAF_QUANT } from '../modules/alevinfry/alevinfry'
-include { BARCODE_ESTIMATION; BARCODE_REPORT } from '../modules/barcode_estimation/barcode_estimation'
-include { DECONTX; DECONTX_REPORT } from '../modules/decontx/decontx'
+include { SIMPLEAF_INDEX    } from '../modules/mapping/mapping.nf'
+include { SIMPLEAF_QUANT    } from '../modules/mapping/mapping.nf'
+include { BARCODE_ESTIMATION } from '../modules/mapping/mapping.nf'
+include { MAPPING_REPORT    } from '../modules/reports/reports.nf'
+include { DECONTX           } from '../modules/ambient/ambient.nf'
+include { AMBIENT_REPORT    } from '../modules/reports/reports.nf'
+include { DOUBLET_DETECTION } from '../modules/qc/qc.nf'
+include { APPLY_QC          } from '../modules/qc/qc.nf'
+include { QC_REPORT         } from '../modules/reports/reports.nf'
+include { HVG_SELECTION     } from '../modules/hvg/hvg.nf'
+include { HVG_REPORT        } from '../modules/reports/reports.nf'
+include { RUN_INTEGRATION   } from '../modules/integration/integration.nf'
+include { INTEGRATION_REPORT } from '../modules/reports/reports.nf'
+include { INDEX_REPORT      } from '../modules/reports/reports.nf'
 
 // =============================================================================
-// RNA MAPPING WORKFLOW
+// MAPPING
+//
+// FASTQ -> simpleaf quant -> barcode estimation -> report
+//
+// Chemistry is provided by the user (params.chemistry, default '3v4').
+// Lookup tables map it to the AF chemistry string, orientation,
+// and the Cell Ranger whitelist filename.
+//
+// Required params (set in nextflow.config or on CLI):
+//   --raw_data_dir     parent dir; each subdir is one sample
+//   --cellrangerPath   Cell Ranger install directory (for whitelists)
+//   --genome_fasta     reference genome FASTA
+//   --genome_gtf       reference genome GTF
+//   --chemistry        10x chemistry string (default: 3v4)
+//   --outputDir
 // =============================================================================
-workflow RNA_MAPPING_WORKFLOW {
+
+workflow MAPPING {
+
     take:
-        sampleChannelFastq      // tuple(sampleId, sampleName, fastqPath)
-        mapper                  // string
-        transcriptome           // string: required path to transcriptome reference
-        cellrangerPath          // string: required path to cellranger installation
+    samples_ch    // tuple(sampleId, sampleName, fastqPath)
 
     main:
-        if (mapper != 'cellranger') {
-            error "Unsupported mapper: ${mapper}. Only 'cellranger' is currently supported."
-        }
 
-        if (!transcriptome) {
-            error "--transcriptome is required for mapping with Cell Ranger."
-        }
+    // ------------------------------------------------------------------
+    // 1. Resolve chemistry params (validated early — fails immediately
+    //    if the user passed an unrecognised chemistry string)
+    // ------------------------------------------------------------------
+    def CHEMISTRY_TO_AF = [
+        '3v2': '10xv2', '5v1': '10xv2', '5v2': '10xv2',
+        '3v3': '10xv3', '5v3': '10xv3', '3v4': '10xv3',
+        '3LT': '10xv3', 'multiome': '10xv3',
+    ]
 
-        if (!cellrangerPath) {
-            error "--cellrangerPath is required for mapping with Cell Ranger."
-        }
+    def CHEMISTRY_TO_ORI = [
+        '3v2': 'fw', '5v1': 'rc', '5v2': 'rc',
+        '3v3': 'fw', '5v3': 'rc', '3v4': 'fw',
+        '3LT': 'fw', 'multiome': 'fw',
+    ]
 
-        map_input_ch = sampleChannelFastq.map { sampleId, sampleName, fastqPath ->
-            tuple(sampleId, sampleName, file(fastqPath), cellrangerPath, transcriptome)
-        }
+    def CHEMISTRY_TO_WHITELIST = [
+        '3v2': '737K-august-2016.txt',
+        '5v1': '737K-august-2016.txt',
+        '5v2': '737K-august-2016.txt',
+        '3v3': '3M-february-2018_TRU.txt.gz',
+        '5v3': '3M-5pgex-jan-2023.txt.gz',
+        '3v4': '3M-3pgex-may-2023_TRU.txt.gz',
+        '3LT': '9K-LT-march-2021.txt.gz',
+        'multiome': '737K-arc-v1.txt.gz',
+    ]
 
-        mapping_results = MAP_CELLRANGER(map_input_ch)
-        sample_channel = mapping_results.mapped_dirs
+    if (!CHEMISTRY_TO_AF.containsKey(params.chemistry)) {
+        error "Unknown chemistry '${params.chemistry}'. Accepted values: ${CHEMISTRY_TO_AF.keySet().join(', ')}"
+    }
+    def af_chemistry       = CHEMISTRY_TO_AF[params.chemistry]
+    def orientation        = CHEMISTRY_TO_ORI[params.chemistry]
+    def whitelist_filename = CHEMISTRY_TO_WHITELIST[params.chemistry]
+
+    // ------------------------------------------------------------------
+    // 2. Build simpleaf index from genome FASTA + GTF
+    // ------------------------------------------------------------------
+    SIMPLEAF_INDEX(
+        channel.value(file(params.genome_fasta)),
+        channel.value(file(params.genome_gtf))
+    )
+
+    // ------------------------------------------------------------------
+    // 3. simpleaf quant (per sample)
+    // ------------------------------------------------------------------
+    SIMPLEAF_QUANT(
+        samples_ch,
+        af_chemistry,
+        orientation,
+        whitelist_filename,
+        params.cellrangerPath,
+        SIMPLEAF_INDEX.out.index_dir,
+        SIMPLEAF_INDEX.out.t2g
+    )
+
+    // ------------------------------------------------------------------
+    // 4. Barcode estimation (per sample)
+    //    Produces H5 + knee CSV + ambient params
+    // ------------------------------------------------------------------
+    BARCODE_ESTIMATION(
+        SIMPLEAF_QUANT.out.quant_dirs,
+        channel.value(file("${projectDir}/modules/mapping/barcode_estimation.R"))
+    )
+
+    // ------------------------------------------------------------------
+    // 5. Mapping report
+    // ------------------------------------------------------------------
+    MAPPING_REPORT(
+        BARCODE_ESTIMATION.out.knee_data.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/mapping_report.qmd"))
+    )
 
     emit:
-        sample_channel = sample_channel
+    h5_files       = BARCODE_ESTIMATION.out.h5_files
+    knee_data      = BARCODE_ESTIMATION.out.knee_data
+    ambient_params = BARCODE_ESTIMATION.out.ambient_params
+    report         = MAPPING_REPORT.out.html
 }
 
 // =============================================================================
-// ALEVIN-FRY MAPPING WORKFLOW
+// AMBIENT
+//
+// H5 + knee CSV -> decontX -> ambient report
+//
+// Takes the H5 and knee CSV from MAPPING (v1 barcode estimation).
+// Runs decontX per sample using the in_empty_plateau flag from the knee CSV
+// to define the background, and expected_cells to define the cell population.
 // =============================================================================
-workflow ALEVINFRY_MAPPING_WORKFLOW {
+
+workflow AMBIENT {
+
     take:
-        sampleChannelFastq        // tuple(sampleId, sampleName, fastqPath)
-        cellrangerPath            // string: path to Cell Ranger install/bin for whitelist extraction
-        alevinfry_index           // string or null: path to pre-built index dir
-        alevinfry_t2g             // string or null: path to t2g file
-        alevinfry_whitelist       // string or null: optional whitelist override
-        alevinfry_chemistry       // string: chemistry (e.g. 10xv3)
-        alevinfry_orientation     // string: orientation (fw, rc, both)
-        alevinfry_fasta           // string or null: FASTA for building index
-        alevinfry_gtf             // string or null: GTF for building index
+    h5_ch       // tuple(sampleId, h5_file)   from MAPPING.h5_files
+    knee_ch     // tuple(sampleId, knee_csv)  from MAPPING.knee_data
 
     main:
-        // Map explicit chemistry names to simpleaf chemistry argument.
-        def chemistryMap = [
-            '3v2': '10xv2',
-            '5v1': '10xv2',
-            '5v2': '10xv2',
-            '3v3': '10xv3',
-            '5v3': '10xv3',
-            '3v4': '10xv4-3p',
-            '3LT': '10xv3LT',
-            'multiome': '10xmultiome'
-        ]
-        af_chemistry = chemistryMap[alevinfry_chemistry]
 
-        // Derive default orientation from explicit chemistry if requested.
-        // 5' chemistries are reverse-complement; others default to forward.
-        af_orientation = alevinfry_orientation == 'auto'
-            ? (['5v1', '5v2', '5v3'].contains(alevinfry_chemistry) ? 'rc' : 'fw')
-            : alevinfry_orientation
+    // ------------------------------------------------------------------
+    // 1. Join H5 + knee CSV per sample, run decontX
+    // ------------------------------------------------------------------
+    dcx_input = h5_ch.join(knee_ch)   // tuple(sampleId, h5, knee_csv)
 
-        // Resolve index: build if not provided, otherwise use pre-built
-        if (alevinfry_index) {
-            index_ch = channel.value(file("${alevinfry_index}/index"))
-            t2g_ch   = channel.value(file(alevinfry_t2g))
-        } else {
-            SIMPLEAF_INDEX(alevinfry_fasta, alevinfry_gtf)
-            index_ch = SIMPLEAF_INDEX.out.index_dir.map { it -> file("${it}/index") }
-            t2g_ch   = SIMPLEAF_INDEX.out.index_dir.map { it -> file("${it}/ref/t2g_3col.tsv") }
-        }
+    DECONTX(
+        dcx_input,
+        channel.value(file("${projectDir}/modules/ambient/decontx.R"))
+    )
 
-        if (alevinfry_whitelist) {
-            whitelist_ch = channel.value(file(alevinfry_whitelist))
-        } else {
-            SIMPLEAF_PREP_WHITELIST(cellrangerPath, alevinfry_chemistry)
-            whitelist_ch = SIMPLEAF_PREP_WHITELIST.out.whitelist
-        }
-
-        // Build per-sample quant input channel
-        quant_input_ch = sampleChannelFastq
-            .combine(index_ch)
-            .combine(t2g_ch)
-            .combine(whitelist_ch)
-            .map { sampleId, sampleName, fastqPath, idx, t2g, wl ->
-                tuple(sampleId, sampleName, file(fastqPath), idx, t2g, wl, af_chemistry, af_orientation)
-            }
-
-        quant_results = SIMPLEAF_QUANT(quant_input_ch)
-
-        // Barcode estimation: H5 conversion + nuclear_fraction + knee params.
-        // Mirrors scprocess save_alevin_to_h5 — this is the last step of mapping,
-        // not the first step of QC.
-        barcode_script     = channel.value(file("${projectDir}/modules/barcode_estimation/run_barcode_estimation.R"))
-        barcode_report_qmd = channel.value(file("${projectDir}/modules/barcode_estimation/barcode_estimation.qmd"))
-        BARCODE_ESTIMATION(quant_results.quant_dirs, barcode_script)
-        BARCODE_REPORT(
-            BARCODE_ESTIMATION.out.knee_data.map { _id, csv -> csv }.collect(),
-            BARCODE_ESTIMATION.out.nuclear_fraction.map { _id, csv -> csv }.collect(),
-            barcode_report_qmd
-        )
+    // ------------------------------------------------------------------
+    // 2. Ambient report (one HTML across all samples)
+    // ------------------------------------------------------------------
+    AMBIENT_REPORT(
+        DECONTX.out.qc_metrics.map { _id, csv -> csv }.collect(),
+        DECONTX.out.barcodes.map   { _id, csv -> csv }.collect(),
+        DECONTX.out.dcx_params.map { _id, csv -> csv }.collect(),
+        DECONTX.out.summaries.map  { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/ambient_report.qmd"))
+    )
 
     emit:
-        quant_dirs       = quant_results.quant_dirs
-        h5_files         = BARCODE_ESTIMATION.out.h5_files
-        knee_data        = BARCODE_ESTIMATION.out.knee_data
-        knee_params      = BARCODE_ESTIMATION.out.knee_params
-        nuclear_fraction = BARCODE_ESTIMATION.out.nuclear_fraction
-}
-
-// Import multiome-specific modules
-include { SCDBL_MULTIOME } from '../modules/multiome/scdbl_multiome'
-include { CREATE_SEURAT_MULTIOME } from '../modules/multiome/seurat_multiome'
-include { EXTRACT_MODALITIES } from '../modules/multiome/extract_modalities'
-include { CELLBENDER_MULTIOME; CELLBENDER_MULTIOME_GPU } from '../modules/multiome/cellbender_multiome'
-
-// =============================================================================
-// STANDARD SINGLE-CELL WORKFLOW
-// =============================================================================
-workflow STANDARD_WORKFLOW {
-    take:
-        sampleChannelBase       // tuple(sampleName, mappingDir)
-        dropletqc_script_path
-        scdbl_script_path
-        seurat_script_path
-        cellbender              // boolean
-        gpu                     // boolean
-        max_mito                // double
-        min_nuclear             // double
-        metadata                // string or null
-
-    main:
-        if (cellbender) {
-            log.info "Running CellBender workflow for all samples"
-            
-            // Run CellBender first
-            if (gpu) {
-                log.info "GPU acceleration enabled for CellBender"
-                cellbender_results = CELLBENDER_GPU(sampleChannelBase)
-            } else {
-                cellbender_results = CELLBENDER(sampleChannelBase)
-            }
-            
-            // Run H5 conversion after CellBender
-            cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
-
-            // Prepare DropletQC inputs: BAM file + BAM index + CellBender barcodes
-            dropletqc_input_ch = sampleChannelBase
-                .join(cellbender_results.cellbender_output)
-                .map { sampleName, mappingDir, cellbenderOutput -> 
-                    def bamFile = file("${mappingDir}/outs/possorted_genome_bam.bam")
-                    def bamIndex = file("${mappingDir}/outs/possorted_genome_bam.bam.bai")
-                    def barcodesFile = file("${cellbenderOutput}/cellbender_out_cell_barcodes.csv")
-                    tuple(sampleName, bamFile, bamIndex, barcodesFile, dropletqc_script_path)
-                }
-
-            // Prepare scDbl inputs: CellBender H5 file
-            scdbl_input_ch = cellbender_h5_results.seurat_h5
-                .map { sampleName, h5File -> tuple(sampleName, h5File, scdbl_script_path) }
-
-            // Run DropletQC and scDbl with CellBender outputs
-            dropletqc_results = DROPLETQC(dropletqc_input_ch)
-            scdbl_results = SCDBL(scdbl_input_ch)
-
-            // Run CellBender Comparison to analyze droplet calling differences
-            cellbender_comparison_input_ch = sampleChannelBase
-                .join(cellbender_h5_results.seurat_h5)
-                .map { sampleName, mappingDir, h5File -> 
-                    tuple(sampleName, mappingDir, h5File)
-                }
-            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch).comparison_results
-
-            // Create Seurat objects using CellBender H5 and updated QC metrics
-            seurat_input_ch = sampleChannelBase
-                .join(dropletqc_results.metrics)
-                .join(scdbl_results.metrics)
-                .join(cellbender_h5_results.seurat_h5)
-                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
-
-            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> 
-                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path) 
-            }
-            seurat_results = CREATE_SEURAT(seurat_input_with_script)
-            
-        } else {
-            log.info "Running standard workflow without CellBender"
-            
-            // Prepare DropletQC inputs: BAM file + BAM index + Cell Ranger barcodes
-            dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
-                def bamFile = file("${mappingDir}/outs/possorted_genome_bam.bam")
-                def bamIndex = file("${mappingDir}/outs/possorted_genome_bam.bam.bai")
-                def barcodesFile = file("${mappingDir}/outs/filtered_feature_bc_matrix/barcodes.tsv.gz")
-                tuple(sampleName, bamFile, bamIndex, barcodesFile, dropletqc_script_path)
-            }
-
-            // Prepare scDbl inputs: Cell Ranger H5 file
-            scdbl_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
-                def h5File = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
-                tuple(sampleName, h5File, scdbl_script_path)
-            }
-
-            // Run DropletQC and scDbl with Cell Ranger outputs
-            dropletqc_results = DROPLETQC(dropletqc_input_ch)
-            scdbl_results = SCDBL(scdbl_input_ch)
-
-            // Run CellBender Comparison stats (Cell Ranger only) to analyze droplet calling
-            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase).comparison_results
-
-            // Use default 10X H5 if CellBender is not run
-            h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
-                def default_h5 = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
-                tuple(sampleName, default_h5)
-            }
-            
-            seurat_input_ch = sampleChannelBase
-                .join(dropletqc_results.metrics)
-                .join(scdbl_results.metrics)
-                .join(h5_path_ch)
-                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4]) }
-
-            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path -> 
-                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path) 
-            }
-            seurat_results = CREATE_SEURAT(seurat_input_with_script)
-        }
-
-    emit:
-        seurat_results = seurat_results
-        cellbender_comparison_results = cellbender_comparison_results
+    h5_files = DECONTX.out.h5_files
+    barcodes = DECONTX.out.barcodes
+    report   = AMBIENT_REPORT.out.html
 }
 
 // =============================================================================
-// MULTIOME WORKFLOW
+// AMBIENT_DE
+//
+// Raw H5 + knee CSV + filtered H5 -> EdgeR comparison -> DE table + pseudobulk
+//
+// Takes raw H5 files (all droplets) from MAPPING, knee CSVs from MAPPING
+// (to identify empty vs. cell-ranked droplets), and filtered H5 files
+// (decontX-processed cells) from AMBIENT. Constructs pseudobulk matrices:
+// - Empty: sum S+U+A counts across empty-ranked barcodes per sample
+// - Cells: sum S+U+A counts across decontX-identified cells per sample
+// Then runs EdgeR comparison to identify ambient genes (FDR<0.05, logFC>0).
+//
+// Outputs:
+//   - edger_dt.csv.gz      differential expression results
+//   - pb_empties.rds       SummarizedExperiment with empty pseudobulk counts
 // =============================================================================
-workflow MULTIOME_WORKFLOW {
+
+// =============================================================================
+// QC
+//
+// Filtered H5 -> per-sample QC (metrics + doublet detection) -> QC report
+//
+// Takes decontX-filtered H5 files from AMBIENT and the genome GTF.
+// Runs SAMPLE_QC per sample (scDblFinder, hard + soft thresholds),
+// then renders a combined QC report.
+// =============================================================================
+
+workflow QC {
+
     take:
-        sampleChannelBase       // tuple(sampleName, mappingDir)
-        dropletqc_script_path
-        scdbl_script_path       // multiome version: run_scdbl_multiome.R
-        seurat_script_path      // multiome version: make_seurat_multiome.R
-        extract_modalities_script_path // R script to extract Gene Expression and ATAC from multiome H5
-        cellbender              // boolean
-        gpu                     // boolean
-        max_mito                // double
-        min_nuclear             // double
-        metadata                // string or null
+    h5_ch        // tuple(sampleId, h5_file)  from AMBIENT.h5_files
 
     main:
-        if (cellbender) {
-            log.info "Running CellBender workflow for multiome samples"
-            
-            // First, extract Gene Expression and ATAC modalities from multiome raw H5
-            // GEX H5 is used for CellBender, ATAC H5 is passed to Seurat for ChromatinAssay
-            extract_input_ch = sampleChannelBase.map { sampleName, mappingDir ->
-                tuple(sampleName, mappingDir, extract_modalities_script_path)
-            }
-            extract_results = EXTRACT_MODALITIES(extract_input_ch)
-            
-            // Run CellBender on the extracted Gene Expression H5
-            if (gpu) {
-                log.info "GPU acceleration enabled for CellBender"
-                cellbender_results = CELLBENDER_MULTIOME_GPU(extract_results.gex_h5)
-            } else {
-                cellbender_results = CELLBENDER_MULTIOME(extract_results.gex_h5)
-            }
-            
-            // Run H5 conversion after CellBender
-            cellbender_h5_results = CELLBENDER_H5_CONVERT(cellbender_results.cellbender_output)
 
-            // Prepare DropletQC inputs: GEX BAM file + BAM index + CellBender barcodes
-            // Note: Multiome uses gex_possorted_bam.bam instead of possorted_genome_bam.bam
-            dropletqc_input_ch = sampleChannelBase
-                .join(cellbender_results.cellbender_output)
-                .map { sampleName, mappingDir, cellbenderOutput -> 
-                    def bamFile = file("${mappingDir}/outs/gex_possorted_bam.bam")
-                    def bamIndex = file("${mappingDir}/outs/gex_possorted_bam.bam.bai")
-                    def barcodesFile = file("${cellbenderOutput}/cellbender_out_cell_barcodes.csv")
-                    tuple(sampleName, bamFile, bamIndex, barcodesFile, dropletqc_script_path)
-                }
+    // ------------------------------------------------------------------
+    // 1. Doublet detection (per sample) — cached unless H5 changes
+    // ------------------------------------------------------------------
+    DOUBLET_DETECTION(
+        h5_ch,
+        channel.value(file(params.genome_gtf)),
+        channel.value(file("${projectDir}/modules/qc/doublet_detection.R"))
+    )
 
-            // Prepare scDbl inputs: CellBender H5 file (uses multiome R script)
-            scdbl_input_ch = cellbender_h5_results.seurat_h5
-                .map { sampleName, h5File -> tuple(sampleName, h5File, scdbl_script_path) }
+    // ------------------------------------------------------------------
+    // 2. QC metrics + threshold filtering (per sample)
+    //    Re-runs on threshold changes; doublet detection is unaffected.
+    // ------------------------------------------------------------------
+    APPLY_QC(
+        h5_ch.join(DOUBLET_DETECTION.out.dbl_results),
+        channel.value(file(params.genome_gtf)),
+        channel.value(file("${projectDir}/modules/qc/apply_qc.R"))
+    )
 
-            // Run DropletQC (same process, different BAM) and scDbl with multiome module
-            dropletqc_results = DROPLETQC(dropletqc_input_ch)
-            scdbl_results = SCDBL_MULTIOME(scdbl_input_ch)
-
-            // Run CellBender Comparison to analyze droplet calling differences (multiome + cellbender)
-            cellbender_comparison_input_ch = sampleChannelBase
-                .join(cellbender_h5_results.seurat_h5)
-                .map { sampleName, mappingDir, h5File -> 
-                    tuple(sampleName, mappingDir, h5File)
-                }
-            cellbender_comparison_results = CELLBENDER_COMPARISON(cellbender_comparison_input_ch).comparison_results
-
-            // Create Seurat objects using CellBender H5, ATAC H5, and multiome module
-            // Join: sampleChannelBase + dropletqc + scdbl + cellbender_h5 + atac_h5
-            seurat_input_ch = sampleChannelBase
-                .join(dropletqc_results.metrics)
-                .join(scdbl_results.metrics)
-                .join(cellbender_h5_results.seurat_h5)
-                .join(extract_results.atac_h5)
-                // Structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, gex_h5, atac_h5]
-                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4], it[5]) }
-
-            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path, atac_h5_path -> 
-                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path, atac_h5_path) 
-            }
-            seurat_multiome_output = CREATE_SEURAT_MULTIOME(seurat_input_with_script)
-            seurat_results = seurat_multiome_output.seurat_rds
-            atac_files = seurat_multiome_output.atac_files
-            
-        } else {
-            log.info "Running multiome workflow without CellBender"
-            
-            // For non-CellBender multiome, we still need to extract the ATAC modality
-            // from the raw H5 for Seurat ChromatinAssay creation
-            extract_input_ch = sampleChannelBase.map { sampleName, mappingDir ->
-                tuple(sampleName, mappingDir, extract_modalities_script_path)
-            }
-            extract_results = EXTRACT_MODALITIES(extract_input_ch)
-            
-            // Prepare DropletQC inputs: GEX BAM file + BAM index + Cell Ranger barcodes
-            // Note: Multiome uses gex_possorted_bam.bam instead of possorted_genome_bam.bam
-            dropletqc_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
-                def bamFile = file("${mappingDir}/outs/gex_possorted_bam.bam")
-                def bamIndex = file("${mappingDir}/outs/gex_possorted_bam.bam.bai")
-                def barcodesFile = file("${mappingDir}/outs/filtered_feature_bc_matrix/barcodes.tsv.gz")
-                tuple(sampleName, bamFile, bamIndex, barcodesFile, dropletqc_script_path)
-            }
-
-            // Prepare scDbl inputs: Cell Ranger H5 file (multiome version extracts Gene Expression)
-            scdbl_input_ch = sampleChannelBase.map { sampleName, mappingDir -> 
-                def h5File = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
-                tuple(sampleName, h5File, scdbl_script_path)
-            }
-
-            // Run DropletQC (same process) and scDbl with multiome module
-            dropletqc_results = DROPLETQC(dropletqc_input_ch)
-            scdbl_results = SCDBL_MULTIOME(scdbl_input_ch)
-
-            // Run CellBender Comparison stats (Cell Ranger only) for multiome
-            cellbender_comparison_results = CELLBENDER_COMPARISON_STATS_ONLY(sampleChannelBase).comparison_results
-
-            // Use default 10X H5 if CellBender is not run
-            h5_path_ch = sampleChannelBase.map { sampleName, mappingDir ->
-                def default_h5 = file("${mappingDir}/outs/filtered_feature_bc_matrix.h5")
-                tuple(sampleName, default_h5)
-            }
-            
-            // Join: sampleChannelBase + dropletqc + scdbl + gex_h5 + atac_h5
-            seurat_input_ch = sampleChannelBase
-                .join(dropletqc_results.metrics)
-                .join(scdbl_results.metrics)
-                .join(h5_path_ch)
-                .join(extract_results.atac_h5)
-                // Structure: [sampleName, mappingDir, dropletqc_metrics, scdbl_metrics, gex_h5, atac_h5]
-                .map { it -> tuple(it[0], it[1], it[2], it[3], it[4], it[5]) }
-
-            seurat_input_with_script = seurat_input_ch.map { sampleName, mappingDir, dropletqc, scdbl, h5_path, atac_h5_path -> 
-                tuple(sampleName, mappingDir, dropletqc, scdbl, seurat_script_path, max_mito, min_nuclear, metadata, h5_path, atac_h5_path) 
-            }
-            seurat_multiome_output = CREATE_SEURAT_MULTIOME(seurat_input_with_script)
-            seurat_results = seurat_multiome_output.seurat_rds
-            atac_files = seurat_multiome_output.atac_files
-        }
+    // ------------------------------------------------------------------
+    // 3. QC report (one HTML across all samples)
+    // ------------------------------------------------------------------
+    QC_REPORT(
+        APPLY_QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/qc/qc_plots.R")),
+        channel.value(file("${projectDir}/modules/reports/qc_report.qmd"))
+    )
 
     emit:
-        seurat_results = seurat_results
-        atac_files = atac_files
-        sample_channel = sampleChannelBase
-        cellbender_comparison_results = cellbender_comparison_results
+    qc_metrics  = APPLY_QC.out.qc_metrics
+    qc_summary  = APPLY_QC.out.qc_summary
+    dbl_results = DOUBLET_DETECTION.out.dbl_results
+    report      = QC_REPORT.out.html
 }
 
 // =============================================================================
-// ALEVIN-FRY QC WORKFLOW
+// HVG_SELECTION
+//
+// Filtered H5 files + QC metrics -> HVG selection -> HVG report
+//
+// Collects all per-sample filtered H5 files from AMBIENT and QC metrics from
+// QC. Sums S+U+A counts, filters to QC-passing singlets, runs scanpy HVG
+// selection (seurat_v3, batch_key=sample_id), and saves:
+//   - hvg_stats.csv.gz    (per-gene mean/variance/HVG flag)
+//   - hvg_counts.h5       (raw SUA-summed counts for HVG genes only)
 // =============================================================================
-// Runs QC without BAM files. Barcode estimation (H5 + nuclear_fraction + knee
-// params) is performed as the last step of ALEVINFRY_MAPPING_WORKFLOW (mirroring
-// scprocess save_alevin_to_h5), so this workflow receives those outputs directly.
-// Ambient RNA removal is switchable: params.ambient_method = 'decontx' | 'cellbender'
-workflow ALEVINFRY_QC_WORKFLOW {
+
+workflow HVG {
+
     take:
-        h5_files            // tuple(sampleId, h5)  — raw count matrix from BARCODE_ESTIMATION
-        knee_data           // tuple(sampleId, csv) — knee plot data from BARCODE_ESTIMATION
-        knee_params         // tuple(sampleId, txt) — CellBender/decontX params from BARCODE_ESTIMATION
-        nuclear_fraction    // tuple(sampleId, csv) — nuclear fraction from BARCODE_ESTIMATION
-        quant_dirs          // tuple(sampleId, dir) — quant dir; passed as mappingDir to Seurat
-        scdbl_script_path
-        seurat_script_path
-        ambient_method      // string: 'decontx' or 'cellbender'
-        gpu                 // boolean: enable CellBender GPU (only used if ambient_method == 'cellbender')
-        max_mito            // double
-        min_nuclear         // double
-        max_nuclear         // double
-        metadata            // string or null
+    h5_ch         // tuple(sampleId, h5_file)      from AMBIENT.h5_files
+    qc_metrics_ch // tuple(sampleId, csv_gz)        from QC.qc_metrics
+    de_table      // path edger_dt.csv.gz           from AMBIENT_DE.de_table
+    pb_empties    // path pb_empties.rds            from AMBIENT_DE.pb_empties
 
     main:
-        // ---------------------------------------------------------------
-        // 1. Ambient RNA correction (decontX or CellBender)
-        //    h5_files and knee outputs come from BARCODE_ESTIMATION,
-        //    which ran at the end of ALEVINFRY_MAPPING_WORKFLOW.
-        // ---------------------------------------------------------------
-        if (ambient_method == 'decontx') {
-            log.info "Ambient correction: decontX (barcodeRanks cell calling, CPU)"
-            decontx_script     = channel.value(file("${projectDir}/modules/decontx/run_decontx.R"))
-            decontx_report_qmd = channel.value(file("${projectDir}/modules/decontx/decontx_report.qmd"))
-            decontx_input_ch = h5_files
-                .join(knee_data)
-                .map { sampleId, h5File, kneeCsv -> tuple(sampleId, h5File, kneeCsv) }
-            DECONTX(decontx_input_ch, decontx_script)
-            filtered_h5_ch = DECONTX.out.filtered_h5
-            DECONTX_REPORT(
-                DECONTX.out.usa_metrics.map { _id, csv -> csv }.collect(),
-                DECONTX.out.barcodes.map    { _id, csv -> csv }.collect(),
-                knee_data.map               { _id, csv -> csv }.collect(),
-                decontx_report_qmd
-            )
 
-        } else if (ambient_method == 'cellbender') {
-            log.info "Ambient correction: CellBender (${gpu ? 'GPU' : 'CPU'})"
-            knee_vals_ch = knee_params
-                .map { sampleId, paramsFile ->
-                    def parts = paramsFile.text.trim().split(',')
-                    tuple(sampleId, parts[0] as Integer, parts[1] as Integer, parts[2] as Integer)
-                }
-            cellbender_input_ch = h5_files
-                .join(knee_vals_ch)
-                .map { sampleId, h5File, ec, td, lct -> tuple(sampleId, h5File, ec, td, lct) }
-            CELLBENDER_FROM_H5(cellbender_input_ch)
-            filtered_h5_ch = CELLBENDER_FROM_H5.out.filtered_h5
+    HVG_SELECTION(
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        qc_metrics_ch.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
+    )
 
-        } else {
-            error "Unknown ambient_method: ${ambient_method}. Choose 'decontx' or 'cellbender'."
-        }
-
-        // ---------------------------------------------------------------
-        // 2. Doublet detection on the ambient-corrected H5
-        // ---------------------------------------------------------------
-        scdbl_input_ch = filtered_h5_ch
-            .map { sampleId, h5File ->
-                tuple(sampleId, h5File, scdbl_script_path)
-            }
-        scdbl_results = SCDBL(scdbl_input_ch)
-
-        // ---------------------------------------------------------------
-        // 3. Seurat object creation
-        //    nuclear_fraction substitutes for dropletqc_metrics.
-        //    quant_dirs is passed as mappingDir (unused when h5_path is provided).
-        // ---------------------------------------------------------------
-        seurat_input_ch = filtered_h5_ch
-            .join(nuclear_fraction)
-            .join(scdbl_results.metrics)
-            .join(quant_dirs)
-            .map { sampleId, h5File, nf_csv, scdbl_csv, quantDir ->
-                tuple(sampleId, quantDir, nf_csv, scdbl_csv,
-                      seurat_script_path, max_mito, min_nuclear, metadata, h5File)
-            }
-        seurat_results = CREATE_SEURAT(seurat_input_ch)
+    HVG_REPORT(
+        HVG_SELECTION.out.hvg_stats,
+        de_table,
+        pb_empties,
+        channel.value(file("${projectDir}/modules/reports/hvg_report.qmd")),
+        channel.value(file("${projectDir}/modules/hvg/hvg_plots.R"))
+    )
 
     emit:
-        seurat_results   = seurat_results
-        nuclear_fraction = nuclear_fraction
-        h5_files         = h5_files
-        filtered_h5      = filtered_h5_ch
+    hvg_counts = HVG_SELECTION.out.hvg_counts
+    hvg_stats  = HVG_SELECTION.out.hvg_stats
+    report     = HVG_REPORT.out.html
+}
+
+// =============================================================================
+// INTEGRATION
+//
+// HVG count matrix + metadata CSV -> Harmony integration -> integration report
+//
+// Loads the HVG count matrix from HVG, joins with user-provided
+// metadata CSV (on metadata_id_col -> sample_id), normalises (CPM10k + log1p),
+// scales, runs PCA -> Harmony -> neighbors -> Leiden (multiple resolutions)
+// -> UMAP, and saves integration_dt.csv.gz.
+// =============================================================================
+
+workflow INTEGRATION {
+
+    take:
+    hvg_counts_ch  // path  hvg_counts.h5 from HVG
+    qc_metrics_ch  // tuple(sampleId, csv_gz) from QC.qc_metrics
+
+    main:
+
+    meta_csv_ch = params.metadata_csv
+        ? channel.value(file(params.metadata_csv))
+        : channel.value(file("NO_FILE"))
+
+    RUN_INTEGRATION(
+        hvg_counts_ch,
+        meta_csv_ch,
+        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
+    )
+
+    INTEGRATION_REPORT(
+        RUN_INTEGRATION.out.integration_dt,
+        qc_metrics_ch.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/integration_report.qmd")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
+    )
+
+    emit:
+    integration_dt = RUN_INTEGRATION.out.integration_dt
+    report         = INTEGRATION_REPORT.out.html
 }

@@ -1,0 +1,240 @@
+---
+title: "Ambient RNA removal diagnostics"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(magrittr)
+  library(Matrix)
+  library(ggplot2)
+  library(patchwork)
+  library(strex)
+})
+
+# Discover per-sample files written by DECONTX into the Nextflow work dir
+qc_fs      <- list.files(".", pattern = "^barcodes_qc_metrics_.+\\.csv\\.gz$", full.names = TRUE)
+bcs_fs     <- list.files(".", pattern = "^cell_barcodes_.+\\.csv$",            full.names = TRUE)
+dcx_fs     <- list.files(".", pattern = "^dcx_params_.+\\.csv$",               full.names = TRUE)
+summary_fs <- list.files(".", pattern = "^dcx_summary_.+\\.csv$",              full.names = TRUE)
+
+# Extract sample IDs from filenames
+.sid <- function(fs, prefix, suffix) {
+  sub(suffix, "", sub(paste0("^.*/", prefix), "", fs))
+}
+
+s_lvls <- .sid(summary_fs, "dcx_summary_", "\\.csv$")
+names(qc_fs)      <- .sid(qc_fs,      "barcodes_qc_metrics_", "\\.csv\\.gz$")
+names(bcs_fs)     <- .sid(bcs_fs,     "cell_barcodes_",       "\\.csv$")
+names(dcx_fs)     <- .sid(dcx_fs,     "dcx_params_",          "\\.csv$")
+names(summary_fs) <- .sid(summary_fs, "dcx_summary_",         "\\.csv$")
+
+# Align to same sample order
+qc_fs      <- qc_fs[s_lvls]
+bcs_fs     <- bcs_fs[s_lvls]
+dcx_fs     <- dcx_fs[s_lvls]
+summary_fs <- summary_fs[s_lvls]
+
+# Load data
+summary_dt <- lapply(summary_fs, fread) %>% rbindlist()
+ok_bcs_ls  <- lapply(bcs_fs,     function(f) fread(f, header = FALSE)$V1)
+dcx_ls     <- lapply(dcx_fs,     fread)
+
+# Filter QC metrics to barcodes with >= 10 total pre-UMIs (mirrors scprocess get_usa_dt)
+usa_dt_ls  <- lapply(qc_fs, function(f) {
+  dt <- fread(f)
+  dt[pre_S + pre_U + pre_A >= 10]
+})
+
+n_samples  <- length(s_lvls)
+chunk_size <- 10
+idx_ls     <- seq_along(s_lvls)
+chunks_ls  <- split(idx_ls, ceiling(idx_ls / chunk_size))
+```
+
+## Summary table
+
+```{r summary_table}
+knitr::kable(
+  summary_dt[, .(
+    sample_id, n_cells, n_empties, expected_cells,
+    total_droplets_included,
+    mean_pct_contamination
+  )],
+  col.names = c(
+    "Sample", "Cells (post-decontX)", "Empties used",
+    "Expected cells", "Total droplets included", "Mean % contamination"
+  ),
+  digits = 2
+)
+```
+
+## Spliced % vs UMIs
+
+Relationship between total UMIs and spliced read percentage, before and after
+decontX. Ambient RNA is enriched for spliced reads, so effective ambient removal
+shifts the spliced % of cells downward. Barcodes are coloured by whether they
+were called as cells (grey), used as ambient background (red), or excluded
+entirely (dark grey).
+
+```{r plot_spliced_vs_umis, results="asis"}
+cat('::: {.panel-tabset}\n\n')
+.plot_spliced_vs_umis <- function(ss, usa_dt, ok_bcs, total_inc) {
+  pscount  <- 10
+  PCT_BRKS <- c(0.001, 0.003, 0.01, 0.03, 0.1, 0.5, 0.9, 0.97, 0.99, 0.997, 0.999) %>% qlogis()
+  PCT_LABS <- c("0.1%", "0.3%", "1%", "3%", "10%", "50%", "90%", "97%", "99%", "99.7%", "99.9%")
+  LOG_BRKS <- log10(pscount + c(0, 10, 30, 100, 300, 1000, 3000, 1e4, 3e4, 1e5, 3e5))
+  LOG_LABS <- c("0", "10", "30", "100", "300", "1k", "3k", "10k", "30k", "100k", "300k")
+  COL_VALS <- c(
+    "cell"                       = "grey80",
+    "no, used for\nambient"      = "#FB8072",
+    "no, excluded\ncompletely"   = "grey30"
+  )
+
+  plot_dt <- usa_dt[, .(
+    barcode,
+    pre_total    = pre_S + pre_U + pre_A,
+    post_total   = post_S + post_U + post_A,
+    pre_logit_S  = qlogis((pre_S  + 1) / (pre_S  + pre_U  + 2)),
+    post_logit_S = qlogis((post_S + 1) / (post_S + post_U + 2))
+  )] %>%
+    melt(measure.vars = measure(stage, value.name,
+                                 pattern = "(pre|post)_(.+)")) %>%
+    .[, stage := factor(stage, levels = c("pre", "post"))] %>%
+    .[total > 0] %>%
+    .[order(total)]
+
+  # Determine which barcodes are "included" (top total_inc by pre UMI)
+  inc_bcs <- usa_dt[order(-pre_S - pre_U - pre_A), barcode][seq_len(total_inc)]
+
+  plot_dt[, status := fifelse(
+    barcode %in% ok_bcs,  names(COL_VALS)[1],
+    fifelse(barcode %in% inc_bcs, names(COL_VALS)[2], names(COL_VALS)[3])
+  ) %>% factor(levels = names(COL_VALS))]
+
+  g_dens <- ggplot(plot_dt) +
+    aes(y = logit_S, x = log10(total + pscount)) +
+    geom_bin2d(bins = c(80, 50)) +
+    scale_x_continuous(breaks = LOG_BRKS, labels = LOG_LABS) +
+    expand_limits(x = log10(pscount)) +
+    scale_y_continuous(breaks = PCT_BRKS, labels = PCT_LABS) +
+    scale_fill_distiller(palette = "RdBu", trans = "log10") +
+    facet_grid(. ~ stage) +
+    theme_classic() +
+    labs(y = "spliced pct.", x = "total UMIs", title = ss)
+
+  g_dots <- ggplot(plot_dt) +
+    aes(y = logit_S, x = log10(total + pscount), colour = status) +
+    geom_point(size = 0.1) +
+    scale_x_continuous(breaks = LOG_BRKS, labels = LOG_LABS) +
+    expand_limits(x = log10(pscount)) +
+    scale_y_continuous(breaks = PCT_BRKS, labels = PCT_LABS) +
+    scale_color_manual(values = COL_VALS,
+      guide = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+    facet_grid(. ~ stage) +
+    theme_classic() +
+    labs(y = "spliced pct.", x = "total UMIs", colour = "called as cell?")
+
+  g_dens / g_dots + plot_layout(axes = "collect")
+}
+
+for (ss in s_lvls) {
+  cat("### ", ss, "\n\n")
+  tot_inc <- summary_dt[sample_id == ss, total_droplets_included]
+  print(.plot_spliced_vs_umis(ss, usa_dt_ls[[ss]], ok_bcs_ls[[ss]], tot_inc))
+  cat("\n\n")
+}
+cat(':::\n\n')
+```
+
+## Reads removed as ambient
+
+Proportion of reads removed from barcodes called as cells. A logit scale is used
+so that small proportions remain readable. Values near 0% indicate little ambient
+removal; values toward 99%+ may flag problematic samples.
+
+```{r plot_reads_removed_as_ambient, results="asis"}
+cat('::: {.panel-tabset}\n\n')
+.plot_reads_removed_as_ambient <- function(usa_dt_ls_chunk, ok_bcs_ls_chunk) {
+  logit_brks <- c(1e-4, 1e-3, 1e-2, 0.10, 0.50, 0.90, 0.99, 0.999) %>% qlogis()
+  logit_labs <- c("0.01%", "0.1%", "1%", "10%", "50%", "90%", "99%", "99.9%")
+
+  plot_dt <- lapply(names(usa_dt_ls_chunk), function(nn) {
+    usa_tmp  <- usa_dt_ls_chunk[[nn]]
+    bcs_tmp  <- ok_bcs_ls_chunk[[nn]]
+    usa_tmp[barcode %in% bcs_tmp] %>%
+      .[, .(total_pre  = pre_S  + pre_U  + pre_A,
+             total_post = post_S + post_U + post_A), by = barcode] %>%
+      .[!is.na(total_post)] %>%
+      .[, logit_removed := qlogis(1 - total_post / total_pre)] %>%
+      .[, sample_id := nn]
+  }) %>% rbindlist()
+
+  ggplot(plot_dt) +
+    aes(x = sample_id,
+        y = logit_removed %>%
+          pmin(tail(logit_brks, 1)) %>%
+          pmax(head(logit_brks, 1))) +
+    geom_violin(colour = NA, fill = "grey60",
+                kernel = "rectangular", adjust = 0.1,
+                scale = "width", width = 0.8) +
+    scale_y_continuous(breaks = logit_brks, labels = logit_labs) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0, vjust = 0.5),
+          plot.margin = unit(c(1, 4, 1, 1), "lines")) +
+    labs(y = "pct. reads removed as ambient", x = NULL)
+}
+
+w_per_s <- 0.8
+for (ii in seq_along(chunks_ls)) {
+  chunk     <- chunks_ls[[ii]]
+  chunk_ids <- s_lvls[chunk]
+  cat("### samples ", min(chunk), "-", max(chunk), "\n\n")
+  fig_w <- 1 + w_per_s * max(length(chunk), 4)
+  cat(sprintf("<div style='width:%spx'>\n", round(fig_w * 96)))
+  print(.plot_reads_removed_as_ambient(
+    usa_dt_ls[chunk_ids],
+    ok_bcs_ls[chunk_ids]
+  ))
+  cat("</div>\n\n")
+}
+cat(':::\n\n')
+```
+
+## Contamination distribution
+
+Per-cell contamination proportion estimated by decontX, shown as a histogram.
+Higher values indicate cells with more ambient contamination.
+
+```{r plot_contamination, results="asis"}
+cat('::: {.panel-tabset}\n\n')
+for (ss in s_lvls) {
+  cat("### ", ss, "\n\n")
+  dcx_dt <- dcx_ls[[ss]]
+  g <- ggplot(dcx_dt) +
+    aes(x = pct_contamination * 100) +
+    geom_histogram(bins = 50, fill = "steelblue", colour = NA) +
+    theme_classic() +
+    labs(x = "% contamination (decontX)", y = "cells", title = ss)
+  print(g)
+  cat("\n\n")
+}
+cat(':::\n\n')
+```
+
+## R session info
+
+<details>
+```{r session_info}
+sessionInfo()
+```
+</details>

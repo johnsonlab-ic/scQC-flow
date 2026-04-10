@@ -1,0 +1,147 @@
+---
+title: "Cell-level QC"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r setup}
+source("qc_plots.R")
+setDTthreads(1)
+
+# QC metric definitions
+qc_names <- c("n_cells", "log_counts", "log_feats", "logit_mito", "logit_spliced")
+qc_lu    <- c("no. of cells", "no. of UMIs", "no. of genes", "mito. pct.", "spliced pct.") %>%
+  setNames(qc_names)
+
+# Hard thresholds (for pre-filtering obvious junk before plotting)
+hard_min_counts <- as.numeric(Sys.getenv("HARD_MIN_COUNTS", "200"))
+hard_min_feats  <- as.numeric(Sys.getenv("HARD_MIN_FEATS",  "100"))
+hard_max_mito   <- as.numeric(Sys.getenv("HARD_MAX_MITO",   "0.5"))
+
+# Soft thresholds (for QC ranges shown on plots)
+min_counts  <- as.numeric(Sys.getenv("MIN_COUNTS",  "200"))
+min_feats   <- as.numeric(Sys.getenv("MIN_FEATS",   "100"))
+max_mito    <- as.numeric(Sys.getenv("MAX_MITO",    "0.1"))
+min_mito    <- as.numeric(Sys.getenv("MIN_MITO",    "0.0001"))
+max_splice  <- as.numeric(Sys.getenv("MAX_SPLICE",  "0.75"))
+min_splice  <- as.numeric(Sys.getenv("MIN_SPLICE",  "0.0001"))
+```
+
+```{r load_data}
+# Load all per-sample QC metrics CSVs (collected by Nextflow)
+qc_files <- Sys.glob("qc_metrics_*.csv.gz")
+stopifnot("No qc_metrics CSV files found" = length(qc_files) > 0)
+
+qc_dt <- rbindlist(lapply(qc_files, fread))
+setnames(qc_dt, "sample_id", "batch_var")
+
+# All cells entering QC — used for pre-QC plots, scatter plots, and N pre-QC in summary
+qc_all_dt <- copy(qc_dt)
+
+# Hard-threshold-filtered subset — used internally for upset soft-threshold analysis
+qc_dt <- qc_dt[log_counts >= log10(hard_min_counts) &
+                log_feats  >= log10(hard_min_feats) &
+                logit_mito <  qlogis(hard_max_mito)]
+
+# Cells passing full QC (all thresholds, singlets only)
+kept_dt <- qc_all_dt[keep == TRUE]
+
+# Sample ordering from the full input
+b_lvls    <- sort(unique(qc_all_dt$batch_var))
+n_batches <- length(b_lvls)
+
+# Build cuts data.table from threshold params
+cuts_dt <- make_cuts_dt(b_lvls, min_counts, min_feats,
+                        min_mito, max_mito, min_splice, max_splice)
+```
+
+```{r plot_sizes}
+violin_h   <- 0.4
+max_marg_h <- 12
+marg_h     <- min((n_batches + 1) * violin_h, max_marg_h)
+```
+
+## Sample QC metrics {.tabset}
+
+An overview of quality control (QC) metrics for all samples, both before and after filtering. The QC metrics include:
+
+* **no. of cells** : Total number of barcodes called as cells for each sample.
+* **no. of UMIs** : Sum of counts across all features for each cell (log-transformed).
+* **no. of genes** : Number of unique features with non-zero counts for each cell (log-transformed).
+* **mito. pct.** : The proportion of reads mapping to mitochondrial genes. High proportions indicate poor-quality cells or nuclei. Logit-transformed values are displayed.
+* **spliced pct.** : The proportion of spliced reads. In single-nuclei RNA-seq, high spliced proportions may indicate inadequate removal of cytoplasmic material. Logit-transformed values are displayed.
+
+
+### Pre-QC
+
+```{r plot_pre_qc, fig.height=marg_h, fig.width=8}
+suppressWarnings(
+  plot_qc_ranges_marginals(qc_all_dt, b_lvls, qc_names, qc_lu, cuts_dt)
+)
+```
+
+### After QC
+
+```{r plot_post_qc, fig.height=marg_h, fig.width=8}
+suppressWarnings(
+  plot_qc_ranges_marginals(kept_dt, b_lvls, qc_names, qc_lu, cuts_dt)
+)
+```
+
+## QC metrics scatterplots
+
+Pairwise relationships of QC metrics at individual cell level.
+
+```{r plot_scatters, fig.height=6, fig.width=8, results='asis'}
+cat('::: {.panel-tabset}\n\n')
+for (b in b_lvls) {
+  qc_tmp <- qc_all_dt[batch_var == b]
+  if (nrow(qc_tmp) <= 1) next
+  cat("### ", b, "\n\n")
+  print(plot_qc_metric_scatter(qc_tmp, qc_names, qc_lu, cuts_dt[batch_var == b], b))
+  cat("\n\n")
+}
+cat(':::' )
+```
+
+## How many cells and samples retained?
+
+Table summarizing the number of cells before and after QC filtering.
+
+```{r summary_table}
+calc_qc_summary(qc_all_dt, kept_dt, cuts_dt, qc_lu) %>% knitr::kable()
+```
+
+## What were the reasons for excluding barcodes?
+
+UpSet plots visualize the overlap between different exclusion criteria per sample. Plots are omitted for samples where no barcodes were excluded.
+
+```{r plot_upsets, fig.height=4, fig.width=6, results='asis'}
+cat('::: {.panel-tabset}\n\n')
+for (bb in b_lvls) {
+  qc_tmp <- qc_all_dt[batch_var == bb]
+  if (nrow(qc_tmp) <= 1 || sum(qc_tmp$keep) == nrow(qc_tmp)) next
+  cat("### ", bb, "\n\n")
+  suppressMessages(print(plot_upset_of_exclusions(qc_tmp, qc_names, qc_lu, cuts_dt)))
+  cat("\n\n")
+}
+cat(':::\n\n')
+```
+
+## Session info
+
+<details>
+```{r session_info, echo=TRUE}
+sessionInfo()
+```
+</details>

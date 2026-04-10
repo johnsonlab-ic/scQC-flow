@@ -1,281 +1,197 @@
 nextflow.enable.dsl=2
 
-// Import workflows
-include { STANDARD_WORKFLOW } from './workflows/workflows'
-include { MULTIOME_WORKFLOW } from './workflows/workflows'
-include { RNA_MAPPING_WORKFLOW } from './workflows/workflows'
-include { ALEVINFRY_MAPPING_WORKFLOW } from './workflows/workflows'
-include { ALEVINFRY_QC_WORKFLOW } from './workflows/workflows'
-
-// Import processes used standalone (barcode estimation for qc-only alevinfry mode)
-include { BARCODE_ESTIMATION; BARCODE_REPORT } from './modules/barcode_estimation/barcode_estimation'
-
-// =============================================================================
-// PARAMETERS
-// Runtime params are defined in nextflow.config and can be overridden by CLI.
-// =============================================================================
+include { MAPPING           } from './workflows/workflows'
+include { AMBIENT           } from './workflows/workflows'
+include { QC                } from './workflows/workflows'
+include { HVG               } from './workflows/workflows'
+include { INTEGRATION       } from './workflows/workflows'
+include { AMBIENT_DE        } from './modules/ambient_de/ambient_de'
+include { STAGE_RAW_H5     } from './modules/ambient_de/ambient_de'
+include { INDEX_REPORT      } from './modules/reports/reports'
 
 // =============================================================================
-// HELP MESSAGE
+// HELP
 // =============================================================================
 def helpMessage() {
     log.info """
     ===================================
     scQC-flow
     ===================================
-    
+
     Usage:
-        nextflow run main.nf -profile offline [params]
+        nextflow run main.nf -profile <profile> [params]
 
-        Main params (set in nextflow.config, override on CLI as needed):
-            --run_mode         mapping | qc | both
-            --raw_data_dir     Directory of FASTQ sample folders (mapping or both mode)
-            --mapped_data_dir  Directory of mapped sample folders (qc mode)
-            --mapper           Mapper to use (cellranger or alevinfry)
-            --cellrangerPath   Path to Cell Ranger binary or install directory
-            --transcriptome    Path to Cell Ranger transcriptome reference
+    Required params:
+        --raw_data_dir      Parent directory; each subdirectory is one sample
+                            (each subdir must contain *_R1_* and *_R2_* FASTQs)
+        --cellrangerPath    Path to Cell Ranger install directory
+                            (whitelists are extracted from lib/python/cellranger/barcodes/)
+        --genome_fasta      Reference genome FASTA (for building simpleaf index)
+        --genome_gtf        Reference genome GTF
 
-        alevin-fry params (when --mapper alevinfry):
-            --alevinfry_index       Pre-built simpleaf index directory
-            --alevinfry_t2g         Transcript-to-gene map (t2g_3col.tsv)
-            --alevinfry_whitelist   Optional barcode permit list override
-            --alevinfry_chemistry   Required explicit chemistry (3v2, 5v1, 5v2, 3v3, 5v3, 3v4, 3LT, multiome)
-            --alevinfry_orientation Expected read orientation (auto, fw, rc, both; default: auto)
-            --alevinfry_fasta       Reference FASTA (for index building)
-            --alevinfry_gtf         Reference GTF (for index building)
+    Optional:
+        --chemistry         10x chemistry string (default: 3v4)
+                            Accepted: 3v2, 3v3, 3v4, 3LT, 5v1, 5v2, 5v3, multiome
+        --outputDir         Output directory (default: results)
+        --run_ambient       Run ambient RNA removal with decontX (default: true)
+        --run_qc            Run cell-level QC (default: true; requires --run_ambient)
+        --run_hvg           Run HVG selection (default: true; requires --run_qc)
+        --run_integration   Run Harmony integration (default: true; requires --run_hvg)
+        --metadata_csv      Path to metadata CSV (required when --run_integration)
+        --metadata_id_col   Column in metadata CSV that maps to sample IDs (default: sample_id)
+        --metadata_vars     Space-separated metadata columns for Harmony correction
+                            (e.g. "brainregion condition")
+        --hvg_n_hvgs        Number of HVGs to select (default: 4000)
+        --help              Show this message
 
-        QC and downstream params:
-            --ambient_method   Ambient RNA removal: 'decontx' (CPU, default) or 'cellbender'
-            --gpu              Use GPU for CellBender (only if --ambient_method cellbender)
-            --max_mito         Maximum mitochondrial percentage threshold
-            --min_nuclear      Minimum nuclear fraction threshold (default: 0.4)
-            --max_nuclear      Maximum nuclear fraction threshold (default: 1.0)
-            --metadata         Optional metadata CSV
-            --outputDir        Output directory
-            --report           Generate per-sample reports
-            --book             Generate combined report book
-      --help                Show this help message
+    Profiles:
+        offline             Local execution
+        imperial            Imperial HPC (PBS)
+        slurm               Generic SLURM cluster
+        dsi                 DSI cluster
 
-        Examples:
-            nextflow run main.nf -profile offline --run_mode mapping --raw_data_dir /path/to/raw --cellrangerPath /path/to/cellranger --transcriptome /path/to/ref
-            nextflow run main.nf -profile offline --run_mode qc --mapped_data_dir /path/to/mapping
-            nextflow run main.nf -profile offline --run_mode both --raw_data_dir /path/to/raw --cellrangerPath /path/to/cellranger --transcriptome /path/to/ref
+    Example:
+        nextflow run main.nf -profile offline \\
+            --raw_data_dir    data/mini_landmark_data/raw \\
+            --cellrangerPath  /path/to/cellranger-9.0.0 \\
+            --genome_fasta    /path/to/refdata-gex-GRCh38/fasta/genome.fa \\
+            --genome_gtf      /path/to/refdata-gex-GRCh38/genes/genes.gtf \\
+            --chemistry       3v4 \\
+            --outputDir       results/
     """
 }
 
 // =============================================================================
-// MAIN WORKFLOW
+// MAIN
 // =============================================================================
 workflow {
+
     if (params.help) {
         helpMessage()
         return
     }
 
-    // Log pipeline parameters
+    // ------------------------------------------------------------------
+    // Parameter validation
+    // ------------------------------------------------------------------
+    if (!params.raw_data_dir) {
+        error "--raw_data_dir is required"
+    }
+    if (!file(params.raw_data_dir).exists()) {
+        error "--raw_data_dir does not exist: ${params.raw_data_dir}"
+    }
+    if (!params.cellrangerPath) {
+        error "--cellrangerPath is required (Cell Ranger install directory)"
+    }
+    if (!params.genome_fasta) {
+        error "--genome_fasta is required (reference genome FASTA)"
+    }
+    if (!file(params.genome_fasta).exists()) {
+        error "--genome_fasta does not exist: ${params.genome_fasta}"
+    }
+    if (!params.genome_gtf) {
+        error "--genome_gtf is required (reference genome GTF)"
+    }
+    if (!file(params.genome_gtf).exists()) {
+        error "--genome_gtf does not exist: ${params.genome_gtf}"
+    }
+
+    // ------------------------------------------------------------------
+    // Log run info
+    // ------------------------------------------------------------------
     log.info """
     ===================================
-    scQC-flow pipeline
+    scQC-flow
     ===================================
-    Output directory    : ${params.outputDir}
-    Run mode            : ${params.run_mode}
-    Mapper              : ${params.mapper}
-    Ambient method      : ${params.ambient_method}
-    GPU acceleration    : ${params.gpu}
-    Generate reports    : ${params.report}
-    Generate book       : ${params.book}
-    Metadata file       : ${params.metadata}
-    QC Thresholds:
-      Max mitochondrial % : ${params.max_mito}
-      Min nuclear fraction: ${params.min_nuclear}
-      Max nuclear fraction: ${params.max_nuclear}
+    raw_data_dir   : ${params.raw_data_dir}
+    cellrangerPath : ${params.cellrangerPath}
+    genome_fasta   : ${params.genome_fasta}
+    genome_gtf     : ${params.genome_gtf}
+    chemistry      : ${params.chemistry}
+    run_ambient    : ${params.run_ambient}
+    run_qc         : ${params.run_qc}
+    run_hvg        : ${params.run_hvg}
+    run_integration: ${params.run_integration}
+    outputDir      : ${params.outputDir}
     ===================================
     """
 
-    def validRunModes = ['mapping', 'qc', 'both']
-    if (!validRunModes.contains(params.run_mode)) {
-        error "Invalid --run_mode '${params.run_mode}'. Must be one of: mapping, qc, both"
-    }
+    // ------------------------------------------------------------------
+    // Sample discovery: each subdir of raw_data_dir is one sample
+    // ------------------------------------------------------------------
+    samples_ch = channel
+        .fromPath("${params.raw_data_dir}/*", type: 'dir')
+        .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
 
-    def validMappers = ['cellranger', 'alevinfry']
-    if (!validMappers.contains(params.mapper)) {
-        error "Invalid --mapper '${params.mapper}'. Must be one of: ${validMappers.join(', ')}"
-    }
+    // ------------------------------------------------------------------
+    // 1. Mapping (always runs)
+    // ------------------------------------------------------------------
+    MAPPING(samples_ch)
 
-    if (params.run_mode in ['mapping', 'both']) {
-        if (!params.raw_data_dir) {
-            error "--raw_data_dir is required for run_mode: mapping or both"
-        }
-        if (!file(params.raw_data_dir).exists()) {
-            error "--raw_data_dir does not exist: ${params.raw_data_dir}"
-        }
+    // Collect report HTMLs for INDEX_REPORT
+    report_htmls = MAPPING.out.report
 
-        if (params.mapper == 'cellranger') {
-            if (!params.transcriptome) {
-                error "--transcriptome is required for cellranger mapping"
-            }
-            if (!params.cellrangerPath) {
-                error "--cellrangerPath is required for cellranger mapping"
-            }
-        } else if (params.mapper == 'alevinfry') {
-            if (!params.alevinfry_index && (!params.alevinfry_fasta || !params.alevinfry_gtf)) {
-                error "Either --alevinfry_index or both --alevinfry_fasta and --alevinfry_gtf are required for alevinfry mapping"
-            }
-            if (params.alevinfry_index && !params.alevinfry_t2g) {
-                error "--alevinfry_t2g is required when using a pre-built --alevinfry_index"
-            }
-            if (!params.alevinfry_chemistry) {
-                error "--alevinfry_chemistry is required for alevinfry mapping"
-            }
-            def supportedChemistries = ['3v2', '5v1', '5v2', '3v3', '5v3', '3v4', '3LT', 'multiome']
-            if (!supportedChemistries.contains(params.alevinfry_chemistry)) {
-                if (params.alevinfry_chemistry == '10xv3') {
-                    error "--alevinfry_chemistry=10xv3 is ambiguous for whitelist selection. Use explicit chemistry: 3v3 or 5v3"
+    // ------------------------------------------------------------------
+    // 2. Ambient cleanup (opt-in via --run_ambient)
+    // ------------------------------------------------------------------
+    if (params.run_ambient) {
+        AMBIENT(
+            MAPPING.out.h5_files,
+            MAPPING.out.knee_data
+        )
+        report_htmls = report_htmls.mix(AMBIENT.out.report)
+
+        // Ambient DE analysis (always runs if ambient runs)
+        // STAGE_RAW_H5 symlinks af_counts_mat.h5 → barcode_matrix_<id>.h5
+        // so multiple samples can be collected without filename collision.
+        STAGE_RAW_H5(MAPPING.out.h5_files)
+
+        AMBIENT_DE(
+            STAGE_RAW_H5.out.h5.collect(),
+            MAPPING.out.knee_data.map { _id, csv -> csv }.collect(),
+            AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+            channel.value(file(params.genome_gtf)),
+            channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
+        )
+
+        // --------------------------------------------------------------
+        // 3. Cell-level QC (opt-in via --run_qc, requires ambient)
+        // --------------------------------------------------------------
+        if (params.run_qc) {
+            QC(AMBIENT.out.h5_files)
+            report_htmls = report_htmls.mix(QC.out.report)
+
+            // ----------------------------------------------------------
+            // 4. HVG selection (opt-in via --run_hvg, requires qc)
+            // ----------------------------------------------------------
+            if (params.run_hvg) {
+                HVG(
+                    AMBIENT.out.h5_files,
+                    QC.out.qc_metrics,
+                    AMBIENT_DE.out.de_table,
+                    AMBIENT_DE.out.pb_empties
+                )
+                report_htmls = report_htmls.mix(HVG.out.report)
+
+                // ------------------------------------------------------
+                // 5. Integration (opt-in via --run_integration, requires hvg)
+                // ------------------------------------------------------
+                if (params.run_integration) {
+                    if (!params.metadata_csv) {
+                        error "--metadata_csv is required when --run_integration is true"
+                    }
+                    INTEGRATION(
+                        HVG.out.hvg_counts,
+                        QC.out.qc_metrics
+                    )
+                    report_htmls = report_htmls.mix(INTEGRATION.out.report)
                 }
-                error "Unsupported --alevinfry_chemistry '${params.alevinfry_chemistry}'. Supported: ${supportedChemistries.join(', ')}"
-            }
-            def supportedOrientations = ['auto', 'fw', 'rc', 'both']
-            if (!supportedOrientations.contains(params.alevinfry_orientation)) {
-                error "Unsupported --alevinfry_orientation '${params.alevinfry_orientation}'. Supported: ${supportedOrientations.join(', ')}"
-            }
-            if (!params.alevinfry_whitelist && !params.cellrangerPath) {
-                error "Either --alevinfry_whitelist must be provided, or provide --cellrangerPath so whitelist can be derived from Cell Ranger barcodes"
             }
         }
     }
 
-    if (params.run_mode == 'qc') {
-        if (!params.mapped_data_dir) {
-            error "--mapped_data_dir is required for run_mode: qc"
-        }
-        if (!file(params.mapped_data_dir).exists()) {
-            error "--mapped_data_dir does not exist: ${params.mapped_data_dir}"
-        }
-    }
-
-    // Build sample channels directly from Nextflow params.
-    if (params.run_mode == 'qc') {
-        if (params.mapper == 'alevinfry') {
-            // For alevinfry QC, mapped_data_dir contains per-sample af_quant dirs
-            channel
-                .fromPath("${params.mapped_data_dir}/*", type: 'dir')
-                .map { dir -> tuple(dir.name, dir) }
-                .set { afQuantDirs }
-        } else {
-            channel
-                .fromPath("${params.mapped_data_dir}/*", type: 'dir')
-                .map { dir -> tuple(dir.name, dir) }
-                .set { sampleChannelBase }
-        }
-
-    } else {
-        // Each raw_data_dir subdirectory = one sample.
-        channel
-            .fromPath("${params.raw_data_dir}/*", type: 'dir')
-            .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
-            .set { sampleChannelFastq }
-
-        if (params.mapper == 'cellranger') {
-            RNA_MAPPING_WORKFLOW(
-                sampleChannelFastq,
-                params.mapper,
-                params.transcriptome,
-                params.cellrangerPath
-            )
-            sampleChannelBase = RNA_MAPPING_WORKFLOW.out.sample_channel
-
-        } else if (params.mapper == 'alevinfry') {
-            ALEVINFRY_MAPPING_WORKFLOW(
-                sampleChannelFastq,
-                params.cellrangerPath,
-                params.alevinfry_index,
-                params.alevinfry_t2g,
-                params.alevinfry_whitelist,
-                params.alevinfry_chemistry,
-                params.alevinfry_orientation,
-                params.alevinfry_fasta,
-                params.alevinfry_gtf
-            )
-        }
-    }
-
-    // Prepare script/template files as value channels
-    dropletqc_script_path = file("${projectDir}/modules/dropletqc/run_dropletqc.R")
-
-    // Standard module scripts
-    scdbl_script_path = file("${projectDir}/modules/scdbl/run_scdbl.R")
-    seurat_script_path = file("${projectDir}/modules/seurat/make_seurat.R")
-
-    if (params.run_mode == 'mapping') {
-        log.info "Run mode is 'mapping' only - QC will be skipped."
-
-    } else if (params.mapper == 'alevinfry') {
-        // =========================================================================
-        // ALEVIN-FRY QC WORKFLOW
-        // Barcode estimation ran at the end of ALEVINFRY_MAPPING_WORKFLOW ('both'
-        // mode) or is run here from the provided quant dirs ('qc' mode).
-        // Chain: ambient correction (decontx|cellbender) → doublets → Seurat
-        // =========================================================================
-        log.info "Running ALEVIN-FRY QC workflow (ambient_method: ${params.ambient_method})"
-
-        if (params.run_mode == 'qc') {
-            // QC-only: user provides quant dirs via --mapped_data_dir.
-            // Run barcode estimation now before handing off to the QC workflow.
-            barcode_script     = channel.value(file("${projectDir}/modules/barcode_estimation/run_barcode_estimation.R"))
-            barcode_report_qmd = channel.value(file("${projectDir}/modules/barcode_estimation/barcode_estimation.qmd"))
-            BARCODE_ESTIMATION(afQuantDirs, barcode_script)
-            BARCODE_REPORT(
-                BARCODE_ESTIMATION.out.knee_data.map { _id, csv -> csv }.collect(),
-                BARCODE_ESTIMATION.out.nuclear_fraction.map { _id, csv -> csv }.collect(),
-                barcode_report_qmd
-            )
-            qc_h5_ch             = BARCODE_ESTIMATION.out.h5_files
-            qc_knee_data_ch      = BARCODE_ESTIMATION.out.knee_data
-            qc_knee_params_ch    = BARCODE_ESTIMATION.out.knee_params
-            qc_nuclear_fraction_ch = BARCODE_ESTIMATION.out.nuclear_fraction
-            qc_quant_dirs_ch     = afQuantDirs
-        } else {
-            // 'both' mode: barcode estimation already ran inside ALEVINFRY_MAPPING_WORKFLOW.
-            qc_h5_ch             = ALEVINFRY_MAPPING_WORKFLOW.out.h5_files
-            qc_knee_data_ch      = ALEVINFRY_MAPPING_WORKFLOW.out.knee_data
-            qc_knee_params_ch    = ALEVINFRY_MAPPING_WORKFLOW.out.knee_params
-            qc_nuclear_fraction_ch = ALEVINFRY_MAPPING_WORKFLOW.out.nuclear_fraction
-            qc_quant_dirs_ch     = ALEVINFRY_MAPPING_WORKFLOW.out.quant_dirs
-        }
-
-        ALEVINFRY_QC_WORKFLOW(
-            qc_h5_ch,
-            qc_knee_data_ch,
-            qc_knee_params_ch,
-            qc_nuclear_fraction_ch,
-            qc_quant_dirs_ch,
-            scdbl_script_path,
-            seurat_script_path,
-            params.ambient_method,
-            params.gpu,
-            params.max_mito,
-            params.min_nuclear,
-            params.max_nuclear,
-            params.metadata
-        )
-
-    } else {
-        // =========================================================================
-        // STANDARD (CELL RANGER) QC WORKFLOW
-        // =========================================================================
-        log.info "Running STANDARD Cell Ranger QC workflow"
-        STANDARD_WORKFLOW(
-            sampleChannelBase,
-            dropletqc_script_path,
-            scdbl_script_path,
-            seurat_script_path,
-            params.ambient_method == 'cellbender',
-            params.gpu,
-            params.max_mito,
-            params.min_nuclear,
-            params.metadata
-        )
-        seurat_results = STANDARD_WORKFLOW.out.seurat_results
-    }
-
+    // ------------------------------------------------------------------
+    // 6. Index page (standalone — collects all produced report HTMLs)
+    // ------------------------------------------------------------------
+    INDEX_REPORT(report_htmls.collect())
 }

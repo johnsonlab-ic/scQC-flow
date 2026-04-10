@@ -1,0 +1,193 @@
+---
+title: "Integration"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r setup}
+source("integration_plots.R")
+
+metadata_vars_str <- Sys.getenv("METADATA_VARS", "")
+leiden_res_str    <- Sys.getenv("LEIDEN_RES",    "0.3 0.5 1.0")
+
+metadata_vars <- trimws(strsplit(metadata_vars_str, "\\s+")[[1]])
+metadata_vars <- metadata_vars[nzchar(metadata_vars)]
+
+leiden_res  <- trimws(strsplit(leiden_res_str, "\\s+")[[1]])
+leiden_res  <- leiden_res[nzchar(leiden_res)]
+leiden_cols <- paste0("leiden_", leiden_res)
+```
+
+```{r load_data}
+int_f <- "integration_dt.csv.gz"
+stopifnot("integration_dt.csv.gz not found" = file.exists(int_f))
+int_dt  <- fread(int_f)
+n_cells <- nrow(int_dt)
+
+qc_files <- Sys.glob("qc_metrics_*.csv.gz")
+qc_dt <- if (length(qc_files) > 0) rbindlist(lapply(qc_files, fread)) else data.table()
+
+qc_names <- c("log_counts", "log_feats", "logit_mito", "logit_spliced")
+qc_lu    <- c("no. of UMIs", "no. of genes", "mito pct.", "spliced pct.")
+names(qc_lu) <- qc_names
+
+present_leiden <- paste0("RNA_snn_res.", leiden_res)
+present_leiden <- present_leiden[present_leiden %in% names(int_dt)]
+if (length(present_leiden) == 0) {
+  present_leiden <- paste0("leiden_", leiden_res)
+  present_leiden <- present_leiden[present_leiden %in% names(int_dt)]
+}
+doublet_cols_present <- all(c("dbl_UMAP1", "dbl_UMAP2", "is_dbl", "dbl_cluster") %in% names(int_dt))
+```
+
+Cells that passed quality control filtering were integrated with Harmony correction where requested, then clustered at multiple resolutions and embedded with UMAP.
+
+This report follows the scprocess integration diagnostics layout. The current scQC-flow integration path removes doublets before HVG selection and integration, so doublet-on-UMAP diagnostics are only shown if those fields are present in the integration output.
+
+## Doublets over UMAP
+
+* **Cells:** `r format(n_cells, big.mark = ",")`
+* **Samples:** `r int_dt[, uniqueN(sample_id)]`
+* **Metadata vars used for Harmony:** `r if (length(metadata_vars) > 0) paste(metadata_vars, collapse = ", ") else "none"`
+* **Leiden resolutions:** `r paste(leiden_res, collapse = ", ")`
+
+```{r doublet_umap, fig.height=5, fig.width=11}
+if (doublet_cols_present) {
+  dbl_dt <- int_dt[, .(cell_id, UMAP1 = dbl_UMAP1, UMAP2 = dbl_UMAP2, is_dbl, dbl_cluster)]
+  plot_umap_doublets(dbl_dt) + plot_umap_density(dbl_dt[, .(cell_id, UMAP1, UMAP2)])
+} else {
+  cat("Doublet UMAP diagnostics are not available because the current scQC-flow integration path excludes doublets before integration and does not emit dbl_UMAP / dbl_cluster columns.\n")
+}
+```
+
+## Doublet proportions in clusters
+
+```{r doublet_clusters, fig.height=4, fig.width=6}
+if (doublet_cols_present) {
+  dbl_dt <- int_dt[, .(cell_id, UMAP1 = dbl_UMAP1, UMAP2 = dbl_UMAP2, is_dbl, dbl_cluster)]
+  print(plot_doublet_clusters(dbl_dt, 0.5))
+} else {
+  cat("Doublet-enriched cluster diagnostics are not available for the current integration output.\n")
+}
+```
+
+## Clusters over UMAP {.tabset}
+
+```{r umap_clusters, fig.height=7, fig.width=9, results='asis'}
+if (length(present_leiden) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    print(plot_umap_cluster(int_dt, cl_col) + plot_umap_density(int_dt[, .(cell_id, UMAP1, UMAP2)]))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+}
+```
+
+## Evaluating cluster distribution across samples {.tabset}
+
+```{r cluster_entropy, fig.height=5, fig.width=7, results='asis'}
+if (length(present_leiden) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    clust_dt <- int_dt[, .(cell_id, sample_id, cluster = get(cl_col))]
+    if (uniqueN(clust_dt$cluster) <= 1) next
+    cat("### ", res_val, "\n\n")
+    print(plot_cluster_entropies(clust_dt, batch_var = 'sample_id', what = 'norm'))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+}
+```
+
+## Check QC metrics of clusters {.tabset}
+
+```{r cluster_qc, fig.height=8, fig.width=10, results='asis'}
+if (length(present_leiden) > 0 && nrow(qc_dt) > 0) {
+  qc_melt <- melt(qc_dt[, c('cell_id', qc_names), with = FALSE], id.vars = 'cell_id',
+                  variable.name = 'qc_var', value.name = 'qc_val')
+  qc_melt[, qc_full := qc_lu[qc_var]]
+  qc_melt[, qc_var := factor(qc_var, levels = qc_names)]
+  qc_melt[, qc_full := fct_reorder(qc_full, as.integer(qc_var))]
+
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    clust_dt <- int_dt[, .(cell_id, cluster = get(cl_col))]
+    suppressWarnings(print(plot_cluster_qc_distns(qc_melt, clust_dt, name = sprintf('res = %s', res_val))))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+}
+```
+
+## UMAP by sample
+
+```{r umap_sample, fig.height=5, fig.width=7}
+plot_umap_sample(int_dt)
+```
+
+## UMAP by metadata variables {.tabset}
+
+```{r umap_metadata, fig.height=5, fig.width=7, results='asis'}
+if (length(metadata_vars) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (v in metadata_vars) {
+    if (!v %in% names(int_dt)) next
+    cat("### ", v, "\n\n")
+    print(plot_umap_by_var(int_dt, v))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("*No metadata variables were provided.*\n\n")
+}
+```
+
+## Cell counts per cluster {.tabset}
+
+```{r cluster_counts, results='asis'}
+if (length(present_leiden) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    tbl <- cluster_counts_tbl(int_dt, cl_col)
+    print(knitr::kable(tbl, caption = sprintf('Cell counts — res %s', res_val)))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+}
+```
+
+## UMAP density
+
+```{r umap_density, fig.height=5, fig.width=6}
+plot_umap_density(int_dt)
+```
+
+## Session info
+
+<details>
+```{r session_info, echo=TRUE}
+sessionInfo()
+```
+</details>
