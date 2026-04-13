@@ -85,7 +85,8 @@ make_hard_cuts_dt <- function(b_lvls, hard_min_counts, hard_min_feats, hard_max_
 # Violin + marginal cell-count plot (mirrors scprocess plot_qc_ranges_marginals)
 # ---------------------------------------------------------------------------
 plot_qc_ranges_marginals <- function(qc_input, b_lvls, qc_names, qc_lu, cuts_dt,
-                                     hard_cuts_dt = NULL) {
+                                     hard_cuts_dt = NULL,
+                                     batch_label = "sample_id") {
   tmp_names <- intersect(qc_names, colnames(qc_input))
   qc_melt   <- copy(qc_input) %>%
     melt(measure = tmp_names, val = "qc_val", var = "qc_var") %>%
@@ -143,7 +144,7 @@ plot_qc_ranges_marginals <- function(qc_input, b_lvls, qc_names, qc_lu, cuts_dt,
     theme_classic() +
     theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
           strip.text.y = element_blank()) +
-    labs(y = NULL, x = "sample_id")
+    labs(y = NULL, x = batch_label)
 
   # violin panels — hard exclusion zones (darker) drawn first, soft pass zone on top
   g_violin <- ggplot() +

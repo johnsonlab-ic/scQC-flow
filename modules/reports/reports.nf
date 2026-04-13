@@ -25,6 +25,34 @@ process MAPPING_REPORT {
 }
 
 // ---------------------------------------------------------------------------
+// Barcode caller v2 report (one HTML across all samples)
+// ---------------------------------------------------------------------------
+
+process BARCODE_REPORT_V2 {
+    label     "process_reports"
+    tag       "barcode_report_v2"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
+
+    input:
+    path audit_csvs     // barcode_audit_v2_*.csv.gz
+    path summary_csvs   // barcode_summary_v2_*.csv
+    path report_qmd     // barcode_report_v2.qmd
+    path plots_r        // barcode_v2_plots.R
+
+    output:
+    path "barcode_report_v2.html", emit: html
+
+    script:
+    """
+    export HOME="\$PWD"
+    export BARCODE_V2_SPLICE_CONTEXT="${params.barcode_v2_splice_context}"
+    export BARCODE_V2_ED_FDR="${params.barcode_v2_ed_fdr}"
+    quarto render "${report_qmd}" --output barcode_report_v2.html
+    """
+}
+
+// ---------------------------------------------------------------------------
 // Ambient report (one HTML across all samples)
 // ---------------------------------------------------------------------------
 
@@ -167,6 +195,7 @@ import html
 
 report_labels = {
     'mapping_report.html':    'Mapping Report',
+  'barcode_report_v2.html': 'Barcode Caller V2 Report',
     'ambient_report.html':    'Ambient Report',
     'qc_report.html':         'QC Report',
     'hvg_report.html':        'HVG Report',

@@ -63,6 +63,7 @@ n_batches <- length(b_lvls)
 # Build cuts data.table from threshold params
 cuts_dt <- make_cuts_dt(b_lvls, min_counts, min_feats,
                         min_mito, max_mito, min_splice, max_splice)
+hard_cuts_dt <- make_hard_cuts_dt(b_lvls, hard_min_counts, hard_min_feats, hard_max_mito)
 ```
 
 ```{r plot_sizes}
@@ -86,7 +87,8 @@ An overview of quality control (QC) metrics for all samples, both before and aft
 
 ```{r plot_pre_qc, fig.height=marg_h, fig.width=8}
 suppressWarnings(
-  plot_qc_ranges_marginals(qc_all_dt, b_lvls, qc_names, qc_lu, cuts_dt)
+  plot_qc_ranges_marginals(qc_all_dt, b_lvls, qc_names, qc_lu, cuts_dt,
+                           hard_cuts_dt = hard_cuts_dt)
 )
 ```
 
@@ -105,7 +107,7 @@ Pairwise relationships of QC metrics at individual cell level.
 ```{r plot_scatters, fig.height=6, fig.width=8, results='asis'}
 cat('::: {.panel-tabset}\n\n')
 for (b in b_lvls) {
-  qc_tmp <- qc_all_dt[batch_var == b]
+  qc_tmp <- qc_dt[batch_var == b]
   if (nrow(qc_tmp) <= 1) next
   cat("### ", b, "\n\n")
   print(plot_qc_metric_scatter(qc_tmp, qc_names, qc_lu, cuts_dt[batch_var == b], b))

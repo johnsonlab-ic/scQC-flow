@@ -3,9 +3,14 @@
 include { SIMPLEAF_INDEX    } from '../modules/mapping/mapping.nf'
 include { SIMPLEAF_QUANT    } from '../modules/mapping/mapping.nf'
 include { BARCODE_ESTIMATION } from '../modules/mapping/mapping.nf'
+include { BARCODE_ESTIMATION_V2 } from '../modules/mapping/mapping.nf'
 include { MAPPING_REPORT    } from '../modules/reports/reports.nf'
+include { BARCODE_REPORT_V2 } from '../modules/reports/reports.nf'
 include { DECONTX           } from '../modules/ambient/ambient.nf'
 include { AMBIENT_REPORT    } from '../modules/reports/reports.nf'
+include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
+include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
+include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
 include { DOUBLET_DETECTION } from '../modules/qc/qc.nf'
 include { APPLY_QC          } from '../modules/qc/qc.nf'
 include { QC_REPORT         } from '../modules/reports/reports.nf'
@@ -104,6 +109,11 @@ workflow MAPPING {
         channel.value(file("${projectDir}/modules/mapping/barcode_estimation.R"))
     )
 
+    BARCODE_ESTIMATION_V2(
+        SIMPLEAF_QUANT.out.quant_dirs,
+        channel.value(file("${projectDir}/modules/mapping/barcode_estimation_v2.R"))
+    )
+
     // ------------------------------------------------------------------
     // 5. Mapping report
     // ------------------------------------------------------------------
@@ -112,11 +122,23 @@ workflow MAPPING {
         channel.value(file("${projectDir}/modules/reports/mapping_report.qmd"))
     )
 
+    BARCODE_REPORT_V2(
+        BARCODE_ESTIMATION_V2.out.audit.map { _id, csv -> csv }.collect(),
+        BARCODE_ESTIMATION_V2.out.summaries.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/barcode_report_v2.qmd")),
+        channel.value(file("${projectDir}/modules/reports/barcode_v2_plots.R"))
+    )
+
     emit:
     h5_files       = BARCODE_ESTIMATION.out.h5_files
     knee_data      = BARCODE_ESTIMATION.out.knee_data
     ambient_params = BARCODE_ESTIMATION.out.ambient_params
-    report         = MAPPING_REPORT.out.html
+    barcode_v2_h5_files = BARCODE_ESTIMATION_V2.out.h5_files
+    barcode_v2_audit = BARCODE_ESTIMATION_V2.out.audit
+    barcode_v2_summaries = BARCODE_ESTIMATION_V2.out.summaries
+    barcode_v2_barcodes = BARCODE_ESTIMATION_V2.out.barcodes
+    barcode_v2_ambient_params = BARCODE_ESTIMATION_V2.out.ambient_params
+    report         = MAPPING_REPORT.out.html.mix(BARCODE_REPORT_V2.out.html)
 }
 
 // =============================================================================
@@ -181,6 +203,54 @@ workflow AMBIENT {
 //   - pb_empties.rds       SummarizedExperiment with empty pseudobulk counts
 // =============================================================================
 
+workflow AMBIENT_DE_WF {
+
+    take:
+    raw_h5_ch    // tuple(sampleId, h5_file) from MAPPING.h5_files
+    knee_ch      // tuple(sampleId, knee_csv) from MAPPING.knee_data
+    filt_h5_ch   // tuple(sampleId, h5_file) from AMBIENT.h5_files
+
+    main:
+
+    // Stage raw H5 files with unique names for collection
+    STAGE_RAW_H5(raw_h5_ch)
+
+    AMBIENT_DE_PROC(
+        STAGE_RAW_H5.out.h5.collect(),
+        knee_ch.map { _id, csv -> csv }.collect(),
+        filt_h5_ch.map { _id, h5 -> h5 }.collect(),
+        channel.value(file(params.genome_gtf)),
+        channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
+    )
+
+    emit:
+    de_table   = AMBIENT_DE_PROC.out.de_table
+    pb_empties = AMBIENT_DE_PROC.out.pb_empties
+}
+
+// =============================================================================
+// SAMPLE_METADATA
+//
+// Normalize and validate sample metadata once, keyed by sample_id.
+// =============================================================================
+
+workflow SAMPLE_METADATA {
+
+    take:
+    sample_ids_ch
+
+    main:
+
+    PREPARE_SAMPLE_METADATA(
+        sample_ids_ch,
+        channel.value(file(params.metadata_csv)),
+        channel.value(file("${projectDir}/modules/metadata/prepare_metadata.py"))
+    )
+
+    emit:
+    sample_metadata = PREPARE_SAMPLE_METADATA.out.sample_metadata
+}
+
 // =============================================================================
 // QC
 //
@@ -195,6 +265,7 @@ workflow QC {
 
     take:
     h5_ch        // tuple(sampleId, h5_file)  from AMBIENT.h5_files
+    sample_meta_ch // path sample_metadata.csv.gz or NO_FILE placeholder
 
     main:
 
@@ -213,6 +284,7 @@ workflow QC {
     // ------------------------------------------------------------------
     APPLY_QC(
         h5_ch.join(DOUBLET_DETECTION.out.dbl_results),
+        sample_meta_ch,
         channel.value(file(params.genome_gtf)),
         channel.value(file("${projectDir}/modules/qc/apply_qc.R"))
     )
@@ -258,6 +330,8 @@ workflow HVG {
     HVG_SELECTION(
         h5_ch.map { _id, h5 -> h5 }.collect(),
         qc_metrics_ch.map { _id, csv -> csv }.collect(),
+        channel.value(file(params.genome_gtf)),
+        de_table,
         channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
     )
 
@@ -270,18 +344,19 @@ workflow HVG {
     )
 
     emit:
-    hvg_counts = HVG_SELECTION.out.hvg_counts
-    hvg_stats  = HVG_SELECTION.out.hvg_stats
-    report     = HVG_REPORT.out.html
+    hvg_counts     = HVG_SELECTION.out.hvg_counts
+    dbl_hvg_counts = HVG_SELECTION.out.dbl_hvg_counts
+    hvg_stats      = HVG_SELECTION.out.hvg_stats
+    report         = HVG_REPORT.out.html
 }
 
 // =============================================================================
 // INTEGRATION
 //
-// HVG count matrix + metadata CSV -> Harmony integration -> integration report
+// HVG count matrix + QC metadata -> Harmony integration -> integration report
 //
-// Loads the HVG count matrix from HVG, joins with user-provided
-// metadata CSV (on metadata_id_col -> sample_id), normalises (CPM10k + log1p),
+// Loads the HVG count matrix from HVG, reads metadata already attached to
+// QC metrics, normalises (CPM10k + log1p),
 // scales, runs PCA -> Harmony -> neighbors -> Leiden (multiple resolutions)
 // -> UMAP, and saves integration_dt.csv.gz.
 // =============================================================================
@@ -289,18 +364,16 @@ workflow HVG {
 workflow INTEGRATION {
 
     take:
-    hvg_counts_ch  // path  hvg_counts.h5 from HVG
-    qc_metrics_ch  // tuple(sampleId, csv_gz) from QC.qc_metrics
+    hvg_counts_ch      // path  hvg_counts.h5 (singlets) from HVG
+    dbl_hvg_counts_ch  // path  dbl_hvg_counts.h5 (doublets) from HVG
+    qc_metrics_ch      // tuple(sampleId, csv_gz) from QC.qc_metrics
 
     main:
 
-    meta_csv_ch = params.metadata_csv
-        ? channel.value(file(params.metadata_csv))
-        : channel.value(file("NO_FILE"))
-
     RUN_INTEGRATION(
         hvg_counts_ch,
-        meta_csv_ch,
+        dbl_hvg_counts_ch,
+        qc_metrics_ch.map { _id, csv -> csv }.collect(),
         channel.value(file("${projectDir}/modules/integration/run_integration.py"))
     )
 

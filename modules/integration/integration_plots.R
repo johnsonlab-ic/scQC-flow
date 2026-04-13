@@ -1,27 +1,165 @@
 # integration_plots.R — plotting helper functions for integration_report.qmd
 # Sourced into the Quarto report; not run directly.
-# Adapted from scprocess/scripts/integration.R.
+# Replicates scprocess/code/integration.R plotting functions exactly.
 
 suppressPackageStartupMessages({
   library(data.table)
   library(forcats)
   library(ggh4x)
   library(ggplot2)
+  library(ggplot.multistats)
+  library(patchwork)
   library(scales)
   library(ggrepel)
 })
 
 # ---------------------------------------------------------------------------
-# Shared UMAP theme
+# Colour palette (matches scprocess nice_cols)
 # ---------------------------------------------------------------------------
-umap_theme <- theme_bw(base_size = 11) +
-  theme(
-    panel.grid   = element_blank(),
-    axis.ticks   = element_blank(),
-    axis.text    = element_blank(),
-    aspect.ratio = 1,
-    legend.position = "right"
+nice_cols <- c(
+  '#DC050C', '#FB8072', '#1965B0', '#7BAFDE', '#882E72', '#B17BA6',
+  '#FF7F00', '#FDB462', '#E7298A', '#E78AC3', '#33A02C', '#B2DF8A'
+)
+
+# ---------------------------------------------------------------------------
+# UMAP density (binned 2D histogram, log10 colour scale)
+# Matches scprocess plot_umap_density exactly.
+# ---------------------------------------------------------------------------
+plot_umap_density <- function(input_dt) {
+  umap_dt <- copy(input_dt)[, .(
+    UMAP1 = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2 = rescale(UMAP2, to = c(0.05, 0.95))
+  )]
+
+  ggplot(umap_dt) + aes(x = UMAP1, y = UMAP2) +
+    geom_bin2d(bins = 50) +
+    scale_fill_distiller(palette = "RdBu", trans = "log10") +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+      legend.title.position = "left", legend.position = "bottom",
+      axis.ticks = element_blank(), axis.text = element_blank(),
+      aspect.ratio = 1)
+}
+
+# ---------------------------------------------------------------------------
+# Doublet UMAP: binned hex showing mean doublet proportion per bin
+# Matches scprocess plot_umap_doublets exactly.
+# ---------------------------------------------------------------------------
+plot_umap_doublets <- function(int_dt) {
+
+  # Two-pass output: use dbl_UMAP1/2 from pass 1 and is_dbl column
+  if (all(c("dbl_UMAP1", "dbl_UMAP2", "is_dbl") %in% names(int_dt))) {
+    dbl_dt <- copy(int_dt)[!is.na(dbl_UMAP1), .(
+      UMAP1  = rescale(dbl_UMAP1, to = c(0.05, 0.95)),
+      UMAP2  = rescale(dbl_UMAP2, to = c(0.05, 0.95)),
+      is_dbl = as.numeric(is_dbl)
+    )]
+  } else {
+    # Fallback for legacy format
+    stopifnot(all(c("UMAP1", "UMAP2", "is_doublet") %in% names(int_dt)))
+    dbl_dt <- copy(int_dt)[, .(
+      UMAP1  = rescale(UMAP1, to = c(0.05, 0.95)),
+      UMAP2  = rescale(UMAP2, to = c(0.05, 0.95)),
+      is_dbl = as.numeric(is_doublet)
+    )]
+  }
+
+  ggplot(dbl_dt) +
+    aes(x = UMAP1, y = UMAP2, z = is_dbl) +
+    stat_summary_hex(fun = 'mean', bins = 30) +
+    scale_fill_distiller(palette = 'PiYG', limits = c(0, 1),
+      breaks = pretty_breaks()) +
+    labs(fill = 'mean doublets\nby bin') +
+    scale_x_continuous(breaks = pretty_breaks()) +
+    scale_y_continuous(breaks = pretty_breaks()) +
+    theme_bw() +
+    theme(panel.grid = element_blank(), axis.ticks = element_blank(),
+      axis.text = element_blank(), aspect.ratio = 1)
+}
+
+# ---------------------------------------------------------------------------
+# Doublet cluster scatter: log10(cluster size) vs doublet pct
+# Matches scprocess plot_doublet_clusters exactly.
+# ---------------------------------------------------------------------------
+plot_doublet_clusters <- function(int_dt, dbl_cl_prop, cl_col = NULL) {
+  # Two-pass format: dbl_cluster and is_dbl are precomputed per cell in int_dt
+  if (all(c("dbl_cluster", "is_dbl") %in% names(int_dt))) {
+    dbl_clusts <- int_dt[!is.na(dbl_cluster), .(
+      dbl_cl_size = .N,
+      dbl_cl_prop = sum(as.logical(is_dbl), na.rm = TRUE) / .N * 100
+    ), by = .(dbl_cluster)]
+  } else {
+    # Legacy fallback: cluster column from pass-2 + is_doublet flag
+    stopifnot(!is.null(cl_col))
+    cl_col <- resolve_cluster_column(int_dt, cl_col)
+    stopifnot(all(c(cl_col, "is_doublet") %in% names(int_dt)))
+    dbl_clusts <- int_dt[, .(
+      dbl_cl_size = .N,
+      dbl_cl_prop = sum(is_doublet) / .N * 100
+    ), by = cl_col]
+    setnames(dbl_clusts, cl_col, "dbl_cluster")
+  }
+
+  log_brks <- log10(c(1e1, 2e1, 5e1, 1e2, 2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4))
+  log_labs <- c("10", "20", "50", "100", "200", "500",
+    "1k", "2k", "5k", "10k", "20k", "50k")
+
+  ggplot(dbl_clusts) +
+    aes(x = log10(dbl_cl_size), y = dbl_cl_prop) +
+    geom_hline(yintercept = dbl_cl_prop * 100, linetype = "dashed", colour = 'black') +
+    geom_point() +
+    scale_x_continuous(breaks = log_brks, labels = log_labs) +
+    scale_y_continuous(breaks = pretty_breaks()) +
+    expand_limits(y = c(0, 100)) +
+    theme_classic() +
+    labs(x = "# cells in cluster", y = "doublet pct. of cluster")
+}
+
+# ---------------------------------------------------------------------------
+# UMAP coloured by Leiden cluster assignment
+# Matches scprocess plot_umap_cluster exactly.
+# ---------------------------------------------------------------------------
+plot_umap_cluster <- function(umap_dt, clust_dt, name) {
+  stopifnot(
+    all(c('UMAP1', 'UMAP2') %in% names(umap_dt)),
+    'cell_id' %in% names(umap_dt),
+    'cell_id' %in% names(clust_dt),
+    'cluster' %in% names(clust_dt)
   )
+
+  plot_dt <- merge(umap_dt, clust_dt, by = 'cell_id', all.x = TRUE)[, .(
+    UMAP1   = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2   = rescale(UMAP2, to = c(0.05, 0.95)),
+    cluster
+  )][, cluster := factor(cluster)]
+  plot_dt <- plot_dt[sample(.N, .N)]
+
+  # add labels to clusters
+  cl_labels <- plot_dt[, .(N = .N), by = cluster][order(cluster)]
+  cl_labels[, cl_label := sprintf("%s (%d)", cluster, signif(N, 2))]
+  label_lu  <- setNames(cl_labels$cl_label, cl_labels$cluster)
+
+  # define colours
+  cl_cols <- rep(nice_cols, times = 10)[seq_along(label_lu)]
+  names(cl_cols) <- label_lu
+  n_col      <- 4
+  n_rows_lgd <- ceiling(length(label_lu) / n_col)
+
+  ggplot(plot_dt) +
+    aes(x = UMAP1, y = UMAP2, colour = label_lu[as.character(cluster)]) +
+    geom_point(size = 0.1) +
+    scale_colour_manual(values = cl_cols,
+      guide = guide_legend(override.aes = list(size = 3), nrow = n_rows_lgd)) +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(), aspect.ratio = 1,
+      legend.title.position = "left", legend.position = "bottom",
+      axis.ticks = element_blank(), axis.text = element_blank()) +
+    labs(colour = name)
+}
 
 # ---------------------------------------------------------------------------
 # UMAP coloured by sample
@@ -29,17 +167,27 @@ umap_theme <- theme_bw(base_size = 11) +
 plot_umap_sample <- function(int_dt) {
   stopifnot(all(c("UMAP1", "UMAP2", "sample_id") %in% names(int_dt)))
 
-  n_samples <- int_dt[, uniqueN(sample_id)]
+  plot_dt <- copy(int_dt)[, .(
+    UMAP1     = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2     = rescale(UMAP2, to = c(0.05, 0.95)),
+    sample_id
+  )][sample(.N, .N)]
 
-  ggplot(int_dt[sample(nrow(int_dt))],
-         aes(x = UMAP1, y = UMAP2, colour = sample_id)) +
-    geom_point(size = 0.3, alpha = 0.5) +
+  n_samples <- uniqueN(plot_dt$sample_id)
+
+  ggplot(plot_dt, aes(x = UMAP1, y = UMAP2, colour = sample_id)) +
+    geom_point(size = 0.1) +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
     guides(colour = guide_legend(
-      override.aes = list(size = 3, alpha = 1),
+      override.aes = list(size = 3),
       ncol = max(1, ceiling(n_samples / 20))
     )) +
-    labs(colour = "sample", title = "UMAP coloured by sample") +
-    umap_theme
+    theme_bw() +
+    theme(panel.grid = element_blank(), aspect.ratio = 1,
+      legend.title.position = "left", legend.position = "bottom",
+      axis.ticks = element_blank(), axis.text = element_blank()) +
+    labs(colour = "sample")
 }
 
 # ---------------------------------------------------------------------------
@@ -48,99 +196,61 @@ plot_umap_sample <- function(int_dt) {
 plot_umap_by_var <- function(int_dt, var_name) {
   stopifnot(all(c("UMAP1", "UMAP2", var_name) %in% names(int_dt)))
 
-  ggplot(int_dt[sample(nrow(int_dt))],
-         aes(x = UMAP1, y = UMAP2,
-             colour = as.factor(get(var_name)))) +
-    geom_point(size = 0.3, alpha = 0.5) +
-    guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
-    labs(colour = var_name,
-         title  = paste("UMAP coloured by", var_name)) +
-    umap_theme
+  plot_dt <- copy(int_dt)[!is.na(get(var_name)), c("UMAP1", "UMAP2", var_name), with = FALSE]
+  plot_dt[, UMAP1 := rescale(UMAP1, to = c(0.05, 0.95))]
+  plot_dt[, UMAP2 := rescale(UMAP2, to = c(0.05, 0.95))]
+  plot_dt <- plot_dt[sample(.N, .N)]
+
+  if (is.numeric(plot_dt[[var_name]])) {
+    ggplot(plot_dt, aes(x = UMAP1, y = UMAP2, colour = get(var_name))) +
+      geom_point(size = 0.1) +
+      scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      scale_colour_distiller(palette = "YlGnBu", direction = 1) +
+      theme_bw() +
+      theme(panel.grid = element_blank(), aspect.ratio = 1,
+        legend.title.position = "left", legend.position = "bottom",
+        axis.ticks = element_blank(), axis.text = element_blank()) +
+      labs(colour = var_name)
+  } else {
+    ggplot(plot_dt, aes(x = UMAP1, y = UMAP2, colour = as.factor(get(var_name)))) +
+      geom_point(size = 0.1) +
+      scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      guides(colour = guide_legend(override.aes = list(size = 3))) +
+      theme_bw() +
+      theme(panel.grid = element_blank(), aspect.ratio = 1,
+        legend.title.position = "left", legend.position = "bottom",
+        axis.ticks = element_blank(), axis.text = element_blank()) +
+      labs(colour = var_name)
+  }
 }
 
+# ---------------------------------------------------------------------------
+# Resolve cluster column name (leiden_X vs RNA_snn_res.X)
+# ---------------------------------------------------------------------------
 resolve_cluster_column <- function(int_dt, cl_col) {
-  if (cl_col %in% names(int_dt)) {
-    return(cl_col)
-  }
-
+  if (cl_col %in% names(int_dt)) return(cl_col)
   if (grepl('^leiden_', cl_col)) {
     alt_col <- sub('^leiden_', 'RNA_snn_res.', cl_col)
-    if (alt_col %in% names(int_dt)) {
-      return(alt_col)
-    }
+    if (alt_col %in% names(int_dt)) return(alt_col)
   }
-
   if (grepl('^RNA_snn_res\\.', cl_col)) {
     alt_col <- sub('^RNA_snn_res\\.', 'leiden_', cl_col)
-    if (alt_col %in% names(int_dt)) {
-      return(alt_col)
-    }
+    if (alt_col %in% names(int_dt)) return(alt_col)
   }
-
   stop(sprintf('Cluster column not found: %s', cl_col))
 }
 
 # ---------------------------------------------------------------------------
-# UMAP coloured by Leiden cluster assignment
-# cl_col: column name, e.g. "leiden_0.5"
-# ---------------------------------------------------------------------------
-plot_umap_cluster <- function(int_dt, cl_col) {
-  cl_col <- resolve_cluster_column(int_dt, cl_col)
-  stopifnot(all(c("UMAP1", "UMAP2", cl_col) %in% names(int_dt)))
-
-  res_val <- sub('^RNA_snn_res\\.', '', cl_col)
-  res_val <- sub('^leiden_', '', res_val)
-  n_cl    <- int_dt[, uniqueN(get(cl_col))]
-
-  ggplot(int_dt[sample(nrow(int_dt))],
-         aes(x = UMAP1, y = UMAP2,
-             colour = as.factor(get(cl_col)))) +
-    geom_point(size = 0.3, alpha = 0.5) +
-    guides(colour = guide_legend(
-      override.aes = list(size = 3, alpha = 1),
-      ncol = max(1, ceiling(n_cl / 20))
-    )) +
-    labs(colour  = "cluster",
-         title   = sprintf("UMAP — Leiden res %.1f (%d clusters)",
-                           as.numeric(res_val), n_cl)) +
-    umap_theme
-}
-
-# ---------------------------------------------------------------------------
-# UMAP cell density (2-D histogram, log10 colour scale)
-# Adapted from scprocess plot_umap_density().
-# ---------------------------------------------------------------------------
-plot_umap_density <- function(int_dt) {
-  stopifnot(all(c("UMAP1", "UMAP2") %in% names(int_dt)))
-
-  ggplot(int_dt, aes(x = UMAP1, y = UMAP2)) +
-    geom_bin2d(bins = 60) +
-    scale_fill_distiller(palette = "RdBu", trans = "log10") +
-    labs(fill = "cells\n(log10)", title = "UMAP density") +
-    umap_theme
-}
-
-# ---------------------------------------------------------------------------
-# Cell counts + percentage per cluster (returns a data.table for kable)
-# ---------------------------------------------------------------------------
-cluster_counts_tbl <- function(int_dt, cl_col) {
-  cl_col <- resolve_cluster_column(int_dt, cl_col)
-  stopifnot(cl_col %in% names(int_dt))
-
-  tbl <- int_dt[, .N, by = cl_col][order(-N)]
-  setnames(tbl, c("cluster", "n_cells"))
-  tbl[, pct := round(n_cells / sum(n_cells) * 100, 1)]
-  tbl
-}
-
-# ---------------------------------------------------------------------------
 # Cluster mixing diagnostics across samples
+# Matches scprocess plot_cluster_entropies exactly.
 # ---------------------------------------------------------------------------
 plot_cluster_entropies <- function(input_dt, batch_var = 'sample_id', what = c('norm', 'raw')) {
   what <- match.arg(what)
   stopifnot(all(c('cluster', batch_var) %in% names(input_dt)))
 
-  ns_dt <- input_dt[, .N, by = c(batch_var, 'cluster')][
+  ns_dt <- copy(input_dt)[, .N, by = c(batch_var, 'cluster')][
     , p_sample := N / sum(N), by = batch_var
   ][
     , p_cluster := N / sum(N), by = cluster
@@ -155,27 +265,28 @@ plot_cluster_entropies <- function(input_dt, batch_var = 'sample_id', what = c('
     max_pct_norm = 100 * max(p_cl_norm),
     N            = sum(N)
   ), by = cluster]
+  labels_dt <- entropy_dt[order(cluster)]
 
   cl_ls   <- sort(unique(entropy_dt$cluster))
-  cl_cols <- rep(c(
-    '#DC050C', '#FB8072', '#1965B0', '#7BAFDE', '#882E72', '#B17BA6',
-    '#FF7F00', '#FDB462', '#E7298A', '#E78AC3', '#33A02C', '#B2DF8A'
-  ), length.out = length(cl_ls))
+  cl_cols <- nice_cols[seq_along(cl_ls)]
   names(cl_cols) <- cl_ls
 
   ggplot(entropy_dt) +
     aes_string(x = paste0('h_cl_', what), y = paste0('max_pct_', what)) +
-    geom_smooth(method = 'lm', formula = y ~ x, se = FALSE, colour = 'grey50') +
-    geom_point(aes(size = sqrt(N), fill = cluster), shape = 21) +
-    geom_text_repel(aes(label = cluster), size = 3, max.overlaps = Inf) +
-    scale_fill_manual(values = cl_cols, guide = 'none') +
+    geom_smooth(method = "lm", formula = y ~ x, se = FALSE, colour = "grey") +
+    geom_text_repel(data = labels_dt, aes(label = cluster), size = 3,
+      min.segment.length = 0, max.overlaps = Inf, box.padding = 0.5) +
+    geom_point(shape = 21, aes(size = sqrt(N), fill = cluster)) +
+    scale_x_continuous(breaks = pretty_breaks(n = 3)) +
+    scale_y_continuous(breaks = pretty_breaks(n = 3)) +
+    scale_fill_manual(values = cl_cols, guide = "none") +
+    expand_limits(x = 0, y = 0) +
     scale_size(
       range  = c(1, 8),
       breaks = sqrt(c(2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4)),
       labels = c('200', '500', '1k', '2k', '5k', '10k', '20k', '50k')
     ) +
-    expand_limits(x = 0, y = 0) +
-    theme_bw(base_size = 11) +
+    theme_bw() +
     theme(panel.grid = element_blank()) +
     labs(
       x    = 'entropy',
@@ -186,42 +297,82 @@ plot_cluster_entropies <- function(input_dt, batch_var = 'sample_id', what = c('
 
 # ---------------------------------------------------------------------------
 # QC metric distributions per cluster
+# Matches scprocess plot_cluster_qc_distns exactly.
 # ---------------------------------------------------------------------------
-plot_cluster_qc_distns <- function(qc_melt, clust_dt, name) {
+plot_cluster_qc_distns <- function(qc_melt, clust_dt, name, min_cl_size = 1e2) {
   stopifnot(all(c('cell_id', 'cluster') %in% names(clust_dt)))
-  plot_dt <- merge(qc_melt, clust_dt, by = 'cell_id')
-  plot_dt[, cluster := fct_infreq(as.factor(cluster))]
 
-  cl_levels <- levels(plot_dt$cluster)
-  cl_cols <- rep(c(
-    '#DC050C', '#FB8072', '#1965B0', '#7BAFDE', '#882E72', '#B17BA6',
-    '#FF7F00', '#FDB462', '#E7298A', '#E78AC3', '#33A02C', '#B2DF8A'
-  ), length.out = length(cl_levels))
-  names(cl_cols) <- cl_levels
+  if (is.numeric(name)) {
+    # exclude tiny clusters
+    cl_n_dt  <- clust_dt[, .N, by = cluster]
+    cls_tiny <- cl_n_dt$N < min_cl_size
+    if (any(cls_tiny)) {
+      clust_dt <- clust_dt[cluster %in% cl_n_dt[!cls_tiny]$cluster]
+    }
+    clust_dt[, cluster := fct_infreq(as.factor(cluster))]
+    name <- sprintf('res = %s', name)
+  } else {
+    clust_dt[, cluster := fct_infreq(as.factor(cluster))]
+  }
+
+  if (nrow(clust_dt) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = sprintf("%s: no clusters passed QC plot filters", name)) +
+        theme_void()
+    )
+  }
+
+  plot_dt <- merge(qc_melt, clust_dt, by = 'cell_id')
+
+  if (nrow(plot_dt) == 0 || !any(!is.na(plot_dt$qc_full))) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = sprintf("%s: no QC rows matched integrated cells", name)) +
+        theme_void()
+    )
+  }
+
+  cl_cols <- rep(nice_cols, times = 10)[seq_along(levels(plot_dt$cluster))]
+  names(cl_cols) <- levels(plot_dt$cluster)
 
   log_brks   <- log10(c(1e1, 2e1, 5e1, 1e2, 2e2, 5e2, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5))
-  log_labs   <- c('10', '20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k', '50k', '100k', '200k', '500k')
+  log_labs   <- c("10", "20", "50", "100", "200", "500",
+    "1k", "2k", "5k", "10k", "20k", "50k", "100k", "200k", "500k")
   logit_brks <- qlogis(c(1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.10, 0.30, 0.50, 0.70, 0.90, 0.97, 0.99))
-  logit_labs <- c('0.01%', '0.03%', '0.1%', '0.3%', '1%', '3%', '10%', '30%', '50%', '70%', '90%', '97%', '99%')
+  logit_labs <- c("0.01%", "0.03%", "0.1%", "0.3%", "1%", "3%", "10%", "30%",
+    "50%", "70%", "90%", "97%", "99%")
 
-  ggplot(plot_dt) +
-    aes(x = cluster, y = qc_val, fill = cluster) +
-    geom_violin(colour = NA, kernel = 'rectangular', adjust = 0.5, scale = 'width', width = 0.8) +
-    scale_fill_manual(values = cl_cols, guide = 'none') +
+  ggplot(plot_dt) + aes(x = cluster, y = qc_val, fill = cluster) +
+    geom_violin(kernel = 'rectangular', adjust = 0.5, scale = 'width', width = 0.8, colour = NA) +
+    scale_fill_manual(values = cl_cols, guide = "none") +
     facet_grid(qc_full ~ ., scales = 'free_y') +
     facetted_pos_scales(
       y = list(
-        qc_full == 'no. of UMIs'  ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
-        qc_full == 'no. of genes' ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
-        qc_full == 'mito pct.'    ~ scale_y_continuous(breaks = logit_brks, labels = logit_labs),
-        qc_full == 'spliced pct.' ~ scale_y_continuous(breaks = logit_brks, labels = logit_labs)
+        qc_full == "no. of UMIs"  ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
+        qc_full == "no. of genes" ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
+        qc_full == "mito pct."    ~ scale_y_continuous(breaks = logit_brks, labels = logit_labs),
+        qc_full == "spliced pct." ~ scale_y_continuous(breaks = logit_brks, labels = logit_labs)
       )
     ) +
-    theme_bw(base_size = 11) +
+    theme_bw() +
     theme(
       axis.text.x      = element_text(angle = 90, hjust = 1, vjust = 0.5),
       panel.grid       = element_blank(),
       strip.background = element_rect(fill = 'white')
     ) +
-    labs(x = name, y = 'QC metric')
+    labs(x = name, y = "QC metric")
+}
+
+# ---------------------------------------------------------------------------
+# Cell counts + percentage per cluster (returns a data.table for kable)
+# ---------------------------------------------------------------------------
+cluster_counts_tbl <- function(int_dt, cl_col) {
+  cl_col <- resolve_cluster_column(int_dt, cl_col)
+  stopifnot(cl_col %in% names(int_dt))
+
+  tbl <- int_dt[, .N, by = cl_col][order(-N)]
+  setnames(tbl, c("cluster", "n_cells"))
+  tbl[, pct := round(n_cells / sum(n_cells) * 100, 1)]
+  tbl
 }

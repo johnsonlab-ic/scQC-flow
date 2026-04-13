@@ -72,8 +72,9 @@ suppressPackageStartupMessages({
 run_apply_qc <- function() {
 
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) != 13) {
+  if (length(args) != 14) {
     stop("Usage: apply_qc.R <sampleId> <h5_file> <genome_gtf> <dbl_csv> ",
+         "<metadata_csv> ",
          "<hard_min_counts> <hard_min_feats> <hard_max_mito> ",
          "<min_counts> <min_feats> <max_mito> <min_mito> ",
          "<max_splice> <min_splice>")
@@ -83,15 +84,16 @@ run_apply_qc <- function() {
   h5_file         <- args[2]
   gtf_file        <- args[3]
   dbl_csv         <- args[4]
-  hard_min_counts <- as.numeric(args[5])
-  hard_min_feats  <- as.numeric(args[6])
-  hard_max_mito   <- as.numeric(args[7])
-  min_counts      <- as.numeric(args[8])
-  min_feats       <- as.numeric(args[9])
-  max_mito        <- as.numeric(args[10])
-  min_mito        <- as.numeric(args[11])
-  max_splice      <- as.numeric(args[12])
-  min_splice      <- as.numeric(args[13])
+  metadata_csv    <- args[5]
+  hard_min_counts <- as.numeric(args[6])
+  hard_min_feats  <- as.numeric(args[7])
+  hard_max_mito   <- as.numeric(args[8])
+  min_counts      <- as.numeric(args[9])
+  min_feats       <- as.numeric(args[10])
+  max_mito        <- as.numeric(args[11])
+  min_mito        <- as.numeric(args[12])
+  max_splice      <- as.numeric(args[13])
+  min_splice      <- as.numeric(args[14])
 
   message("=== APPLY_QC: ", sample_id, " ===")
   message("Hard thresholds: min_counts=", hard_min_counts,
@@ -175,7 +177,23 @@ run_apply_qc <- function() {
   qc_dt[, is_singlet := scdbl_class == "singlet"]
 
   # -------------------------------------------------------------------------
-  # 6. Apply hard and soft QC thresholds
+  # 6. Attach sample-level metadata if available
+  # -------------------------------------------------------------------------
+  if (basename(metadata_csv) != "NO_FILE") {
+    meta_dt <- fread(metadata_csv)
+    if (!"sample_id" %in% names(meta_dt)) {
+      stop("Normalized metadata file is missing a sample_id column")
+    }
+    sample_meta <- meta_dt[sample_id == ..sample_id]
+    if (nrow(sample_meta) != 1) {
+      stop("Expected exactly one metadata row for sample ", sample_id,
+           "; found ", nrow(sample_meta))
+    }
+    qc_dt <- merge(qc_dt, sample_meta, by = "sample_id", all.x = TRUE, sort = FALSE)
+  }
+
+  # -------------------------------------------------------------------------
+  # 7. Apply hard and soft QC thresholds
   # -------------------------------------------------------------------------
   qc_dt[, keep_hard :=
     is_singlet &
@@ -199,7 +217,7 @@ run_apply_qc <- function() {
           " (", round(100 * n_kept / n_total, 1), "%)")
 
   # -------------------------------------------------------------------------
-  # 7. Write outputs
+    # 8. Write outputs
   # -------------------------------------------------------------------------
   qc_out <- sprintf("qc_metrics_%s.csv.gz", sample_id)
   fwrite(qc_dt, qc_out)

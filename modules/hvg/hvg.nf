@@ -8,14 +8,18 @@ process HVG_SELECTION {
 
     input:
     path h5_files        // collected filt_counts_*.h5 from DECONTX
-    path qc_metrics_csvs // collected qc_metrics_*.csv.gz from SAMPLE_QC
+    path qc_metrics_csvs // collected qc_metrics_*.csv.gz from APPLY_QC
+    path genome_gtf      // reference GTF (for SYMBOL_ENSEMBL gene IDs)
+    path edger_csv       // edger_dt.csv.gz from AMBIENT_DE (ambient gene exclusion)
     path script          // hvg_selection.py
 
     output:
-    path "hvg_stats.csv.gz",  emit: hvg_stats
-    path "hvg_counts.h5",     emit: hvg_counts
+    path "hvg_stats.csv.gz",    emit: hvg_stats
+    path "hvg_counts.h5",       emit: hvg_counts
+    path "dbl_hvg_counts.h5",   emit: dbl_hvg_counts
 
     script:
+    def edger_arg = edger_csv.name != 'NO_FILE' ? "--edger_csv '${edger_csv}'" : ""
     """
     set -euo pipefail
     export HOME="\$PWD"
@@ -27,6 +31,9 @@ process HVG_SELECTION {
         --qc_pattern  'qc_metrics_*.csv.gz' \
         --n_top_genes ${params.hvg_n_hvgs} \
         --out_stats   hvg_stats.csv.gz \
-        --out_h5      hvg_counts.h5
+        --out_h5      hvg_counts.h5 \
+        --out_dbl_h5  dbl_hvg_counts.h5 \
+        --gtf         ${genome_gtf} \
+        ${edger_arg}
     """
 }

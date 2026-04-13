@@ -52,6 +52,7 @@ process APPLY_QC {
 
     input:
     tuple val(sampleId), path(h5_file), path(dbl_csv)
+    path  metadata_csv
     path  genome_gtf
     path  script
 
@@ -68,6 +69,7 @@ process APPLY_QC {
         "${h5_file}" \
         "${genome_gtf}" \
         "${dbl_csv}" \
+        "${metadata_csv}" \
         "${params.qc_hard_min_counts}" \
         "${params.qc_hard_min_feats}" \
         "${params.qc_hard_max_mito}" \

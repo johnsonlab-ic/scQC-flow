@@ -1,12 +1,12 @@
 nextflow.enable.dsl=2
 
 include { MAPPING           } from './workflows/workflows'
+include { SAMPLE_METADATA   } from './workflows/workflows'
 include { AMBIENT           } from './workflows/workflows'
+include { AMBIENT_DE_WF     } from './workflows/workflows'
 include { QC                } from './workflows/workflows'
 include { HVG               } from './workflows/workflows'
 include { INTEGRATION       } from './workflows/workflows'
-include { AMBIENT_DE        } from './modules/ambient_de/ambient_de'
-include { STAGE_RAW_H5     } from './modules/ambient_de/ambient_de'
 include { INDEX_REPORT      } from './modules/reports/reports'
 
 // =============================================================================
@@ -41,7 +41,11 @@ def helpMessage() {
         --metadata_id_col   Column in metadata CSV that maps to sample IDs (default: sample_id)
         --metadata_vars     Space-separated metadata columns for Harmony correction
                             (e.g. "brainregion condition")
-        --hvg_n_hvgs        Number of HVGs to select (default: 4000)
+        --hvg_n_hvgs        Number of HVGs to select (default: 2000)
+        --barcode_v2_splice_context  Splice QC context for Barcode_estimation_v2
+                         (snrna, scrna, auto; default: snrna)
+        --barcode_v2_ed_fdr          EmptyDrops FDR cutoff for Barcode_estimation_v2
+                         (default: 0.001)
         --help              Show this message
 
     Profiles:
@@ -95,6 +99,9 @@ workflow {
     if (!file(params.genome_gtf).exists()) {
         error "--genome_gtf does not exist: ${params.genome_gtf}"
     }
+    if (params.metadata_csv && !file(params.metadata_csv).exists()) {
+        error "--metadata_csv does not exist: ${params.metadata_csv}"
+    }
 
     // ------------------------------------------------------------------
     // Log run info
@@ -112,6 +119,7 @@ workflow {
     run_qc         : ${params.run_qc}
     run_hvg        : ${params.run_hvg}
     run_integration: ${params.run_integration}
+    metadata_csv   : ${params.metadata_csv ?: 'not provided'}
     outputDir      : ${params.outputDir}
     ===================================
     """
@@ -122,6 +130,14 @@ workflow {
     samples_ch = channel
         .fromPath("${params.raw_data_dir}/*", type: 'dir')
         .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
+
+    def sample_metadata_ch
+    if (params.metadata_csv) {
+        SAMPLE_METADATA(samples_ch.map { sampleId, _sampleName, _fastqPath -> sampleId }.collect())
+        sample_metadata_ch = SAMPLE_METADATA.out.sample_metadata
+    } else {
+        sample_metadata_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
+    }
 
     // ------------------------------------------------------------------
     // 1. Mapping (always runs)
@@ -142,23 +158,17 @@ workflow {
         report_htmls = report_htmls.mix(AMBIENT.out.report)
 
         // Ambient DE analysis (always runs if ambient runs)
-        // STAGE_RAW_H5 symlinks af_counts_mat.h5 → barcode_matrix_<id>.h5
-        // so multiple samples can be collected without filename collision.
-        STAGE_RAW_H5(MAPPING.out.h5_files)
-
-        AMBIENT_DE(
-            STAGE_RAW_H5.out.h5.collect(),
-            MAPPING.out.knee_data.map { _id, csv -> csv }.collect(),
-            AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
-            channel.value(file(params.genome_gtf)),
-            channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
+        AMBIENT_DE_WF(
+            MAPPING.out.h5_files,
+            MAPPING.out.knee_data,
+            AMBIENT.out.h5_files
         )
 
         // --------------------------------------------------------------
         // 3. Cell-level QC (opt-in via --run_qc, requires ambient)
         // --------------------------------------------------------------
         if (params.run_qc) {
-            QC(AMBIENT.out.h5_files)
+            QC(AMBIENT.out.h5_files, sample_metadata_ch)
             report_htmls = report_htmls.mix(QC.out.report)
 
             // ----------------------------------------------------------
@@ -168,8 +178,8 @@ workflow {
                 HVG(
                     AMBIENT.out.h5_files,
                     QC.out.qc_metrics,
-                    AMBIENT_DE.out.de_table,
-                    AMBIENT_DE.out.pb_empties
+                    AMBIENT_DE_WF.out.de_table,
+                    AMBIENT_DE_WF.out.pb_empties
                 )
                 report_htmls = report_htmls.mix(HVG.out.report)
 
@@ -182,6 +192,7 @@ workflow {
                     }
                     INTEGRATION(
                         HVG.out.hvg_counts,
+                        HVG.out.dbl_hvg_counts,
                         QC.out.qc_metrics
                     )
                     report_htmls = report_htmls.mix(INTEGRATION.out.report)

@@ -46,12 +46,6 @@ process AMBIENT_DE {
     """
     set -euo pipefail
 
-    Rscript ${script} \
-        --raw_h5_pattern  'barcode_matrix_*.h5' \
-        --knee_pattern    'knee_plot_data_*.csv' \
-        --filt_h5_pattern 'filt_counts_*.h5' \
-        --gtf             ${genome_gtf} \
-        --out_de          edger_dt.csv.gz \
-        --out_pb_empties  pb_empties.rds
+    Rscript ${script} ${genome_gtf}
     """
 }
