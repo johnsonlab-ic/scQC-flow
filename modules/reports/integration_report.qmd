@@ -2,7 +2,7 @@
 title: "Integration diagnostics"
 format:
   html:
-    embed-resources: true
+    embed-resources: false
     toc: true
     toc-depth: 3
     code-fold: true
@@ -18,9 +18,12 @@ execute:
 source("integration_plots.R")
 
 leiden_res_str    <- Sys.getenv("LEIDEN_RES",    "0.2 0.5 1.0")
+metadata_vars_str <- Sys.getenv("METADATA_VARS", "")
 
 leiden_res  <- trimws(strsplit(leiden_res_str, "\\s+")[[1]])
 leiden_res  <- leiden_res[nzchar(leiden_res)]
+requested_metadata_vars <- trimws(strsplit(metadata_vars_str, "\\s+")[[1]])
+requested_metadata_vars <- requested_metadata_vars[nzchar(requested_metadata_vars)]
 
 batch_var   <- "sample_id"
 dbl_cl_prop <- 0.5
@@ -41,6 +44,13 @@ if (nrow(qc_dt) > 0 && all(c("sample_id", "cell_id") %in% names(qc_dt))) {
   qc_dt[, cell_id := paste(sample_id, cell_id, sep = "_")]
 }
 
+feature_sources <- list(
+  list(key = "ncount_rna",   source = "sum",         label = "nCount RNA"),
+  list(key = "nfeature_rna", source = "detected",    label = "nFeature RNA"),
+  list(key = "splice_frac",  source = "splice_frac", label = "splice fraction"),
+  list(key = "mito_pct",     source = "mito_pct",    label = "mitochondrial content")
+)
+
 qc_names <- c("log_counts", "log_feats", "logit_mito", "logit_spliced")
 qc_lu    <- c("no. of UMIs", "no. of genes", "mito pct.", "spliced pct.")
 names(qc_lu) <- qc_names
@@ -56,6 +66,15 @@ if (length(present_leiden) == 0) {
 # have NaN UMAP1/2 and NaN cluster columns in the outer-join output
 int_dt_pass2 <- int_dt[!is.na(UMAP1)]
 
+if (nrow(qc_dt) > 0) {
+  feature_cols <- unique(unlist(lapply(feature_sources, `[[`, "source")))
+  present_feature_cols <- feature_cols[feature_cols %in% names(qc_dt)]
+  if (length(present_feature_cols) > 0) {
+    feature_dt <- unique(qc_dt[, c("cell_id", present_feature_cols), with = FALSE], by = "cell_id")
+    int_dt_pass2 <- merge(int_dt_pass2, feature_dt, by = "cell_id", all.x = TRUE)
+  }
+}
+
 core_cols <- c(
   "cell_id", "sample_id", "embedding", "UMAP1", "UMAP2",
   "dbl_UMAP1", "dbl_UMAP2", "dbl_cluster", "dbl_prop", "in_dbl_cl",
@@ -67,8 +86,18 @@ metadata_vars <- setdiff(names(int_dt), c(core_cols, cluster_cols, embed_cols))
 metadata_vars <- metadata_vars[!startsWith(metadata_vars, "_")]
 metadata_vars <- metadata_vars[vapply(metadata_vars, function(var_name) {
   vals <- int_dt_pass2[[var_name]]
-  any(!is.na(vals)) && uniqueN(vals[!is.na(vals)]) > 1
+  any(!is.na(vals))
 }, logical(1))]
+if (length(requested_metadata_vars) > 0) {
+  metadata_vars <- c(
+    requested_metadata_vars[requested_metadata_vars %in% metadata_vars],
+    setdiff(metadata_vars, requested_metadata_vars)
+  )
+}
+umap_vars <- unique(c("sample_id", metadata_vars))
+umap_vars <- umap_vars[umap_vars %in% names(int_dt_pass2)]
+feature_vars <- Filter(function(spec) spec$source %in% names(int_dt_pass2), feature_sources)
+missing_feature_vars <- Filter(function(spec) !spec$source %in% names(int_dt_pass2), feature_sources)
 
 # Doublet annotations — two-pass format uses is_dbl; fall back to is_doublet
 has_doublets <- "is_dbl" %in% names(int_dt) || "is_doublet" %in% names(int_dt)
@@ -218,25 +247,39 @@ if (length(present_leiden) > 0 && nrow(qc_dt) > 0) {
 }
 ```
 
-## UMAP by sample
-
-```{r umap_sample, fig.height = 5, fig.width = 7}
-plot_umap_sample(int_dt_pass2)
-```
-
-## UMAP by metadata variables
+## UMAP by sample and metadata variables
 
 ```{r umap_metadata, fig.height = 5, fig.width = 7, results='asis'}
-if (length(metadata_vars) > 0) {
+if (length(umap_vars) > 0) {
   cat('::: {.panel-tabset}\n\n')
-  for (var_name in metadata_vars) {
+  for (var_name in umap_vars) {
     cat("### ", var_name, "\n\n")
     print(plot_umap_by_var(int_dt_pass2, var_name))
     cat("\n\n")
   }
   cat(':::\n\n')
 } else {
-  cat("No metadata variables were retained in the integration output.\n\n")
+  cat("No sample or metadata variables were retained in the integration output.\n\n")
+}
+```
+
+## UMAP by QC features
+
+```{r umap_features, fig.height = 5, fig.width = 7, results='asis'}
+if (length(feature_vars) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (spec in feature_vars) {
+    cat("### ", spec$label, "\n\n")
+    print(plot_umap_by_var(int_dt_pass2, spec$source))
+    cat("\n\n")
+  }
+  for (spec in missing_feature_vars) {
+    cat("### ", spec$label, "\n\n")
+    cat(sprintf("%s is not available in the current integration report inputs.\n\n", spec$label))
+  }
+  cat(':::\n\n')
+} else {
+  cat("No QC feature variables were available for UMAP plotting.\n\n")
 }
 ```
 

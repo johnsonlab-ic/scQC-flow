@@ -1,0 +1,218 @@
+---
+title: "Annotation diagnostics"
+format:
+  html:
+    embed-resources: false
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r setup}
+source("annotation_utils.R")
+
+sel_res <- Sys.getenv("ANNOTATION_SEL_RES", "0.2")
+min_cpm_mkr <- as.numeric(Sys.getenv("ANNOTATION_MIN_CPM_MKR", "50"))
+not_ok_re <- Sys.getenv("ANNOTATION_NOT_OK_RE", "(lincRNA|lncRNA|pseudogene|antisense)")
+top_n <- as.integer(Sys.getenv("ANNOTATION_TOP_N", "10"))
+fdr_cut <- as.numeric(Sys.getenv("ANNOTATION_FDR_CUT", "0.01"))
+max_zero_p <- as.numeric(Sys.getenv("ANNOTATION_MAX_ZERO_P", "0.5"))
+```
+
+```{r load_data}
+int_dt <- fread("integration_dt.csv.gz")
+mkrs_dt <- fread("annotation_markers.csv.gz")
+cpms_dt <- fread("annotation_logcpms.csv.gz")
+panel_dt <- fread("annotation_marker_panel.csv.gz")
+h5_files <- Sys.glob("filt_counts_*.h5")
+
+cl_col <- paste0("RNA_snn_res.", sel_res)
+stopifnot("Selected annotation resolution not found in integration output" = cl_col %in% names(int_dt))
+
+int_dt <- int_dt[!is.na(get(cl_col)) & sample_id != "", .(
+  sample_id,
+  cell_id,
+  UMAP1,
+  UMAP2,
+  cluster = get(cl_col)
+)]
+
+cl_ord <- order_cluster_labels(unique(int_dt$cluster))
+int_dt[, cluster := factor(as.character(cluster), levels = cl_ord)]
+panel_label_levels <- unique(as.character(panel_dt$label))
+panel_dt[, label := factor(as.character(label), levels = panel_label_levels)]
+
+top_min_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
+  logcpm.sel >= log(min_cpm_mkr + 1)
+] |> get_top_markers(fdr_cut = fdr_cut, n_top = top_n, max_zero_p = max_zero_p)
+
+top_heatmap_panel_dt <- make_top_marker_heatmap_panel(top_min_dt, cl_order = cl_ord)
+
+marker_coverage_dt <- panel_dt[, .(
+  markers = paste(unique(symbol), collapse = ", ")
+), by = label]
+
+cluster_label_dt <- assign_cluster_labels_from_panel(mkrs_dt, panel_dt, min_cpm = min_cpm_mkr)
+cluster_label_dt <- merge(data.table(cluster = cl_ord), cluster_label_dt, by = "cluster", all.x = TRUE, sort = FALSE)
+cluster_label_dt[is.na(label), `:=`(label = "Unassigned", label_score = NA_real_, n_markers = 0L)]
+cluster_label_dt[, label := factor(as.character(label), levels = unique(c(panel_label_levels, "Unassigned")))]
+
+int_dt <- merge(int_dt, cluster_label_dt[, .(cluster, label)], by = "cluster", all.x = TRUE, sort = FALSE)
+int_dt[is.na(label), label := "Unassigned"]
+int_dt[, label := factor(as.character(label), levels = unique(c(panel_label_levels, "Unassigned")))]
+
+panel_ls <- setNames(
+  lapply(panel_label_levels, function(label_name) panel_dt[as.character(label) == label_name]),
+  panel_label_levels
+)
+
+cell_exp_dt <- data.table()
+if (length(h5_files) > 0 && nrow(panel_dt) > 0) {
+  cell_exp_dt <- load_h5_marker_expression(
+    h5_files,
+    panel_dt,
+    int_dt[, .(sample_id, cell_id, UMAP1, UMAP2)],
+    pseudo_count = 10
+  )
+}
+```
+
+Marker genes were tested by aggregating counts per sample within each cluster at resolution `r sel_res`, then running one-vs-rest pseudobulk differential expression across clusters.
+
+* **Clusters carried into annotation:** `r length(cl_ord)`
+* **Cells used for annotation:** `r format(nrow(int_dt), big.mark = ",")`
+* **Provided marker genes matched in the data:** `r uniqueN(panel_dt$gene_id)`
+* **Filtered H5 files available for marker UMAPs:** `r length(h5_files)`
+
+## Input marker panel
+
+```{r marker_panel_table}
+DT::datatable(
+  marker_coverage_dt,
+  rownames = FALSE,
+  class = "compact stripe hover",
+  options = list(dom = "t", paging = FALSE, searching = FALSE, info = FALSE, ordering = FALSE, autoWidth = TRUE)
+)
+```
+
+## Heatmaps of marker genes {.tabset}
+
+### Provided markers
+
+```{r plot_heatmap_provided_markers, fig.height = 9, fig.width = 10}
+suppressMessages(draw(
+  plot_heatmap_of_selected_genes(mkrs_dt, panel_dt),
+  heatmap_legend_side = "bottom",
+  annotation_legend_side = "bottom",
+  merge_legend = TRUE
+))
+```
+
+### Top markers by cluster
+
+```{r plot_heatmap_top_markers, fig.height = 9, fig.width = 10}
+if (nrow(top_heatmap_panel_dt) > 0) {
+  suppressMessages(draw(
+    plot_heatmap_of_selected_genes(mkrs_dt, top_heatmap_panel_dt),
+    heatmap_legend_side = "bottom",
+    annotation_legend_side = "bottom",
+    merge_legend = TRUE
+  ))
+} else {
+  cat("No top markers passed the display filters for the heatmap.\n")
+}
+```
+
+## Top marker genes by cluster
+
+```{r plot_top_markers, fig.height = 9, fig.width = 10, results = 'asis'}
+cat('::: {.panel-tabset}\n\n')
+for (sel_cl in cl_ord) {
+  cat('###', sel_cl, '\n\n')
+  if (sel_cl %in% top_min_dt$cluster) {
+    print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
+  } else {
+    cat('No marker genes passed the display filters for this cluster.\n\n')
+  }
+  cat('\n\n')
+}
+cat(':::\n\n')
+```
+
+## Provided marker genes by label
+
+```{r plot_provided_marker_panels, fig.height = 9, fig.width = 10, results = 'asis'}
+cat('::: {.panel-tabset}\n\n')
+for (label_name in names(panel_ls)) {
+  cat('###', label_name, '\n\n')
+  sel_panel_dt <- panel_ls[[label_name]]
+  highlight_clusters <- as.character(cluster_label_dt[as.character(label) == label_name, cluster])
+  print(plot_selected_marker_panel(
+    sel_panel_dt,
+    cpms_dt,
+    cl_order = cl_ord,
+    highlight_clusters = highlight_clusters,
+    title = sprintf('%s provided marker genes', label_name)
+  ))
+  cat('\n\n')
+}
+cat(':::\n\n')
+```
+
+## Annotation labels over UMAP
+
+Cell labels in the panels below are assigned at the cluster level by the provided marker label with the highest mean positive marker log2 fold-change among the matched input markers.
+
+```{r plot_annotation_umap_overview, fig.height = 10, fig.width = 18}
+g_label <- plot_umap_cluster(
+  int_dt[, .(cell_id, UMAP1, UMAP2)],
+  int_dt[, .(cell_id, cluster = label)],
+  name = 'cell label'
+)
+g_cluster <- plot_umap_cluster(
+  int_dt[, .(cell_id, UMAP1, UMAP2)],
+  int_dt[, .(cell_id, cluster)],
+  name = 'cluster'
+)
+print(g_label + g_cluster)
+```
+
+## Marker panels over UMAP
+
+```{r plot_marker_umaps, fig.height = 10, fig.width = 18, results = 'asis'}
+if (nrow(cell_exp_dt) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (label_name in names(panel_ls)) {
+    cat('###', label_name, '\n\n')
+    sel_expr_dt <- cell_exp_dt[as.character(label) == label_name]
+    if (nrow(sel_expr_dt) == 0) {
+      cat('No marker expression values were available for this label.\n\n')
+      next
+    }
+
+    g_label <- plot_umap_cluster(
+      int_dt[, .(cell_id, UMAP1, UMAP2)],
+      int_dt[, .(cell_id, cluster = label)],
+      name = 'cell label'
+    )
+    g_expr <- plot_selected_genes_umap(sel_expr_dt)
+    print(g_label + g_expr + patchwork::plot_layout(widths = c(1, 1.8)))
+    cat('\n\n')
+  }
+  cat(':::\n\n')
+} else {
+  cat('No filtered H5 inputs were available to render marker expression UMAPs.\n\n')
+}
+```
+
+## Session info
+
+```{r session_info}
+sessionInfo()
+```

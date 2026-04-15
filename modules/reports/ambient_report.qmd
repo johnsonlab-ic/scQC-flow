@@ -2,7 +2,7 @@
 title: "Ambient RNA removal diagnostics"
 format:
   html:
-    embed-resources: true
+    embed-resources: false
     toc: true
     toc-depth: 3
     code-fold: true

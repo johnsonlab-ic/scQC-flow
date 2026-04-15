@@ -9,7 +9,7 @@ format:
     theme: cosmo
     code-fold: true
     code-tools: true
-    embed-resources: true
+    embed-resources: false
 execute:
   warning: false
   message: false

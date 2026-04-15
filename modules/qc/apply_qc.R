@@ -80,7 +80,7 @@ run_apply_qc <- function() {
          "<max_splice> <min_splice>")
   }
 
-  sample_id       <- args[1]
+  current_sample_id <- args[1]
   h5_file         <- args[2]
   gtf_file        <- args[3]
   dbl_csv         <- args[4]
@@ -95,7 +95,7 @@ run_apply_qc <- function() {
   max_splice      <- as.numeric(args[13])
   min_splice      <- as.numeric(args[14])
 
-  message("=== APPLY_QC: ", sample_id, " ===")
+  message("=== APPLY_QC: ", current_sample_id, " ===")
   message("Hard thresholds: min_counts=", hard_min_counts,
           " min_feats=", hard_min_feats, " max_mito=", hard_max_mito)
   message("Soft thresholds: counts=[", min_counts, ",Inf]",
@@ -150,7 +150,7 @@ run_apply_qc <- function() {
 
   qc_dt <- data.table(
     cell_id         = colnames(counts_mat),
-    sample_id       = sample_id,
+    sample_id       = current_sample_id,
     sum             = as.numeric(cell_counts),
     detected        = as.integer(cell_feats),
     mito_sum        = as.numeric(mito_sum),
@@ -184,10 +184,16 @@ run_apply_qc <- function() {
     if (!"sample_id" %in% names(meta_dt)) {
       stop("Normalized metadata file is missing a sample_id column")
     }
-    sample_meta <- meta_dt[sample_id == ..sample_id]
+    sample_meta <- meta_dt[meta_dt[["sample_id"]] == current_sample_id]
     if (nrow(sample_meta) != 1) {
-      stop("Expected exactly one metadata row for sample ", sample_id,
-           "; found ", nrow(sample_meta))
+      available_ids <- sort(unique(meta_dt[["sample_id"]]))
+      stop(
+        "Expected exactly one metadata row for sample ", current_sample_id,
+        "; found ", nrow(sample_meta),
+        ". Available sample_id values include: ",
+        paste(utils::head(available_ids, 10), collapse = ", "),
+        if (length(available_ids) > 10) " ..." else ""
+      )
     }
     qc_dt <- merge(qc_dt, sample_meta, by = "sample_id", all.x = TRUE, sort = FALSE)
   }
@@ -219,12 +225,12 @@ run_apply_qc <- function() {
   # -------------------------------------------------------------------------
     # 8. Write outputs
   # -------------------------------------------------------------------------
-  qc_out <- sprintf("qc_metrics_%s.csv.gz", sample_id)
+  qc_out <- sprintf("qc_metrics_%s.csv.gz", current_sample_id)
   fwrite(qc_dt, qc_out)
   message("Written QC metrics: ", qc_out)
 
   summary_dt <- data.table(
-    sample_id       = sample_id,
+    sample_id       = current_sample_id,
     n_total         = n_total,
     n_singlets      = sum(qc_dt$is_singlet),
     n_doublets      = sum(!qc_dt$is_singlet),
@@ -236,8 +242,8 @@ run_apply_qc <- function() {
     median_feats    = round(median(qc_dt[keep == TRUE, detected]), 0),
     median_mito_pct = round(median(qc_dt[keep == TRUE, mito_pct]) * 100, 2)
   )
-  fwrite(summary_dt, sprintf("qc_summary_%s.csv", sample_id))
-  message("Written summary: ", sprintf("qc_summary_%s.csv", sample_id))
+  fwrite(summary_dt, sprintf("qc_summary_%s.csv", current_sample_id))
+  message("Written summary: ", sprintf("qc_summary_%s.csv", current_sample_id))
 
   message("=== APPLY_QC done ===")
 }

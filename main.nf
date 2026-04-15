@@ -7,7 +7,8 @@ include { AMBIENT_DE_WF     } from './workflows/workflows'
 include { QC                } from './workflows/workflows'
 include { HVG               } from './workflows/workflows'
 include { INTEGRATION       } from './workflows/workflows'
-include { INDEX_REPORT      } from './modules/reports/reports'
+include { ANNOTATION        } from './workflows/workflows'
+include { BUILD_SITE        } from './modules/reports/reports'
 
 // =============================================================================
 // HELP
@@ -33,15 +34,23 @@ def helpMessage() {
         --chemistry         10x chemistry string (default: 3v4)
                             Accepted: 3v2, 3v3, 3v4, 3LT, 5v1, 5v2, 5v3, multiome
         --outputDir         Output directory (default: results)
+        --siteDir           Optional secondary publish directory for the assembled
+                    report site bundle (default: testing/ under the repo)
         --run_ambient       Run ambient RNA removal with decontX (default: true)
         --run_qc            Run cell-level QC (default: true; requires --run_ambient)
         --run_hvg           Run HVG selection (default: true; requires --run_qc)
         --run_integration   Run Harmony integration (default: true; requires --run_hvg)
+        --run_annotation    Run pseudobulk marker-gene annotation (default: false;
+                    requires --run_integration)
         --metadata_csv      Path to metadata CSV (required when --run_integration)
         --metadata_id_col   Column in metadata CSV that maps to sample IDs (default: sample_id)
         --metadata_vars     Space-separated metadata columns for Harmony correction
                             (e.g. "brainregion condition")
         --hvg_n_hvgs        Number of HVGs to select (default: 2000)
+        --annotation_marker_csv   Long-format marker CSV with either label/symbol
+                    or cell_type/marker_gene columns
+        --annotation_sel_res      Single clustering resolution to carry from
+                    integration into annotation (default: 0.2)
         --barcode_v2_splice_context  Splice QC context for Barcode_estimation_v2
                          (snrna, scrna, auto; default: snrna)
         --barcode_v2_ed_fdr          EmptyDrops FDR cutoff for Barcode_estimation_v2
@@ -102,6 +111,15 @@ workflow {
     if (params.metadata_csv && !file(params.metadata_csv).exists()) {
         error "--metadata_csv does not exist: ${params.metadata_csv}"
     }
+    if (params.annotation_marker_csv && !file(params.annotation_marker_csv).exists()) {
+        error "--annotation_marker_csv does not exist: ${params.annotation_marker_csv}"
+    }
+    if (params.run_annotation && !params.annotation_marker_csv) {
+        error "--annotation_marker_csv is required when --run_annotation is true"
+    }
+    if (params.run_annotation && !params.run_integration) {
+        error "--run_annotation requires --run_integration"
+    }
 
     // ------------------------------------------------------------------
     // Log run info
@@ -119,8 +137,11 @@ workflow {
     run_qc         : ${params.run_qc}
     run_hvg        : ${params.run_hvg}
     run_integration: ${params.run_integration}
+    run_annotation : ${params.run_annotation}
     metadata_csv   : ${params.metadata_csv ?: 'not provided'}
+    annotation_csv : ${params.annotation_marker_csv ?: 'not provided'}
     outputDir      : ${params.outputDir}
+    siteDir        : ${params.siteDir ?: 'disabled'}
     ===================================
     """
 
@@ -144,8 +165,8 @@ workflow {
     // ------------------------------------------------------------------
     MAPPING(samples_ch)
 
-    // Collect report HTMLs for INDEX_REPORT
-    report_htmls = MAPPING.out.report
+    // Collect per-report site bundles for BUILD_SITE
+    report_sites = MAPPING.out.report
 
     // ------------------------------------------------------------------
     // 2. Ambient cleanup (opt-in via --run_ambient)
@@ -155,7 +176,7 @@ workflow {
             MAPPING.out.h5_files,
             MAPPING.out.knee_data
         )
-        report_htmls = report_htmls.mix(AMBIENT.out.report)
+        report_sites = report_sites.mix(AMBIENT.out.report)
 
         // Ambient DE analysis (always runs if ambient runs)
         AMBIENT_DE_WF(
@@ -169,7 +190,7 @@ workflow {
         // --------------------------------------------------------------
         if (params.run_qc) {
             QC(AMBIENT.out.h5_files, sample_metadata_ch)
-            report_htmls = report_htmls.mix(QC.out.report)
+            report_sites = report_sites.mix(QC.out.report)
 
             // ----------------------------------------------------------
             // 4. HVG selection (opt-in via --run_hvg, requires qc)
@@ -181,7 +202,7 @@ workflow {
                     AMBIENT_DE_WF.out.de_table,
                     AMBIENT_DE_WF.out.pb_empties
                 )
-                report_htmls = report_htmls.mix(HVG.out.report)
+                report_sites = report_sites.mix(HVG.out.report)
 
                 // ------------------------------------------------------
                 // 5. Integration (opt-in via --run_integration, requires hvg)
@@ -195,14 +216,22 @@ workflow {
                         HVG.out.dbl_hvg_counts,
                         QC.out.qc_metrics
                     )
-                    report_htmls = report_htmls.mix(INTEGRATION.out.report)
+                    report_sites = report_sites.mix(INTEGRATION.out.report)
+
+                    if (params.run_annotation) {
+                        ANNOTATION(
+                            AMBIENT.out.h5_files,
+                            INTEGRATION.out.integration_dt
+                        )
+                        report_sites = report_sites.mix(ANNOTATION.out.report)
+                    }
                 }
             }
         }
     }
 
     // ------------------------------------------------------------------
-    // 6. Index page (standalone — collects all produced report HTMLs)
+    // 6. Site bundle (collects all produced report bundles + builds index)
     // ------------------------------------------------------------------
-    INDEX_REPORT(report_htmls.collect())
+    BUILD_SITE(report_sites.collect())
 }

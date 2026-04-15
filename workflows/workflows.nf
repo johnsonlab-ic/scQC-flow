@@ -18,7 +18,8 @@ include { HVG_SELECTION     } from '../modules/hvg/hvg.nf'
 include { HVG_REPORT        } from '../modules/reports/reports.nf'
 include { RUN_INTEGRATION   } from '../modules/integration/integration.nf'
 include { INTEGRATION_REPORT } from '../modules/reports/reports.nf'
-include { INDEX_REPORT      } from '../modules/reports/reports.nf'
+include { RUN_ANNOTATION_MARKERS } from '../modules/annotation/annotation.nf'
+include { ANNOTATION_REPORT } from '../modules/reports/reports.nf'
 
 // =============================================================================
 // MAPPING
@@ -138,7 +139,7 @@ workflow MAPPING {
     barcode_v2_summaries = BARCODE_ESTIMATION_V2.out.summaries
     barcode_v2_barcodes = BARCODE_ESTIMATION_V2.out.barcodes
     barcode_v2_ambient_params = BARCODE_ESTIMATION_V2.out.ambient_params
-    report         = MAPPING_REPORT.out.html.mix(BARCODE_REPORT_V2.out.html)
+    report         = MAPPING_REPORT.out.site.mix(BARCODE_REPORT_V2.out.site)
 }
 
 // =============================================================================
@@ -183,7 +184,7 @@ workflow AMBIENT {
     emit:
     h5_files = DECONTX.out.h5_files
     barcodes = DECONTX.out.barcodes
-    report   = AMBIENT_REPORT.out.html
+    report   = AMBIENT_REPORT.out.site
 }
 
 // =============================================================================
@@ -302,7 +303,7 @@ workflow QC {
     qc_metrics  = APPLY_QC.out.qc_metrics
     qc_summary  = APPLY_QC.out.qc_summary
     dbl_results = DOUBLET_DETECTION.out.dbl_results
-    report      = QC_REPORT.out.html
+    report      = QC_REPORT.out.site
 }
 
 // =============================================================================
@@ -347,7 +348,7 @@ workflow HVG {
     hvg_counts     = HVG_SELECTION.out.hvg_counts
     dbl_hvg_counts = HVG_SELECTION.out.dbl_hvg_counts
     hvg_stats      = HVG_SELECTION.out.hvg_stats
-    report         = HVG_REPORT.out.html
+    report         = HVG_REPORT.out.site
 }
 
 // =============================================================================
@@ -386,5 +387,51 @@ workflow INTEGRATION {
 
     emit:
     integration_dt = RUN_INTEGRATION.out.integration_dt
-    report         = INTEGRATION_REPORT.out.html
+    report         = INTEGRATION_REPORT.out.site
+}
+
+// =============================================================================
+// ANNOTATION
+//
+// Filtered H5 files + integration output + user marker panel -> pseudobulk
+// marker DE -> annotation report.
+//
+// Uses a single selected clustering resolution from the integration output,
+// aggregates counts per sample within each cluster, runs one-vs-rest edgeR
+// marker testing, and renders heatmaps for the provided marker panel together
+// with top marker plots for each cluster.
+// =============================================================================
+
+workflow ANNOTATION {
+
+    take:
+    h5_ch             // tuple(sampleId, h5_file) from AMBIENT.h5_files
+    integration_dt_ch // path integration_dt.csv.gz from INTEGRATION
+
+    main:
+
+    RUN_ANNOTATION_MARKERS(
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        integration_dt_ch,
+        channel.value(file(params.genome_gtf)),
+        channel.value(file(params.annotation_marker_csv)),
+        channel.value(file("${projectDir}/modules/annotation/marker_genes.R")),
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
+    )
+
+    ANNOTATION_REPORT(
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        integration_dt_ch,
+        RUN_ANNOTATION_MARKERS.out.markers,
+        RUN_ANNOTATION_MARKERS.out.logcpms,
+        RUN_ANNOTATION_MARKERS.out.marker_panel,
+        channel.value(file("${projectDir}/modules/reports/annotation_report.qmd")),
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
+    )
+
+    emit:
+    markers = RUN_ANNOTATION_MARKERS.out.markers
+    logcpms = RUN_ANNOTATION_MARKERS.out.logcpms
+    marker_panel = RUN_ANNOTATION_MARKERS.out.marker_panel
+    report = ANNOTATION_REPORT.out.site
 }
