@@ -36,6 +36,8 @@ def helpMessage() {
         --outputDir         Output directory (default: results)
         --siteDir           Optional secondary publish directory for the assembled
                     report site bundle (default: testing/ under the repo)
+        --build_site        Build the final assembled report site bundle
+                    (default: true)
         --run_ambient       Run ambient RNA removal with decontX (default: true)
         --run_qc            Run cell-level QC (default: true; requires --run_ambient)
         --run_hvg           Run HVG selection (default: true; requires --run_qc)
@@ -133,6 +135,7 @@ workflow {
     genome_fasta   : ${params.genome_fasta}
     genome_gtf     : ${params.genome_gtf}
     chemistry      : ${params.chemistry}
+    build_site     : ${params.build_site}
     run_ambient    : ${params.run_ambient}
     run_qc         : ${params.run_qc}
     run_hvg        : ${params.run_hvg}
@@ -233,5 +236,7 @@ workflow {
     // ------------------------------------------------------------------
     // 6. Site bundle (collects all produced report bundles + builds index)
     // ------------------------------------------------------------------
-    BUILD_SITE(report_sites.collect())
+    if (params.build_site) {
+        BUILD_SITE(report_sites.collect())
+    }
 }

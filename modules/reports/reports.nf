@@ -205,13 +205,7 @@ process INTEGRATION_REPORT {
     label     "process_reports"
     tag       "build_site"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}", mode: 'copy', overwrite: true
-    publishDir params.siteDir, mode: 'copy', overwrite: true,
-      enabled: params.siteDir ? true : false,
-      pattern: 'reports/**',
-      saveAs: { path ->
-        path.startsWith('reports/') ? path.substring('reports/'.length()) : null
-      }
+    publishDir "${params.siteDir}", mode: 'copy', overwrite: true
 
     input:
     path report_sites   // collected per-report site bundles from all workflows

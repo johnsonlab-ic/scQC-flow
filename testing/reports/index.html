@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>scQC-flow Reports</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
+    nav {
+      background: #1e1e2e; color: #cdd6f4; padding: 10px 16px;
+      display: flex; align-items: center; gap: 24px; flex-shrink: 0;
+    }
+    nav span { font-weight: 600; font-size: 1rem; }
+    nav a {
+      color: #89b4fa; text-decoration: none; font-size: 0.9rem;
+      padding: 4px 10px; border-radius: 4px; border: 1px solid #45475a;
+    }
+    nav a:hover { background: #313244; }
+    iframe { flex: 1; border: none; width: 100%; }
+  </style>
+</head>
+<body>
+  <nav>
+    <span>scQC-flow</span>
+    <a href="mapping_report.html" target="report">Mapping Report</a>
+    <a href="barcode_report_v2.html" target="report">Barcode Caller V2 Report</a>
+    <a href="ambient_report.html" target="report">Ambient Report</a>
+    <a href="qc_report.html" target="report">QC Report</a>
+    <a href="hvg_report.html" target="report">HVG Report</a>
+    <a href="integration_report.html" target="report">Integration Report</a>
+    <a href="annotation_report.html" target="report">Annotation Report</a>
+  </nav>
+  <iframe name="report" src="mapping_report.html"></iframe>
+</body>
+</html>
