@@ -2,7 +2,7 @@
 title: "Annotation diagnostics"
 format:
   html:
-    embed-resources: false
+    embed-resources: true
     toc: true
     toc-depth: 3
     code-fold: true
@@ -16,6 +16,7 @@ execute:
 
 ```{r setup}
 source("annotation_utils.R")
+source("integration_plots.R")
 
 sel_res <- Sys.getenv("ANNOTATION_SEL_RES", "0.2")
 min_cpm_mkr <- as.numeric(Sys.getenv("ANNOTATION_MIN_CPM_MKR", "50"))
@@ -30,7 +31,7 @@ int_dt <- fread("integration_dt.csv.gz")
 mkrs_dt <- fread("annotation_markers.csv.gz")
 cpms_dt <- fread("annotation_logcpms.csv.gz")
 panel_dt <- fread("annotation_marker_panel.csv.gz")
-h5_files <- Sys.glob("filt_counts_*.h5")
+marker_expr_rds <- "annotation_marker_expression.rds"
 
 cl_col <- paste0("RNA_snn_res.", sel_res)
 stopifnot("Selected annotation resolution not found in integration output" = cl_col %in% names(int_dt))
@@ -73,22 +74,17 @@ panel_ls <- setNames(
 )
 
 cell_exp_dt <- data.table()
-if (length(h5_files) > 0 && nrow(panel_dt) > 0) {
-  cell_exp_dt <- load_h5_marker_expression(
-    h5_files,
-    panel_dt,
-    int_dt[, .(sample_id, cell_id, UMAP1, UMAP2)],
-    pseudo_count = 10
-  )
-}
 ```
 
-Marker genes were tested by aggregating counts per sample within each cluster at resolution `r sel_res`, then running one-vs-rest pseudobulk differential expression across clusters.
+## Annotation setup
 
+This report assigns labels from the integration clustering column `r cl_col`, then tests marker genes by aggregating counts per sample within each cluster and running one-vs-rest pseudobulk differential expression.
+
+* **Selected cluster resolution used for annotation:** `r sel_res` (`r cl_col`)
 * **Clusters carried into annotation:** `r length(cl_ord)`
 * **Cells used for annotation:** `r format(nrow(int_dt), big.mark = ",")`
 * **Provided marker genes matched in the data:** `r uniqueN(panel_dt$gene_id)`
-* **Filtered H5 files available for marker UMAPs:** `r length(h5_files)`
+* **Marker-expression cache available for UMAPs:** `r if (file.exists(marker_expr_rds)) "yes" else "no"`
 
 ## Input marker panel
 
@@ -101,7 +97,9 @@ DT::datatable(
 )
 ```
 
-## Heatmaps of marker genes {.tabset}
+## Heatmaps of marker genes
+
+::: {.panel-tabset}
 
 ### Provided markers
 
@@ -129,7 +127,9 @@ if (nrow(top_heatmap_panel_dt) > 0) {
 }
 ```
 
-## Top marker genes by cluster
+:::
+
+## Top marker genes by cluster at resolution `r sel_res`
 
 ```{r plot_top_markers, fig.height = 9, fig.width = 10, results = 'asis'}
 cat('::: {.panel-tabset}\n\n')
@@ -169,7 +169,7 @@ cat(':::\n\n')
 
 Cell labels in the panels below are assigned at the cluster level by the provided marker label with the highest mean positive marker log2 fold-change among the matched input markers.
 
-```{r plot_annotation_umap_overview, fig.height = 10, fig.width = 18}
+```{r plot_annotation_umap_overview, fig.height = 7, fig.width = 14}
 g_label <- plot_umap_cluster(
   int_dt[, .(cell_id, UMAP1, UMAP2)],
   int_dt[, .(cell_id, cluster = label)],
@@ -178,14 +178,18 @@ g_label <- plot_umap_cluster(
 g_cluster <- plot_umap_cluster(
   int_dt[, .(cell_id, UMAP1, UMAP2)],
   int_dt[, .(cell_id, cluster)],
-  name = 'cluster'
+  name = sprintf('cluster (res. %s)', sel_res)
 )
-print(g_label + g_cluster)
+print(g_label + g_cluster + patchwork::plot_layout(widths = c(1, 1)))
 ```
 
-## Marker panels over UMAP
+## Marker expression over UMAP
 
-```{r plot_marker_umaps, fig.height = 10, fig.width = 18, results = 'asis'}
+Marker-expression panels below use the cached annotation marker-expression file and colour cells by uncapped log CPM values rather than per-gene values rescaled to 1.
+
+```{r plot_marker_umaps, fig.height = 7, fig.width = 14, results = 'asis'}
+cell_exp_dt <- if (file.exists(marker_expr_rds)) readRDS(marker_expr_rds) else data.table()
+
 if (nrow(cell_exp_dt) > 0) {
   cat('::: {.panel-tabset}\n\n')
   for (label_name in names(panel_ls)) {
@@ -196,14 +200,18 @@ if (nrow(cell_exp_dt) > 0) {
       next
     }
 
-    g_label <- plot_umap_cluster(
-      int_dt[, .(cell_id, UMAP1, UMAP2)],
-      int_dt[, .(cell_id, cluster = label)],
-      name = 'cell label'
-    )
-    g_expr <- plot_selected_genes_umap(sel_expr_dt)
-    print(g_label + g_expr + patchwork::plot_layout(widths = c(1, 1.8)))
-    cat('\n\n')
+    gene_levels <- unique(as.character(sel_expr_dt$symbol))
+    for (gene_name in gene_levels) {
+      cat('####', gene_name, '\n\n')
+      print(plot_expression_umap_pair(
+        sel_expr_dt[as.character(symbol) == gene_name, .(cell_id, expr)],
+        int_dt[, .(cell_id, UMAP1, UMAP2, cluster)],
+        cluster_col = 'cluster',
+        gene_name = gene_name,
+        cluster_name = sprintf('cluster (res. %s)', sel_res)
+      ))
+      cat('\n\n')
+    }
   }
   cat(':::\n\n')
 } else {

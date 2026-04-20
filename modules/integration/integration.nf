@@ -23,12 +23,13 @@ process RUN_INTEGRATION {
     set -euo pipefail
     export MPLCONFIGDIR="\$PWD/.mplconfig"
     export NUMBA_CACHE_DIR="\$PWD/.numba"
+    export PYTHONUNBUFFERED=1
     export OPENBLAS_NUM_THREADS=1
     export MKL_NUM_THREADS=${task.cpus}
     export OMP_NUM_THREADS=${task.cpus}
     export NUMEXPR_MAX_THREADS=${task.cpus}
 
-    python3 ${script} \
+    python3 -u ${script} \
         --hvg_h5          ${hvg_counts} \
         ${dbl_h5_arg} \
         ${meta_vars} \

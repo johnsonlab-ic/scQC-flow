@@ -2,7 +2,7 @@
 title: "HVG selection diagnostics"
 format:
   html:
-    embed-resources: false
+    embed-resources: true
     toc: true
     toc-depth: 3
     code-fold: true

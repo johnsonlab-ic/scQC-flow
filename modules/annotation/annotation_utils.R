@@ -651,31 +651,78 @@ load_h5_marker_expression <- function(h5_files, sel_dt, int_dt, pseudo_count = 1
     return(cell_exp_dt)
   }
 
-  cell_exp_dt[, max_val := quantile(logcount, 0.99, na.rm = TRUE), by = gene_id]
-  cell_exp_dt[is.na(max_val) | max_val == 0, max_val := 1]
-  cell_exp_dt[, norm_val := pmin(logcount / max_val, 1)]
+  cell_exp_dt[, expr := logcount]
   cell_exp_dt[, symbol := factor(symbol, levels = unique(sel_dt$symbol))]
   cell_exp_dt
 }
 
-plot_selected_genes_umap <- function(sel_dt, cols_to_rows = 1.25) {
-  n_genes <- length(unique(sel_dt$symbol))
-  n_row <- ceiling(sqrt(n_genes / cols_to_rows))
-  n_col <- ceiling(n_genes / n_row)
+plot_expression_umap_pair <- function(expr_dt, meta_dt,
+                                      cluster_col = "cluster",
+                                      gene_name = NULL,
+                                      cluster_name = NULL) {
+  stopifnot(
+    all(c("cell_id", "expr") %in% names(expr_dt)),
+    all(c("cell_id", "UMAP1", "UMAP2", cluster_col) %in% names(meta_dt))
+  )
 
-  ggplot(sel_dt) +
-    aes(x = UMAP1, y = UMAP2, colour = norm_val) +
-    geom_point(size = 0.1) +
-    scale_colour_viridis_c(breaks = pretty_breaks(),
-      guide = guide_legend(override.aes = list(size = 3))) +
-    facet_wrap(~ symbol, ncol = n_col, nrow = n_row) +
-    theme_bw() +
+  expr_dt <- copy(expr_dt)[, .(expr = max(expr, na.rm = TRUE)), by = cell_id]
+  plot_dt <- merge(meta_dt, expr_dt, by = "cell_id", all.x = TRUE)
+  plot_dt[is.na(expr), expr := 0]
+
+  cluster_vals <- meta_dt[[cluster_col]]
+  cluster_levels <- if (is.factor(cluster_vals)) {
+    levels(cluster_vals)
+  } else {
+    order_cluster_labels(unique(cluster_vals))
+  }
+  plot_dt <- plot_dt[!is.na(get(cluster_col))]
+  plot_dt[, cluster_plot := factor(as.character(get(cluster_col)), levels = cluster_levels)]
+
+  label_dt <- plot_dt[, .(
+    UMAP1 = median(UMAP1),
+    UMAP2 = median(UMAP2)
+  ), by = cluster_plot][!is.na(cluster_plot)]
+
+  cl_cols <- rep(nice_cols, times = ceiling(max(1, length(cluster_levels)) / length(nice_cols)) + 1L)[seq_along(cluster_levels)]
+  names(cl_cols) <- cluster_levels
+  cluster_title <- if (is.null(cluster_name)) cluster_col else cluster_name
+  gene_title <- if (is.null(gene_name) || gene_name == "") "marker" else gene_name
+
+  base_theme <- theme_bw() +
     theme(
-      axis.text = element_blank(),
-      axis.ticks = element_blank(),
       panel.grid = element_blank(),
-      strip.background = element_rect(fill = "white"),
-      aspect.ratio = 1
+      aspect.ratio = 1,
+      legend.title.position = "left",
+      legend.position = "bottom",
+      axis.ticks = element_blank(),
+      axis.text = element_blank()
+    )
+
+  g_cluster <- ggplot(plot_dt[sample(.N, .N)]) +
+    aes(x = UMAP1, y = UMAP2, colour = cluster_plot) +
+    geom_point(size = 0.1) +
+    geom_text(
+      data = label_dt,
+      aes(x = UMAP1, y = UMAP2, label = cluster_plot),
+      inherit.aes = FALSE,
+      colour = "black",
+      size = 3
     ) +
-    labs(colour = "scaled log\nexpression\n(max val. = 1)")
+    scale_colour_manual(values = cl_cols, guide = "none") +
+    base_theme +
+    labs(title = cluster_title)
+
+  g_expr <- ggplot(plot_dt[order(expr)]) +
+    aes(x = UMAP1, y = UMAP2, colour = expr) +
+    geom_point(size = 0.1) +
+    scale_colour_viridis_c(
+      option = "magma",
+      breaks = pretty_breaks(),
+      guide = guide_colourbar(title.position = "top"),
+      na.value = "grey90"
+    ) +
+    base_theme +
+    labs(title = sprintf("%s expression", gene_title), colour = "log CPM")
+
+  g_cluster + g_expr + plot_layout(widths = c(1, 1))
 }

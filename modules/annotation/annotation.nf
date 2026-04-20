@@ -16,6 +16,8 @@ process RUN_ANNOTATION_MARKERS {
     path "annotation_markers.csv.gz", emit: markers
     path "annotation_logcpms.csv.gz", emit: logcpms
     path "annotation_marker_panel.csv.gz", emit: marker_panel
+    path "annotation_marker_expression.rds", emit: marker_expr
+    path "annotation_cell_labels.csv.gz", emit: cell_labels
 
     script:
     """
@@ -32,6 +34,8 @@ process RUN_ANNOTATION_MARKERS {
         annotation_markers.csv.gz \
         annotation_logcpms.csv.gz \
         annotation_marker_panel.csv.gz \
+        annotation_marker_expression.rds \
+        annotation_cell_labels.csv.gz \
         'filt_counts_*.h5'
     """
 }

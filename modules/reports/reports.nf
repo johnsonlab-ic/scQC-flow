@@ -8,18 +8,19 @@ process MAPPING_REPORT {
     label     "process_reports"
     tag       "mapping_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+  publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
     path knee_data_csvs   // collected knee_plot_data_*.csv files — v1 (DropletUtils 1.30)
     path report_qmd       // mapping_report.qmd
 
     output:
-  path "mapping_report_site", emit: site
+    path "mapping_report.html", emit: html
 
     script:
     """
     export HOME="\$PWD"
-  quarto render "${report_qmd}" --output mapping_report.html --output-dir mapping_report_site
+    quarto render "${report_qmd}" --output mapping_report.html
     """
 }
 
@@ -31,6 +32,7 @@ process BARCODE_REPORT_V2 {
     label     "process_reports"
     tag       "barcode_report_v2"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+  publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
     path audit_csvs     // barcode_audit_v2_*.csv.gz
@@ -39,14 +41,14 @@ process BARCODE_REPORT_V2 {
     path plots_r        // barcode_v2_plots.R
 
     output:
-  path "barcode_report_v2_site", emit: site
+    path "barcode_report_v2.html", emit: html
 
     script:
     """
     export HOME="\$PWD"
     export BARCODE_V2_SPLICE_CONTEXT="${params.barcode_v2_splice_context}"
     export BARCODE_V2_ED_FDR="${params.barcode_v2_ed_fdr}"
-  quarto render "${report_qmd}" --output barcode_report_v2.html --output-dir barcode_report_v2_site
+    quarto render "${report_qmd}" --output barcode_report_v2.html
     """
 }
 
@@ -58,6 +60,7 @@ process AMBIENT_REPORT {
     label     "process_reports"
     tag       "ambient_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+  publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
     path qc_metrics_csvs   // barcodes_qc_metrics_*.csv.gz  — pre/post S/U/A per barcode
@@ -67,12 +70,12 @@ process AMBIENT_REPORT {
     path report_qmd        // ambient_report.qmd
 
     output:
-    path "ambient_report_site", emit: site
+    path "ambient_report.html", emit: html
 
     script:
     """
     export HOME="\$PWD"
-    quarto render "${report_qmd}" --output ambient_report.html --output-dir ambient_report_site
+    quarto render "${report_qmd}" --output ambient_report.html
     """
 }
 
@@ -84,6 +87,7 @@ process QC_REPORT {
     label     "process_reports"
     tag       "qc_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+  publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
     path qc_metrics_csvs   // collected qc_metrics_*.csv.gz files
@@ -91,7 +95,7 @@ process QC_REPORT {
     path report_qmd        // qc_report.qmd
 
     output:
-  path "qc_report_site", emit: site
+    path "qc_report.html", emit: html
 
     script:
     """
@@ -105,7 +109,7 @@ process QC_REPORT {
     export MIN_MITO="${params.qc_min_mito}"
     export MAX_SPLICE="${params.qc_max_splice}"
     export MIN_SPLICE="${params.qc_min_splice}"
-    quarto render "${report_qmd}" --output qc_report.html --output-dir qc_report_site
+    quarto render "${report_qmd}" --output qc_report.html
     """
 }
 
@@ -117,6 +121,7 @@ process HVG_REPORT {
     label     "process_reports"
     tag       "hvg_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+  publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
     path hvg_stats_csv     // hvg_stats.csv.gz — per-gene HVG stats
@@ -126,13 +131,13 @@ process HVG_REPORT {
     path plots_r           // hvg_plots.R — plotting helpers sourced by the report
 
     output:
-    path "hvg_report_site", emit: site
+    path "hvg_report.html", emit: html
 
     script:
     """
     export HOME="\$PWD"
     export N_HVG="${params.hvg_n_hvgs}"
-    quarto render "${report_qmd}" --output hvg_report.html --output-dir hvg_report_site
+    quarto render "${report_qmd}" --output hvg_report.html
     """
 }
 
@@ -144,6 +149,7 @@ process INTEGRATION_REPORT {
     label     "process_reports"
     tag       "integration_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+  publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
     path integration_csv   // integration_dt.csv.gz — UMAP + cluster assignments
@@ -152,14 +158,14 @@ process INTEGRATION_REPORT {
     path plots_r           // integration_plots.R — plotting helpers sourced by the report
 
     output:
-  path "integration_report_site", emit: site
+    path "integration_report.html", emit: html
 
     script:
     """
     export HOME="\$PWD"
     export METADATA_VARS="${params.metadata_vars}"
     export LEIDEN_RES="${params.integration_leiden_res}"
-  quarto render "${report_qmd}" --output integration_report.html --output-dir integration_report_site
+    quarto render "${report_qmd}" --output integration_report.html
     """
 }
 
@@ -167,22 +173,24 @@ process INTEGRATION_REPORT {
   // Annotation report (one HTML across all samples)
   // ---------------------------------------------------------------------------
 
-  process ANNOTATION_REPORT {
+process ANNOTATION_REPORT {
     label     "process_reports"
     tag       "annotation_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
 
     input:
-    path h5_files
     path integration_csv
     path marker_stats_csv
     path logcpms_csv
     path marker_panel_csv
+    path marker_expr_rds
     path report_qmd
     path utils_r
+    path plots_r
 
     output:
-    path "annotation_report_site", emit: site
+    path "annotation_report.html", emit: html
 
     script:
     """
@@ -193,108 +201,42 @@ process INTEGRATION_REPORT {
     export ANNOTATION_TOP_N="${params.annotation_top_n}"
     export ANNOTATION_FDR_CUT="${params.annotation_fdr_cut}"
     export ANNOTATION_MAX_ZERO_P="${params.annotation_max_zero_p}"
-    quarto render "${report_qmd}" --output annotation_report.html --output-dir annotation_report_site
+    quarto render "${report_qmd}" --output annotation_report.html
     """
-  }
-
-// ---------------------------------------------------------------------------
-  // Assemble full report site bundle (HTMLs + assets + index page)
-// ---------------------------------------------------------------------------
-
-  process BUILD_SITE {
-    label     "process_reports"
-    tag       "build_site"
-    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.siteDir}", mode: 'copy', overwrite: true
-
-    input:
-    path report_sites   // collected per-report site bundles from all workflows
-
-    output:
-    path "reports"
-
-    script:
-    // Build nav links dynamically from the assembled report site
-    """
-    set -euo pipefail
-    python3 <<'PY'
-import html
-import os
-import shutil
-
-report_labels = {
-    'mapping_report.html':    'Mapping Report',
-    'barcode_report_v2.html': 'Barcode Caller V2 Report',
-    'ambient_report.html':    'Ambient Report',
-    'qc_report.html':         'QC Report',
-    'hvg_report.html':        'HVG Report',
-    'integration_report.html': 'Integration Report',
-    'annotation_report.html': 'Annotation Report',
 }
 
-os.makedirs('reports', exist_ok=True)
+process REPORT_SITE {
+    label     "process_reports"
+    tag       "report_site"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true, saveAs: { filename -> filename.replaceFirst('^site/', '') }
 
-for site_dir in sorted([path for path in os.listdir('.') if path.endswith('_site') and os.path.isdir(path)]):
-    for entry in os.listdir(site_dir):
-        src = os.path.join(site_dir, entry)
-        dst = os.path.join('reports', entry)
-        if os.path.isdir(src):
-            if os.path.exists(dst):
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
+    input:
+    path report_htmls
+    path landing_qmd
+    val landing_payload_json
+    path builder_script
+    path site_css
+    path site_js
 
-htmls = sorted(
-    name for name in os.listdir('reports')
-    if name.endswith('.html') and name != 'index.html'
-)
+    output:
+    path "site/*", emit: site
 
-# Build link entries in a fixed order
-ordered = [h for h in report_labels if h in htmls]
-# Add any unexpected HTMLs at the end
-ordered += [h for h in htmls if h not in report_labels and h != 'index.html']
+    script:
+    def payloadB64 = landing_payload_json.toString().bytes.encodeBase64().toString()
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
 
-links = []
-for h in ordered:
-    label = report_labels.get(h, h.replace('_', ' ').replace('.html', '').title())
-    links.append(f'    <a href="{html.escape(h)}" target="report">{html.escape(label)}</a>')
+    printf '%s' '${payloadB64}' | base64 --decode > landing_page_payload.json
 
-first_src = ordered[0] if ordered else ''
-nav_links = chr(10).join(links)
+    quarto render "${landing_qmd}" --output index.html
 
-page = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>scQC-flow Reports</title>
-  <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }}
-    nav {{
-      background: #1e1e2e; color: #cdd6f4; padding: 10px 16px;
-      display: flex; align-items: center; gap: 24px; flex-shrink: 0;
-    }}
-    nav span {{ font-weight: 600; font-size: 1rem; }}
-    nav a {{
-      color: #89b4fa; text-decoration: none; font-size: 0.9rem;
-      padding: 4px 10px; border-radius: 4px; border: 1px solid #45475a;
-    }}
-    nav a:hover {{ background: #313244; }}
-    iframe {{ flex: 1; border: none; width: 100%; }}
-  </style>
-</head>
-<body>
-  <nav>
-    <span>scQC-flow</span>
-{nav_links}
-  </nav>
-  <iframe name="report" src="{first_src}"></iframe>
-</body>
-</html>'''
-
-with open(os.path.join('reports', 'index.html'), 'w') as f:
-    f.write(page)
-PY
+    python3 "${builder_script}" \
+        --payload landing_page_payload.json \
+        --outdir site \
+        --css "${site_css}" \
+        --js "${site_js}" \
+        *.html
     """
 }

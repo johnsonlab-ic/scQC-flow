@@ -2,7 +2,7 @@
 title: "Integration diagnostics"
 format:
   html:
-    embed-resources: false
+    embed-resources: true
     toc: true
     toc-depth: 3
     code-fold: true
@@ -27,6 +27,28 @@ requested_metadata_vars <- requested_metadata_vars[nzchar(requested_metadata_var
 
 batch_var   <- "sample_id"
 dbl_cl_prop <- 0.5
+message("New report!")
+qc_feature_palette <- c("#fff7ec", "#fdd49e", "#fdbb84", "#ef6548", "#990000")
+
+plot_umap_qc_feature <- function(int_dt, var_name, label) {
+  stopifnot(all(c("UMAP1", "UMAP2", var_name) %in% names(int_dt)))
+
+  plot_dt <- copy(int_dt)[!is.na(get(var_name)), c("UMAP1", "UMAP2", var_name), with = FALSE]
+  plot_dt[, UMAP1 := rescale(UMAP1, to = c(0.05, 0.95))]
+  plot_dt[, UMAP2 := rescale(UMAP2, to = c(0.05, 0.95))]
+  plot_dt <- plot_dt[sample(.N, .N)]
+
+  ggplot(plot_dt, aes(x = UMAP1, y = UMAP2, colour = get(var_name))) +
+    geom_point(size = 0.1) +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_colour_gradientn(colours = qc_feature_palette, na.value = "grey85") +
+    theme_bw() +
+    theme(panel.grid = element_blank(), aspect.ratio = 1,
+      legend.title.position = "left", legend.position = "bottom",
+      axis.ticks = element_blank(), axis.text = element_blank()) +
+    labs(colour = label)
+}
 ```
 
 ```{r load_data}
@@ -37,6 +59,16 @@ n_cells <- nrow(int_dt)
 
 qc_files <- Sys.glob("qc_metrics_*.csv.gz")
 qc_dt <- if (length(qc_files) > 0) rbindlist(lapply(qc_files, fread)) else data.table()
+
+if (nrow(qc_dt) > 0 &&
+    !"splice_frac" %in% names(qc_dt) &&
+    all(c("total_spliced", "total_unspliced") %in% names(qc_dt))) {
+  qc_dt[, splice_frac := (total_spliced + 1) / (total_spliced + total_unspliced + 2)]
+} else if (nrow(qc_dt) > 0 &&
+           !"splice_frac" %in% names(qc_dt) &&
+           "logit_spliced" %in% names(qc_dt)) {
+  qc_dt[, splice_frac := plogis(logit_spliced)]
+}
 
 if (nrow(qc_dt) > 0 && all(c("sample_id", "cell_id") %in% names(qc_dt))) {
   # Integration outputs globally unique cell IDs as <sample_id>_<barcode>.
@@ -270,7 +302,7 @@ if (length(feature_vars) > 0) {
   cat('::: {.panel-tabset}\n\n')
   for (spec in feature_vars) {
     cat("### ", spec$label, "\n\n")
-    print(plot_umap_by_var(int_dt_pass2, spec$source))
+    print(plot_umap_qc_feature(int_dt_pass2, spec$source, spec$label))
     cat("\n\n")
   }
   for (spec in missing_feature_vars) {

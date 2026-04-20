@@ -20,11 +20,14 @@
 #   integration_dt.csv.gz — full join of pass-2 results + pass-1 doublet data
 
 import argparse
+from contextlib import contextmanager
+from datetime import datetime
 import gc
 import glob
 import gzip
 import re
 import sys
+import time
 
 import h5py
 import numpy as np
@@ -34,6 +37,70 @@ from scipy.sparse import csc_matrix, hstack
 import anndata as ad
 import scanpy as sc
 import harmonypy
+
+
+def _log(message):
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{timestamp}] {message}", flush=True)
+
+
+def _format_seconds(seconds):
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rem = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {rem:.1f}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(minutes)}m {rem:.1f}s"
+
+
+@contextmanager
+def _timed_step(message):
+    _log(message)
+    start = time.perf_counter()
+    try:
+        yield
+    except Exception:
+        elapsed = time.perf_counter() - start
+        _log(f"{message} failed after {_format_seconds(elapsed)}")
+        raise
+    else:
+        elapsed = time.perf_counter() - start
+        _log(f"{message} completed in {_format_seconds(elapsed)}")
+
+
+def _describe_sparse_matrix(name, matrix):
+    total = matrix.shape[0] * matrix.shape[1]
+    density = (matrix.nnz / total) if total else 0.0
+    _log(
+        f"{name}: {matrix.shape[0]} genes x {matrix.shape[1]} cells; "
+        f"nnz={matrix.nnz:,}; density={density:.4%}"
+    )
+
+
+def _run_leiden(adata, resolution):
+    key_added = f"RNA_snn_res.{resolution}"
+    try:
+        sc.tl.leiden(
+            adata,
+            key_added=key_added,
+            resolution=float(resolution),
+            flavor='igraph',
+            directed=False,
+            n_iterations=2,
+        )
+        _log(f"  Leiden resolution={resolution} used flavor=igraph")
+    except Exception as err:
+        _log(
+            "  WARNING: leiden flavor=igraph failed "
+            f"({type(err).__name__}: {err}); falling back to the default backend"
+        )
+        sc.tl.leiden(
+            adata,
+            key_added=key_added,
+            resolution=float(resolution),
+        )
+        _log(f"  Leiden resolution={resolution} used fallback backend")
 
 
 # ---------------------------------------------------------------------------
@@ -231,50 +298,59 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta):
         this_embedding = 'pca'
     else:
         this_embedding = 'harmony'
+    _log(
+        f"Integration pass setup: batch_var='{batch_var}', levels={n_batches}, "
+        f"n_dims={n_dims}, theta={theta}, resolutions={res_ls}"
+    )
 
     # Scale
-    print('  scaling')
-    sc.pp.scale(adata, max_value=10)
+    with _timed_step('  Scaling expression matrix'):
+        sc.pp.scale(adata, max_value=10)
 
     # PCA
-    print('  PCA')
-    sc.tl.pca(adata, n_comps=n_dims)
+    with _timed_step('  Running PCA'):
+        sc.tl.pca(adata, n_comps=n_dims)
 
     sel_embed = 'X_pca'
     if this_embedding == 'harmony' and float(theta) != 0.0:
-        print('  integrating with Harmony')
-        _run_harmony_integrate_compat(adata, key=batch_var, theta=theta)
+        with _timed_step(f"  Running Harmony on '{batch_var}'"):
+            _run_harmony_integrate_compat(adata, key=batch_var, theta=theta)
         sel_embed = 'X_pca_harmony'
     elif this_embedding == 'harmony' and float(theta) == 0.0:
         # theta=0 means no diversity penalty → no correction; PCA is equivalent
-        print('  Harmony theta=0: skipping correction, using PCA')
+        _log('  Harmony theta=0: skipping correction, using PCA')
         this_embedding = 'pca'
+    else:
+        _log(f"  Single-level batch variable '{batch_var}': using PCA only")
 
     # Neighbors
-    print('  finding neighbors')
+    _log(f"  Using embedding '{sel_embed}' for neighbor graph")
     if np.isnan(adata.obsm[sel_embed]).any():
         raise ValueError("NaN values in embedding — check input data")
-    sc.pp.neighbors(adata, n_pcs=n_dims, use_rep=sel_embed)
+    with _timed_step('  Building neighbor graph'):
+        sc.pp.neighbors(adata, n_pcs=n_dims, use_rep=sel_embed)
 
     # Leiden clustering
-    print('  finding clusters')
+    _log('  Finding clusters')
     if not isinstance(res_ls, list):
         res_ls = [res_ls]
     for res in res_ls:
-        sc.tl.leiden(adata, key_added=f"RNA_snn_res.{res}", resolution=float(res))
+        with _timed_step(f'    Leiden clustering at resolution={res}'):
+            _run_leiden(adata, res)
 
     # UMAP
-    print('  running UMAP')
-    sc.tl.umap(adata, maxiter=750)
+    with _timed_step('  Running UMAP'):
+        sc.tl.umap(adata, maxiter=750)
 
     # Extract results
-    print('  recording clusters')
-    clusts_df = _get_clusts_from_adata(adata, this_embedding, batch_var)
+    with _timed_step('  Recording cluster assignments'):
+        clusts_df = _get_clusts_from_adata(adata, this_embedding, batch_var)
 
-    print('  extracting embeddings')
-    embeds_df = _get_embeddings_from_adata(adata, this_embedding, sel_embed)
+    with _timed_step('  Extracting embeddings'):
+        embeds_df = _get_embeddings_from_adata(adata, this_embedding, sel_embed)
 
     int_df = clusts_df.merge(embeds_df, on='cell_id', how='inner')
+    _log(f"  Integration pass yielded {len(int_df)} rows")
 
     return int_df
 
@@ -397,41 +473,46 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
                     out_csv):
     """Two-pass integration identical to scprocess."""
 
-    print('=== INTEGRATION (two-pass) ===')
+    _log('=== INTEGRATION (two-pass) ===')
+    _log(f"Input singlet HVG H5: {hvg_h5}")
+    _log(f"Input doublet HVG H5: {dbl_hvg_h5 if dbl_hvg_h5 else 'none'}")
+    _log(f"QC files discovered: {len(qc_csv_files)}")
+    _log(f"Metadata vars: {metadata_vars if metadata_vars else ['sample_id']}")
+    _log(f"Exclude mito from normalization: {exclude_mito}")
 
     # ------------------------------------------------------------------
     # 1. Load HVG matrices (singlet + doublet)
     # ------------------------------------------------------------------
-    print('Loading HVG matrices...')
-    all_hvg_mat, bcs_passed, bcs_dbl = _get_hvg_mat(hvg_h5, dbl_hvg_h5)
+    with _timed_step('Loading HVG matrices'):
+        all_hvg_mat, bcs_passed, bcs_dbl = _get_hvg_mat(hvg_h5, dbl_hvg_h5)
     n_singlets = len(bcs_passed)
     n_doublets = len(bcs_dbl)
-    print(f'  Singlets: {n_singlets}, Doublets: {n_doublets}')
-    print(f'  Matrix shape: {all_hvg_mat.shape[0]} genes x {all_hvg_mat.shape[1]} cells')
+    _log(f'  Singlets: {n_singlets:,}, Doublets: {n_doublets:,}')
+    _describe_sparse_matrix('  Combined HVG matrix', all_hvg_mat)
 
     # ------------------------------------------------------------------
     # 2. Build cells_df from QC metrics + metadata
     # ------------------------------------------------------------------
-    print('Loading cell metadata...')
-    cells_df = _get_cells_df(
-        qc_csv_files, bcs_passed, bcs_dbl,
-        metadata_vars=metadata_vars
-    )
-    print(f'  cells_df: {len(cells_df)} cells')
+    with _timed_step('Loading cell metadata'):
+        cells_df = _get_cells_df(
+            qc_csv_files, bcs_passed, bcs_dbl,
+            metadata_vars=metadata_vars
+        )
+    _log(f'  cells_df: {len(cells_df):,} cells')
 
     # ------------------------------------------------------------------
     # 3. Normalise (library-size CPM10k + log1p on sparse)
     # ------------------------------------------------------------------
-    print('Normalising HVG matrix...')
-    all_hvg_mat = _normalize_hvg_mat(all_hvg_mat, cells_df, exclude_mito)
+    with _timed_step('Normalising HVG matrix'):
+        all_hvg_mat = _normalize_hvg_mat(all_hvg_mat, cells_df, exclude_mito)
 
     # ------------------------------------------------------------------
     # 4. Pass 1: Integration with doublets (theta=0, dbl_res)
     # ------------------------------------------------------------------
-    print('Pass 1: Integration with doublets (theta=0)...')
+    _log('Pass 1: Integration with doublets (theta=0)')
     adata_dbl = ad.AnnData(X=all_hvg_mat.T, obs=cells_df.reset_index(drop=True))
     adata_dbl.obs_names_make_unique()
-    print(f'  AnnData (with doublets): {adata_dbl.shape[0]} cells x {adata_dbl.shape[1]} genes')
+    _log(f'  AnnData (with doublets): {adata_dbl.shape[0]:,} cells x {adata_dbl.shape[1]:,} genes')
 
     # Pass 1 uses sample_id as batch var and theta=0
     int_dbl = _do_one_integration(
@@ -448,15 +529,15 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     # ------------------------------------------------------------------
     # 5. Calculate doublet data (proportion per cluster)
     # ------------------------------------------------------------------
-    print('Calculating doublet cluster enrichment...')
-    dbl_data = _calc_dbl_data(int_dbl, cells_df, dbl_res, dbl_cl_prop)
+    with _timed_step('Calculating doublet cluster enrichment'):
+        dbl_data = _calc_dbl_data(int_dbl, cells_df, dbl_res, dbl_cl_prop)
 
     n_in_dbl_cl = dbl_data['in_dbl_cl'].sum()
     n_is_dbl = dbl_data['is_dbl'].sum()
     n_removed = ((dbl_data['is_dbl']) | (dbl_data['in_dbl_cl'])).sum()
-    print(f'  Doublets: {n_is_dbl}')
-    print(f'  Cells in doublet-enriched clusters: {n_in_dbl_cl}')
-    print(f'  Total cells to remove: {n_removed}')
+    _log(f'  Doublets: {n_is_dbl:,}')
+    _log(f'  Cells in doublet-enriched clusters: {n_in_dbl_cl:,}')
+    _log(f'  Total cells to remove before pass 2: {n_removed:,}')
 
     del int_dbl
     gc.collect()
@@ -464,9 +545,10 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     # ------------------------------------------------------------------
     # 6. Pass 2: Clean integration (remove doublets + enriched clusters)
     # ------------------------------------------------------------------
-    print('Pass 2: Clean integration (singlets only)...')
-    adata = _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data)
-    print(f'  AnnData (clean): {adata.shape[0]} cells x {adata.shape[1]} genes')
+    _log('Pass 2: Clean integration (doublets removed)')
+    with _timed_step('Filtering out doublets and enriched clusters'):
+        adata = _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data)
+    _log(f'  AnnData (clean): {adata.shape[0]:,} cells x {adata.shape[1]:,} genes')
 
     del all_hvg_mat
     gc.collect()
@@ -488,6 +570,12 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         batch_var_pass2 = 'sample_id'
         adata.obs[batch_var_pass2] = adata.obs[batch_var_pass2].astype(str)
 
+    n_batch_levels_pass2 = adata.obs[batch_var_pass2].nunique()
+    _log(
+        f"  Pass 2 batch variable: '{batch_var_pass2}' with "
+        f"{n_batch_levels_pass2} level(s)"
+    )
+
     int_ok = _do_one_integration(
         adata,
         batch_var=batch_var_pass2,
@@ -502,8 +590,8 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     # ------------------------------------------------------------------
     # 7. Join pass-2 results with pass-1 doublet data
     # ------------------------------------------------------------------
-    print('Joining results...')
-    int_df = int_ok.merge(dbl_data, on='cell_id', how='outer')
+    with _timed_step('Joining pass 1 and pass 2 results'):
+        int_df = int_ok.merge(dbl_data, on='cell_id', how='outer')
 
     # Carry sample-level metadata into the final integration table so the
     # report can infer available covariates directly from the data.
@@ -523,11 +611,12 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     # ------------------------------------------------------------------
     # 8. Save
     # ------------------------------------------------------------------
-    print(f'Saving: {out_csv}')
-    with gzip.open(out_csv, 'wt') as fh:
-        int_df.to_csv(fh, index=False)
-    print(f'  Written {len(int_df)} cells')
-    print('=== INTEGRATION done ===')
+    _log(f'Saving integration table to {out_csv}')
+    with _timed_step('Writing integration output'):
+        with gzip.open(out_csv, 'wt') as fh:
+            int_df.to_csv(fh, index=False)
+    _log(f'  Written {len(int_df):,} rows')
+    _log('=== INTEGRATION done ===')
 
 
 # ---------------------------------------------------------------------------

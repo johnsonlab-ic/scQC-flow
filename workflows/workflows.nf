@@ -20,6 +20,11 @@ include { RUN_INTEGRATION   } from '../modules/integration/integration.nf'
 include { INTEGRATION_REPORT } from '../modules/reports/reports.nf'
 include { RUN_ANNOTATION_MARKERS } from '../modules/annotation/annotation.nf'
 include { ANNOTATION_REPORT } from '../modules/reports/reports.nf'
+include { PREPARE_ZOOM_SUBSET } from '../modules/zoom/zoom.nf'
+include { ZOOM_HVG_SELECTION } from '../modules/zoom/zoom.nf'
+include { RUN_ZOOM_INTEGRATION } from '../modules/zoom/zoom.nf'
+include { RUN_ZOOM_MARKERS } from '../modules/zoom/zoom.nf'
+include { ZOOM_REPORT } from '../modules/zoom/zoom.nf'
 
 // =============================================================================
 // MAPPING
@@ -139,7 +144,7 @@ workflow MAPPING {
     barcode_v2_summaries = BARCODE_ESTIMATION_V2.out.summaries
     barcode_v2_barcodes = BARCODE_ESTIMATION_V2.out.barcodes
     barcode_v2_ambient_params = BARCODE_ESTIMATION_V2.out.ambient_params
-    report         = MAPPING_REPORT.out.site.mix(BARCODE_REPORT_V2.out.site)
+    report         = MAPPING_REPORT.out.html.mix(BARCODE_REPORT_V2.out.html)
 }
 
 // =============================================================================
@@ -184,7 +189,7 @@ workflow AMBIENT {
     emit:
     h5_files = DECONTX.out.h5_files
     barcodes = DECONTX.out.barcodes
-    report   = AMBIENT_REPORT.out.site
+    report   = AMBIENT_REPORT.out.html
 }
 
 // =============================================================================
@@ -303,7 +308,7 @@ workflow QC {
     qc_metrics  = APPLY_QC.out.qc_metrics
     qc_summary  = APPLY_QC.out.qc_summary
     dbl_results = DOUBLET_DETECTION.out.dbl_results
-    report      = QC_REPORT.out.site
+    report      = QC_REPORT.out.html
 }
 
 // =============================================================================
@@ -348,7 +353,7 @@ workflow HVG {
     hvg_counts     = HVG_SELECTION.out.hvg_counts
     dbl_hvg_counts = HVG_SELECTION.out.dbl_hvg_counts
     hvg_stats      = HVG_SELECTION.out.hvg_stats
-    report         = HVG_REPORT.out.site
+    report         = HVG_REPORT.out.html
 }
 
 // =============================================================================
@@ -387,7 +392,7 @@ workflow INTEGRATION {
 
     emit:
     integration_dt = RUN_INTEGRATION.out.integration_dt
-    report         = INTEGRATION_REPORT.out.site
+    report         = INTEGRATION_REPORT.out.html
 }
 
 // =============================================================================
@@ -420,18 +425,87 @@ workflow ANNOTATION {
     )
 
     ANNOTATION_REPORT(
-        h5_ch.map { _id, h5 -> h5 }.collect(),
         integration_dt_ch,
         RUN_ANNOTATION_MARKERS.out.markers,
         RUN_ANNOTATION_MARKERS.out.logcpms,
         RUN_ANNOTATION_MARKERS.out.marker_panel,
+        RUN_ANNOTATION_MARKERS.out.marker_expr,
         channel.value(file("${projectDir}/modules/reports/annotation_report.qmd")),
-        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
     )
 
     emit:
     markers = RUN_ANNOTATION_MARKERS.out.markers
     logcpms = RUN_ANNOTATION_MARKERS.out.logcpms
     marker_panel = RUN_ANNOTATION_MARKERS.out.marker_panel
-    report = ANNOTATION_REPORT.out.site
+    marker_expr = RUN_ANNOTATION_MARKERS.out.marker_expr
+    cell_labels = RUN_ANNOTATION_MARKERS.out.cell_labels
+    report = ANNOTATION_REPORT.out.html
+}
+
+// =============================================================================
+// ZOOMS
+//
+// Post-integration subset reruns driven either by cluster identity or by
+// broad annotation labels. Each zoom subsets QC rows, reruns HVG selection and
+// integration on that subset, then computes top marker genes per cluster and
+// renders a dedicated report.
+// =============================================================================
+
+workflow ZOOMS {
+
+    take:
+    zoom_specs_ch
+    h5_ch
+    qc_metrics_ch
+    de_table
+    integration_dt_ch
+    annotation_cell_labels_ch
+
+    main:
+
+    def encoded_zoom_specs_ch = zoom_specs_ch.map { spec ->
+        def spec_json = groovy.json.JsonOutput.toJson(spec)
+        tuple(spec.name.toString(), spec_json.bytes.encodeBase64().toString())
+    }
+
+    PREPARE_ZOOM_SUBSET(
+        encoded_zoom_specs_ch,
+        integration_dt_ch,
+        qc_metrics_ch.map { _id, csv -> csv }.collect(),
+        annotation_cell_labels_ch,
+        channel.value(file("${projectDir}/modules/zoom/prepare_zoom_subset.py"))
+    )
+
+    ZOOM_HVG_SELECTION(
+        PREPARE_ZOOM_SUBSET.out.zoom_inputs,
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        channel.value(file(params.genome_gtf)),
+        de_table,
+        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
+    )
+
+    RUN_ZOOM_INTEGRATION(
+        ZOOM_HVG_SELECTION.out.zoom_hvg,
+        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
+    )
+
+    RUN_ZOOM_MARKERS(
+        RUN_ZOOM_INTEGRATION.out.zoom_int,
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        channel.value(file(params.genome_gtf)),
+        channel.value(file("${projectDir}/modules/zoom/zoom_markers.R")),
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
+    )
+
+    ZOOM_REPORT(
+        RUN_ZOOM_MARKERS.out.zoom_markers,
+        channel.value(file("${projectDir}/modules/reports/zoom_report.qmd")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R")),
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
+    )
+
+    emit:
+    report = ZOOM_REPORT.out.html
 }
