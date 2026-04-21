@@ -10,6 +10,8 @@ include { INTEGRATION       } from './workflows/workflows'
 include { ANNOTATION        } from './workflows/workflows'
 include { ZOOMS             } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
+include { EXPORT_SCANPY     } from './modules/export/export_sc'
+include { EXPORT_SEURAT     } from './modules/export/export_sc'
 
 // =============================================================================
 // HELP
@@ -41,6 +43,8 @@ def helpMessage() {
         --run_integration   Run Harmony integration (default: true; requires --run_hvg)
         --run_annotation    Run pseudobulk marker-gene annotation (default: false;
                     requires --run_integration)
+        --export            Export integrated objects (default: none).
+                    Accepted: none, anndata, seurat, both
         zoom                Nested zoom configuration map in nextflow.config.
                 Each zoom can subset by integration cluster or annotation label,
                 then rerun HVG selection, integration, and marker analysis.
@@ -119,8 +123,26 @@ workflow {
     if (params.run_annotation && !params.annotation_marker_csv) {
         error "--annotation_marker_csv is required when --run_annotation is true"
     }
+    if (params.run_qc && !params.run_ambient) {
+        error "--run_qc requires --run_ambient"
+    }
+    if (params.run_hvg && !params.run_qc) {
+        error "--run_hvg requires --run_qc"
+    }
+    if (params.run_integration && !params.run_hvg) {
+        error "--run_integration requires --run_hvg"
+    }
     if (params.run_annotation && !params.run_integration) {
         error "--run_annotation requires --run_integration"
+    }
+
+    def exportMode = (params.export ?: 'none').toString().trim().toLowerCase()
+    def validExportModes = ['none', 'anndata', 'seurat', 'both']
+    if (!(exportMode in validExportModes)) {
+        error "--export must be one of: ${validExportModes.join(', ')}"
+    }
+    if (exportMode != 'none' && !params.run_integration) {
+        error "--export requires --run_integration"
     }
 
     def normalizedZoomSpecs = []
@@ -239,6 +261,7 @@ workflow {
     run_hvg        : ${params.run_hvg}
     run_integration: ${params.run_integration}
     run_annotation : ${params.run_annotation}
+    export         : ${exportMode}
     zooms          : ${normalizedZoomSpecs ? normalizedZoomSpecs.collect { spec -> spec.name }.join(', ') : 'disabled'}
     metadata_csv   : ${params.metadata_csv ?: 'not provided'}
     annotation_csv : ${params.annotation_marker_csv ?: 'not provided'}
@@ -262,6 +285,7 @@ workflow {
                 hvg: params.run_ambient && params.run_qc && params.run_hvg,
                 integration: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration,
                 annotation: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && params.run_annotation,
+                export: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && exportMode != 'none',
                 zooms: normalizedZoomSpecs.size() > 0,
             ],
             params: [
@@ -281,6 +305,7 @@ workflow {
                     run_hvg: params.run_hvg,
                     run_integration: params.run_integration,
                     run_annotation: params.run_annotation,
+                    export: exportMode,
                 ],
                 barcode_v2: [
                     barcode_v2_min_umis_empty: params.barcode_v2_min_umis_empty,
@@ -315,6 +340,9 @@ workflow {
                     annotation_top_n: params.annotation_top_n,
                     annotation_fdr_cut: params.annotation_fdr_cut,
                     annotation_max_zero_p: params.annotation_max_zero_p,
+                ],
+                export: [
+                    mode: exportMode,
                 ],
                 qc_thresholds: [
                     qc_hard_min_counts: params.qc_hard_min_counts,
@@ -426,6 +454,29 @@ workflow {
                             annotation_cell_labels_ch
                         )
                         report_pages = report_pages.mix(ZOOMS.out.report)
+                    }
+
+                    if (exportMode in ['anndata', 'both']) {
+                        EXPORT_SCANPY(
+                            AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+                            QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+                            INTEGRATION.out.integration_dt,
+                            annotation_cell_labels_ch,
+                            channel.value(file(params.genome_gtf)),
+                            channel.value(file("${projectDir}/modules/export/export_anndata.py"))
+                        )
+                    }
+
+                    if (exportMode in ['seurat', 'both']) {
+                        EXPORT_SEURAT(
+                            AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+                            QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+                            INTEGRATION.out.integration_dt,
+                            annotation_cell_labels_ch,
+                            channel.value(file(params.genome_gtf)),
+                            channel.value(file("${projectDir}/modules/export/export_seurat.R")),
+                            channel.value(file("${projectDir}/modules/export/export_utils.R"))
+                        )
                     }
                 }
             }
