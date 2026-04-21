@@ -1,5 +1,6 @@
 personal/
 .nextflow/
+data/
 
 # GitHub folder (copilot instructions, internal docs)
 .github/
