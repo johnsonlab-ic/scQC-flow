@@ -2,7 +2,7 @@ process PREPARE_SAMPLE_METADATA {
     label     "process_medium"
     tag       "sample_metadata"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/metadata", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/metadata", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     val sample_ids

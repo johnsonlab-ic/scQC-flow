@@ -15,7 +15,7 @@ process DOUBLET_DETECTION {
     label     "process_high"
     tag       "$sampleId"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/qc/qc_${sampleId}", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/qc/qc_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     tuple val(sampleId), path(h5_file)
@@ -48,7 +48,7 @@ process APPLY_QC {
     label     "process_medium"
     tag       "$sampleId"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/qc/qc_${sampleId}", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/qc/qc_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     tuple val(sampleId), path(h5_file), path(dbl_csv)

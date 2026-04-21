@@ -2,7 +2,7 @@ process RUN_ANNOTATION_MARKERS {
     label     "process_high"
     tag       "annotation"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/annotation", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     path h5_files

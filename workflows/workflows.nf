@@ -430,6 +430,7 @@ workflow ANNOTATION {
         RUN_ANNOTATION_MARKERS.out.logcpms,
         RUN_ANNOTATION_MARKERS.out.marker_panel,
         RUN_ANNOTATION_MARKERS.out.marker_expr,
+        RUN_ANNOTATION_MARKERS.out.cell_labels,
         channel.value(file("${projectDir}/modules/reports/annotation_report.qmd")),
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R")),
         channel.value(file("${projectDir}/modules/integration/integration_plots.R"))

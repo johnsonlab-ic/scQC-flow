@@ -32,6 +32,7 @@ mkrs_dt <- fread("annotation_markers.csv.gz")
 cpms_dt <- fread("annotation_logcpms.csv.gz")
 panel_dt <- fread("annotation_marker_panel.csv.gz")
 marker_expr_rds <- "annotation_marker_expression.rds"
+cell_labels_f <- "annotation_cell_labels.csv.gz"
 
 cl_col <- paste0("RNA_snn_res.", sel_res)
 stopifnot("Selected annotation resolution not found in integration output" = cl_col %in% names(int_dt))
@@ -55,16 +56,41 @@ top_min_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
 
 top_heatmap_panel_dt <- make_top_marker_heatmap_panel(top_min_dt, cl_order = cl_ord)
 
+top50_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
+  logFC > 0 & logcpm.sel >= log(min_cpm_mkr + 1)
+][order(cluster, FDR, -logFC, -logcpm.sel, symbol)]
+top50_dt[, prop_zero := n_zero / n_cl]
+top50_dt[, marker_rank := seq_len(.N), by = cluster]
+top50_dt <- top50_dt[marker_rank <= 50]
+
 marker_coverage_dt <- panel_dt[, .(
   markers = paste(unique(symbol), collapse = ", ")
 ), by = label]
 
-cluster_label_dt <- assign_cluster_labels_from_panel(mkrs_dt, panel_dt, min_cpm = min_cpm_mkr)
+if (file.exists(cell_labels_f)) {
+  cell_labels_dt <- fread(cell_labels_f)
+  cluster_label_dt <- unique(cell_labels_dt[, .(cluster, label, label_score, n_markers)])
+  cell_label_lu <- unique(cell_labels_dt[, .(cell_id, label, label_score, n_markers)])
+  label_lu <- setNames(as.character(cell_label_lu$label), cell_label_lu$cell_id)
+  label_score_lu <- setNames(cell_label_lu$label_score, cell_label_lu$cell_id)
+  n_markers_lu <- setNames(cell_label_lu$n_markers, cell_label_lu$cell_id)
+  int_dt[, label := label_lu[cell_id]]
+  int_dt[, label_score := label_score_lu[cell_id]]
+  int_dt[, n_markers := n_markers_lu[cell_id]]
+} else {
+  cluster_label_dt <- assign_cluster_labels_from_panel(mkrs_dt, panel_dt, min_cpm = min_cpm_mkr)
+  cluster_label_dt <- merge(data.table(cluster = cl_ord), cluster_label_dt, by = "cluster", all.x = TRUE, sort = FALSE)
+  label_lu <- setNames(as.character(cluster_label_dt$label), as.character(cluster_label_dt$cluster))
+  label_score_lu <- setNames(cluster_label_dt$label_score, as.character(cluster_label_dt$cluster))
+  n_markers_lu <- setNames(cluster_label_dt$n_markers, as.character(cluster_label_dt$cluster))
+  int_dt[, label := label_lu[as.character(cluster)]]
+  int_dt[, label_score := label_score_lu[as.character(cluster)]]
+  int_dt[, n_markers := n_markers_lu[as.character(cluster)]]
+}
 cluster_label_dt <- merge(data.table(cluster = cl_ord), cluster_label_dt, by = "cluster", all.x = TRUE, sort = FALSE)
 cluster_label_dt[is.na(label), `:=`(label = "Unassigned", label_score = NA_real_, n_markers = 0L)]
 cluster_label_dt[, label := factor(as.character(label), levels = unique(c(panel_label_levels, "Unassigned")))]
 
-int_dt <- merge(int_dt, cluster_label_dt[, .(cluster, label)], by = "cluster", all.x = TRUE, sort = FALSE)
 int_dt[is.na(label), label := "Unassigned"]
 int_dt[, label := factor(as.character(label), levels = unique(c(panel_label_levels, "Unassigned")))]
 
@@ -167,12 +193,12 @@ cat(':::\n\n')
 
 ## Annotation labels over UMAP
 
-Cell labels in the panels below are assigned at the cluster level by the provided marker label with the highest mean positive marker log2 fold-change among the matched input markers.
+Cell labels in the panels below are assigned at the cluster level by the provided marker label with the highest mean positive marker log2 fold-change among the matched input markers. Cluster labels are written at each cluster centroid; if two clusters receive the same annotation label, that label is repeated once per cluster.
 
 ```{r plot_annotation_umap_overview, fig.height = 7, fig.width = 14}
 g_label <- plot_umap_cluster(
   int_dt[, .(cell_id, UMAP1, UMAP2)],
-  int_dt[, .(cell_id, cluster = label)],
+  int_dt[, .(cell_id, cluster = label, centroid_group = as.character(cluster), centroid_label = as.character(label))],
   name = 'cell label'
 )
 g_cluster <- plot_umap_cluster(
@@ -181,6 +207,45 @@ g_cluster <- plot_umap_cluster(
   name = sprintf('cluster (res. %s)', sel_res)
 )
 print(g_label + g_cluster + patchwork::plot_layout(widths = c(1, 1)))
+```
+
+## Top 50 marker tables by cluster at resolution `r sel_res`
+
+The tables below list up to 50 positive markers per cluster after excluding genes that match `r not_ok_re` and requiring expression above the annotation CPM threshold. Each table shows 25 rows per page.
+
+```{r top_marker_tables, results = 'asis'}
+cat('::: {.panel-tabset}\n\n')
+for (sel_cl in cl_ord) {
+  cat('###', sel_cl, '\n\n')
+  sel_tbl <- top50_dt[cluster == sel_cl, .(
+    rank = marker_rank,
+    symbol,
+    gene_type,
+    logFC = round(logFC, 2),
+    FDR = signif(FDR, 3),
+    logcpm_sel = round(logcpm.sel, 2),
+    logcpm_other = round(logcpm.other, 2),
+    zero_prop = round(prop_zero, 3)
+  )]
+  if (nrow(sel_tbl) > 0) {
+    print(DT::datatable(
+      sel_tbl,
+      rownames = FALSE,
+      class = 'compact stripe hover',
+      options = list(
+        pageLength = 25,
+        lengthMenu = list(c(10, 25), c('10', '25')),
+        dom = 'tip',
+        autoWidth = TRUE,
+        scrollX = TRUE
+      )
+    ))
+  } else {
+    cat('No marker genes passed the table filters for this cluster.\n\n')
+  }
+  cat('\n\n')
+}
+cat(':::\n\n')
 ```
 
 ## Marker expression over UMAP

@@ -4,7 +4,7 @@ process RUN_INTEGRATION {
     label     "process_high"
     tag       "integration"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/integration", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/integration", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     path hvg_counts      // hvg_counts.h5 (singlets) from HVG_SELECTION
@@ -35,6 +35,7 @@ process RUN_INTEGRATION {
         ${meta_vars} \
         ${excl_mito} \
         --n_dims          ${params.integration_n_dims} \
+        --cluster_seed    ${params.integration_cluster_seed} \
         --dbl_res         ${params.integration_dbl_res} \
         --dbl_cl_prop     ${params.integration_dbl_cl_prop} \
         --theta           ${params.integration_theta} \

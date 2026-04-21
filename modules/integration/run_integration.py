@@ -25,6 +25,7 @@ from datetime import datetime
 import gc
 import glob
 import gzip
+import random
 import re
 import sys
 import time
@@ -78,13 +79,14 @@ def _describe_sparse_matrix(name, matrix):
     )
 
 
-def _run_leiden(adata, resolution):
+def _run_leiden(adata, resolution, random_state):
     key_added = f"RNA_snn_res.{resolution}"
     try:
         sc.tl.leiden(
             adata,
             key_added=key_added,
             resolution=float(resolution),
+            random_state=random_state,
             flavor='igraph',
             directed=False,
             n_iterations=2,
@@ -99,6 +101,7 @@ def _run_leiden(adata, resolution):
             adata,
             key_added=key_added,
             resolution=float(resolution),
+            random_state=random_state,
         )
         _log(f"  Leiden resolution={resolution} used fallback backend")
 
@@ -287,7 +290,7 @@ def _normalize_hvg_mat(hvg_mat, cells_df, exclude_mito, scale_f=10000):
 # Single integration pass
 # ---------------------------------------------------------------------------
 
-def _do_one_integration(adata, batch_var, n_dims, res_ls, theta):
+def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed):
     """Run one integration pass: scale -> PCA -> Harmony -> Leiden -> UMAP.
 
     Returns a DataFrame with cell_id, embedding coords, UMAP, clusters.
@@ -300,8 +303,11 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta):
         this_embedding = 'harmony'
     _log(
         f"Integration pass setup: batch_var='{batch_var}', levels={n_batches}, "
-        f"n_dims={n_dims}, theta={theta}, resolutions={res_ls}"
+        f"n_dims={n_dims}, theta={theta}, resolutions={res_ls}, seed={cluster_seed}"
     )
+
+    np.random.seed(cluster_seed)
+    random.seed(cluster_seed)
 
     # Scale
     with _timed_step('  Scaling expression matrix'):
@@ -336,11 +342,11 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta):
         res_ls = [res_ls]
     for res in res_ls:
         with _timed_step(f'    Leiden clustering at resolution={res}'):
-            _run_leiden(adata, res)
+            _run_leiden(adata, res, random_state=cluster_seed)
 
     # UMAP
     with _timed_step('  Running UMAP'):
-        sc.tl.umap(adata, maxiter=750)
+        sc.tl.umap(adata, maxiter=750, random_state=cluster_seed)
 
     # Extract results
     with _timed_step('  Recording cluster assignments'):
@@ -469,7 +475,7 @@ def _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data):
 # ---------------------------------------------------------------------------
 
 def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
-                    n_dims, dbl_res, dbl_cl_prop, theta, res_ls,
+                    n_dims, cluster_seed, dbl_res, dbl_cl_prop, theta, res_ls,
                     out_csv):
     """Two-pass integration identical to scprocess."""
 
@@ -479,6 +485,10 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     _log(f"QC files discovered: {len(qc_csv_files)}")
     _log(f"Metadata vars: {metadata_vars if metadata_vars else ['sample_id']}")
     _log(f"Exclude mito from normalization: {exclude_mito}")
+    _log(f"Cluster / UMAP seed: {cluster_seed}")
+
+    np.random.seed(cluster_seed)
+    random.seed(cluster_seed)
 
     # ------------------------------------------------------------------
     # 1. Load HVG matrices (singlet + doublet)
@@ -520,7 +530,8 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         batch_var='sample_id',
         n_dims=n_dims,
         res_ls=[str(dbl_res)],
-        theta=0
+        theta=0,
+        cluster_seed=cluster_seed,
     )
 
     del adata_dbl
@@ -581,7 +592,8 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         batch_var=batch_var_pass2,
         n_dims=n_dims,
         res_ls=res_ls,
-        theta=theta
+        theta=theta,
+        cluster_seed=cluster_seed,
     )
 
     del adata
@@ -637,6 +649,8 @@ if __name__ == '__main__':
                         help='Exclude mito counts from library size denominator')
     parser.add_argument('--n_dims',          type=int, default=30,
                         help='Number of PCA dimensions')
+    parser.add_argument('--cluster_seed',    type=int, default=42,
+                        help='Seed used for Leiden clustering and UMAP')
     parser.add_argument('--dbl_res',         type=float, default=2.0,
                         help='Leiden resolution for doublet detection pass')
     parser.add_argument('--dbl_cl_prop',     type=float, default=0.5,
@@ -664,6 +678,7 @@ if __name__ == '__main__':
         metadata_vars   = metadata_vars,
         exclude_mito    = args.exclude_mito,
         n_dims          = args.n_dims,
+        cluster_seed    = args.cluster_seed,
         dbl_res         = args.dbl_res,
         dbl_cl_prop     = args.dbl_cl_prop,
         theta           = args.theta,

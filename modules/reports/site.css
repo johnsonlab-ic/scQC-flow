@@ -1,200 +1,172 @@
 body.report-site-page {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(248, 236, 214, 0.9), transparent 28%),
-    linear-gradient(180deg, #f6f4ee 0%, #eef2f4 100%);
+  direction: ltr;
+  background: #f7f7f5;
   color: #1e2a30;
 }
 
 .report-site-shell {
-  display: grid;
-  grid-template-columns: 18.5rem minmax(0, 1fr);
+  display: flex;
+  align-items: flex-start;
+  max-width: 110rem;
+  margin: 0 auto;
   min-height: 100vh;
 }
 
 .report-site-sidebar {
+  flex: 0 0 16rem;
   position: sticky;
   top: 0;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.9rem;
   max-height: 100vh;
-  padding: 1.4rem 1rem 1rem;
+  padding: 1.1rem 0.9rem 0.9rem;
   overflow-y: auto;
-  border-right: 1px solid rgba(60, 82, 92, 0.14);
-  background:
-    linear-gradient(180deg, rgba(252, 249, 243, 0.96) 0%, rgba(241, 245, 247, 0.98) 100%);
-  backdrop-filter: blur(10px);
+  border-right: 1px solid #d8ddd8;
+  background: #fbfbf9;
 }
 
 .report-site-brand {
-  padding: 0.3rem 0.25rem 0.8rem;
-  border-bottom: 1px solid rgba(60, 82, 92, 0.14);
+  padding: 0.1rem 0.2rem 0.75rem;
+  border-bottom: 1px solid #d8ddd8;
 }
 
 .report-site-brand-link {
   display: inline-block;
-  color: #143847;
+  color: #16323d;
   text-decoration: none;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: 1.35rem;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 1.2rem;
   font-weight: 700;
-  letter-spacing: 0.01em;
 }
 
 .report-site-brand-link:hover {
-  color: #0c6a7d;
+  color: #16323d;
 }
 
 .report-site-brand-meta {
-  margin-top: 0.45rem;
-  font-size: 0.9rem;
+  margin-top: 0.35rem;
+  font-size: 0.88rem;
   font-weight: 600;
-  color: #435760;
+  color: #46575f;
 }
 
 .report-site-brand-submeta,
 .report-site-footer {
   margin-top: 0.2rem;
-  font-size: 0.78rem;
-  color: #667981;
+  font-size: 0.76rem;
+  color: #66747a;
 }
 
 .report-site-nav {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.85rem;
 }
 
 .report-site-nav-group {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.2rem;
 }
 
 .report-site-nav-heading {
-  padding: 0 0.35rem;
-  font-size: 0.72rem;
+  padding: 0 0.2rem;
+  font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: #6b7c83;
+  color: #708087;
 }
 
 .report-site-nav-link {
   display: block;
-  padding: 0.72rem 0.8rem;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  color: #203239;
+  padding: 0.48rem 0.55rem;
+  border-radius: 8px;
+  color: #22333a;
   text-decoration: none;
-  background: rgba(255, 255, 255, 0.55);
-  transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  line-height: 1.35;
 }
 
 .report-site-nav-link:hover {
-  border-color: rgba(69, 110, 124, 0.28);
-  background: rgba(255, 255, 255, 0.9);
-  transform: translateX(2px);
+  background: #f0f3f1;
   text-decoration: none;
 }
 
 .report-site-nav-link.active {
-  border-color: rgba(29, 97, 117, 0.36);
-  background: linear-gradient(135deg, rgba(255, 248, 234, 0.98) 0%, rgba(233, 243, 247, 0.98) 100%);
-  box-shadow: 0 10px 24px rgba(19, 40, 49, 0.08);
-}
-
-.report-site-nav-label {
-  display: block;
-  font-size: 0.95rem;
+  background: #e5ece8;
+  color: #142d37;
   font-weight: 600;
 }
 
-.report-site-nav-stage {
-  display: block;
-  margin-top: 0.18rem;
-  font-size: 0.74rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: #687a82;
-}
-
 .report-site-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
 }
 
-.report-site-header {
+.report-site-toolbar {
   position: sticky;
   top: 0;
   z-index: 20;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1.4rem 0.95rem;
-  border-bottom: 1px solid rgba(60, 82, 92, 0.12);
-  background: rgba(246, 244, 238, 0.92);
-  backdrop-filter: blur(12px);
-}
-
-.report-site-header-copy {
-  min-width: 0;
-}
-
-.report-site-kicker {
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: #5f737a;
-}
-
-.report-site-page-title {
-  margin-top: 0.25rem;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: 1.35rem;
-  font-weight: 700;
-  line-height: 1.15;
-  color: #173744;
-}
-
-.report-site-page-blurb {
-  margin: 0.35rem 0 0;
-  max-width: 52rem;
-  font-size: 0.92rem;
-  color: #53656d;
+  padding: 0.75rem 1.1rem;
+  border-bottom: 1px solid #d8ddd8;
+  background: rgba(251, 251, 249, 0.96);
+  backdrop-filter: blur(8px);
 }
 
 .report-site-overview-link,
 .report-site-toggle {
   flex-shrink: 0;
-  border: 1px solid rgba(40, 79, 92, 0.18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.75);
-  color: #153948;
+  border: 1px solid #c7d0cb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #183743;
   text-decoration: none;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   font-weight: 600;
 }
 
+.report-site-toolbar-label {
+  min-width: 0;
+  flex: 1;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #46575f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .report-site-overview-link {
-  padding: 0.62rem 0.95rem;
+  padding: 0.5rem 0.8rem;
 }
 
 .report-site-overview-link:hover {
   text-decoration: none;
-  background: #ffffff;
+  background: #f3f6f4;
 }
 
 .report-site-toggle {
   display: none;
-  padding: 0.62rem 0.9rem;
+  padding: 0.5rem 0.8rem;
 }
 
 .report-site-content {
   min-width: 0;
-  padding: 1.1rem 1.4rem 2rem;
+  padding: 1rem 1.1rem 2rem;
+}
+
+.report-site-toolbar,
+.report-site-content {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .report-site-content img,
@@ -203,8 +175,35 @@ body.report-site-page {
   max-width: 100%;
 }
 
+.report-site-content #quarto-content,
+.report-site-content .report-site-quarto-content,
+.report-site-content .page-columns,
+.report-site-content .page-layout-article {
+  display: block !important;
+  grid-template-columns: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.report-site-content #quarto-document-content,
+.report-site-content main.content,
+.report-site-content .report-site-quarto-document {
+  width: min(72rem, 100%);
+  margin: 0 auto;
+  padding: 0;
+}
+
 .report-site-content .quarto-title-block {
-  margin-top: 0.2rem;
+  margin: 0 0 1.5rem;
+  padding: 0 0 1rem;
+  border-bottom: 1px solid #dde2de;
+}
+
+.report-site-content .quarto-title h1.title {
+  margin: 0;
+  font-size: 2rem;
+  line-height: 1.15;
+  color: #17323d;
 }
 
 .report-site-overlay {
@@ -213,7 +212,8 @@ body.report-site-page {
 
 @media (max-width: 960px) {
   .report-site-shell {
-    grid-template-columns: minmax(0, 1fr);
+    display: block;
+    max-width: none;
   }
 
   .report-site-sidebar {
@@ -241,20 +241,15 @@ body.report-site-page {
     display: block;
   }
 
-  .report-site-header {
-    align-items: center;
-    flex-wrap: wrap;
-    padding: 0.95rem 1rem 0.9rem;
-  }
-
   .report-site-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
   }
 
-  .report-site-page-title {
-    font-size: 1.18rem;
+  .report-site-toolbar {
+    gap: 0.65rem;
+    padding: 0.85rem 0.95rem;
   }
 
   .report-site-content {

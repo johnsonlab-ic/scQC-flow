@@ -4,7 +4,7 @@ process HVG_SELECTION {
     label     "process_high"
     tag       "hvg_selection"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/hvg", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/hvg", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     path h5_files        // collected filt_counts_*.h5 from DECONTX

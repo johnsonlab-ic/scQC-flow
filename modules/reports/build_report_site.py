@@ -70,6 +70,23 @@ BODY_OPEN_RE = re.compile(r"<body([^>]*)>", re.IGNORECASE)
 BODY_CLOSE_RE = re.compile(r"</body>", re.IGNORECASE)
 HEAD_CLOSE_RE = re.compile(r"</head>", re.IGNORECASE)
 CLASS_ATTR_RE = re.compile(r'class=("|\')(.*?)(\1)', re.IGNORECASE | re.DOTALL)
+QUARTO_MARGIN_SIDEBAR_RE = re.compile(
+    r'<div id="quarto-margin-sidebar"[^>]*>.*?</div>\s*(?=<main class="content" id="quarto-document-content">)',
+    re.IGNORECASE | re.DOTALL,
+)
+QUARTO_CONTENT_RE = re.compile(
+    r'<div id="quarto-content" class="[^"]*">',
+    re.IGNORECASE,
+)
+EXISTING_SHELL_OPEN_RE = re.compile(
+    r'<div class="report-site-shell">.*?<div class="report-site-content">',
+    re.IGNORECASE | re.DOTALL,
+)
+EXISTING_SHELL_CLOSE_RE = re.compile(
+    r'</div></main></div>\s*<script src="site.js"></script>\s*',
+    re.IGNORECASE | re.DOTALL,
+)
+SITE_CSS_LINK_RE = re.compile(r'\s*<link rel="stylesheet" href="site.css">\s*', re.IGNORECASE)
 
 
 def pretty_report_name(file_name):
@@ -157,15 +174,11 @@ def render_nav(groups, current_file):
         for page in pages:
             active = " active" if page["file"] == current_file else ""
             parts.append(
-                "<a class=\"report-site-nav-link%s\" href=\"%s\">"
-                "<span class=\"report-site-nav-label\">%s</span>"
-                "<span class=\"report-site-nav-stage\">%s</span>"
-                "</a>"
+                "<a class=\"report-site-nav-link%s\" href=\"%s\">%s</a>"
                 % (
                     active,
                     html.escape(page["file"]),
                     html.escape(page["title"]),
-                    html.escape(page["stage_label"]),
                 )
             )
         parts.append("</div>")
@@ -199,6 +212,29 @@ def inject_assets(html_text):
     return asset_block + html_text
 
 
+def unwrap_existing_shell(html_text):
+    html_text = SITE_CSS_LINK_RE.sub("\n", html_text, count=1)
+    html_text = EXISTING_SHELL_OPEN_RE.sub("", html_text, count=1)
+    html_text = EXISTING_SHELL_CLOSE_RE.sub("", html_text, count=1)
+    return html_text
+
+
+def simplify_quarto_layout(html_text):
+    html_text = unwrap_existing_shell(html_text)
+    html_text = QUARTO_MARGIN_SIDEBAR_RE.sub("", html_text, count=1)
+    html_text = QUARTO_CONTENT_RE.sub(
+        '<div id="quarto-content" class="report-site-quarto-content">',
+        html_text,
+        count=1,
+    )
+    html_text = html_text.replace(
+        '<main class="content" id="quarto-document-content">',
+        '<main class="content report-site-quarto-document" id="quarto-document-content">',
+        1,
+    )
+    return html_text
+
+
 def inject_shell(html_text, page, pages, payload):
     run_name = payload.get("run_name") or "run"
     profile = payload.get("profile") or "default"
@@ -223,20 +259,17 @@ def inject_shell(html_text, page, pages, payload):
         '</aside>'
         '<div class="report-site-overlay" data-report-site-overlay hidden></div>'
         '<main class="report-site-main">'
-        '<header class="report-site-header">'
-        '<button class="report-site-toggle" type="button" data-report-site-toggle aria-controls="report-site-sidebar" aria-expanded="false">Sections</button>'
-        '<div class="report-site-header-copy">'
-        f'<div class="report-site-kicker">{html.escape(page["stage_label"])}</div>'
-        f'<div class="report-site-page-title">{html.escape(page["title"])}</div>'
-        f'<p class="report-site-page-blurb">{html.escape(page["blurb"])}</p>'
-        '</div>'
+        '<div class="report-site-toolbar">'
+        '<button class="report-site-toggle" type="button" data-report-site-toggle aria-controls="report-site-sidebar" aria-expanded="false">Reports</button>'
+        f'<div class="report-site-toolbar-label">{html.escape(page["title"])}</div>'
         f'{overview_link}'
-        '</header>'
+        '</div>'
         '<div class="report-site-content">'
     )
     shell_close = '</div></main></div>\n  <script src="site.js"></script>\n'
 
-    wrapped = add_body_class(html_text, "report-site-page")
+    wrapped = simplify_quarto_layout(html_text)
+    wrapped = add_body_class(wrapped, "report-site-page")
 
     body_open_match = BODY_OPEN_RE.search(wrapped)
     if not body_open_match:

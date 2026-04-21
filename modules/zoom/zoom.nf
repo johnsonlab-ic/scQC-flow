@@ -4,7 +4,7 @@ process PREPARE_ZOOM_SUBSET {
     label     "process_low"
     tag       "prepare_zoom_${zoom_name}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/zoom", mode: 'copy', overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
+    publishDir "${params.outputDir}/zoom", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
 
     input:
     tuple val(zoom_name), val(spec_b64)
@@ -37,7 +37,7 @@ process ZOOM_HVG_SELECTION {
     label     "process_high"
     tag       "zoom_hvg_${zoom_name}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/zoom", mode: 'copy', overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
+    publishDir "${params.outputDir}/zoom", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
 
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection)
@@ -76,7 +76,7 @@ process RUN_ZOOM_INTEGRATION {
     label     "process_high"
     tag       "zoom_integration_${zoom_name}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/zoom", mode: 'copy', overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
+    publishDir "${params.outputDir}/zoom", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
 
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_hvg_stats), path(zoom_hvg_counts), path(zoom_dbl_hvg_counts)
@@ -125,7 +125,7 @@ process RUN_ZOOM_MARKERS {
     label     "process_high"
     tag       "zoom_markers_${zoom_name}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/zoom", mode: 'copy', overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
+    publishDir "${params.outputDir}/zoom", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${zoom_name}/${filename}" }
 
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt)
@@ -163,7 +163,7 @@ process ZOOM_REPORT {
     label     "process_reports"
     tag       "zoom_report_${zoom_name}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/reports", mode: 'copy', overwrite: true
+    publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
 
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt), path(zoom_marker_stats), path(zoom_marker_logcpms)

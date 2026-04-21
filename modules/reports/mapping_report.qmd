@@ -310,30 +310,34 @@ knitr::kable(called_cells, digits = 2,
 
 ## Barcode rank plots {.tabset}
 
-### By slope ratio {.tabset}
+### By slope ratio
 
 ```{r knee_plots_slope, fig.height=dims$h, fig.width=dims$w, results='asis'}
+cat('::: {.panel-tabset}\n\n')
 for (i in seq_along(splits$slope)) {
   s <- splits$slope[[i]]
-  cat("#### chunk", i, "\n")
+  cat("#### chunk", i, "\n\n")
   suppressWarnings(print(
     plot_barcode_ranks_w_params(knee_fs[s], knee_params, sample_var)
   ))
   cat("\n\n")
 }
+cat(':::\n\n')
 ```
 
-### By expected/total ratio {.tabset}
+### By expected/total ratio
 
 ```{r knee_plots_exptot, fig.height=dims$h, fig.width=dims$w, results='asis'}
+cat('::: {.panel-tabset}\n\n')
 for (i in seq_along(splits$exp_tot)) {
   s <- splits$exp_tot[[i]]
-  cat("#### chunk", i, "\n")
+  cat("#### chunk", i, "\n\n")
   suppressWarnings(print(
     plot_barcode_ranks_w_params(knee_fs[s], knee_params, sample_var)
   ))
   cat("\n\n")
 }
+cat(':::\n\n')
 ```
 
 ## Diagnostic ratios

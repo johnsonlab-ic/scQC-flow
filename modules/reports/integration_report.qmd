@@ -128,6 +128,14 @@ if (length(requested_metadata_vars) > 0) {
 }
 umap_vars <- unique(c("sample_id", metadata_vars))
 umap_vars <- umap_vars[umap_vars %in% names(int_dt_pass2)]
+bar_vars <- umap_vars[vapply(umap_vars, function(var_name) {
+  vals <- int_dt_pass2[[var_name]]
+  vals <- vals[!is.na(vals)]
+  if (length(vals) == 0) {
+    return(FALSE)
+  }
+  !is.numeric(vals) || uniqueN(vals) <= 12
+}, logical(1))]
 feature_vars <- Filter(function(spec) spec$source %in% names(int_dt_pass2), feature_sources)
 missing_feature_vars <- Filter(function(spec) !spec$source %in% names(int_dt_pass2), feature_sources)
 
@@ -292,6 +300,24 @@ if (length(umap_vars) > 0) {
   cat(':::\n\n')
 } else {
   cat("No sample or metadata variables were retained in the integration output.\n\n")
+}
+```
+
+## Barcharts
+
+Stacked bar charts below show the composition of each cluster after pass-2 integration. Each bar is normalised within a cluster, so the bar height always sums to 100%.
+
+```{r cluster_barcharts, fig.height = max(4, 2.3 * length(present_leiden)), fig.width = 10, results='asis'}
+if (length(present_leiden) > 0 && length(bar_vars) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (var_name in bar_vars) {
+    cat("### ", var_name, "\n\n")
+    print(plot_cluster_composition_bars(int_dt_pass2, present_leiden, var_name))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("No categorical sample or metadata variables were available for stacked cluster bar charts.\n\n")
 }
 ```
 

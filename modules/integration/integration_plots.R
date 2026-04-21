@@ -21,6 +21,32 @@ nice_cols <- c(
   '#FF7F00', '#FDB462', '#E7298A', '#E78AC3', '#33A02C', '#B2DF8A'
 )
 
+order_cluster_labels <- function(cluster_ids) {
+  cluster_ids <- unique(as.character(cluster_ids))
+  if (length(cluster_ids) == 0) {
+    return(character())
+  }
+  if (all(grepl('^cl[0-9]+$', cluster_ids))) {
+    return(cluster_ids[order(as.integer(sub('^cl', '', cluster_ids)))])
+  }
+  sort(cluster_ids)
+}
+
+make_plot_palette <- function(levels_vec) {
+  levels_vec <- unique(as.character(levels_vec))
+  if (length(levels_vec) == 0) {
+    return(setNames(character(), character()))
+  }
+  palette_vals <- rep(nice_cols, length.out = length(levels_vec))
+  names(palette_vals) <- levels_vec
+  palette_vals
+}
+
+cluster_resolution_label <- function(cl_col) {
+  res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+  sub('^leiden_', '', res_val)
+}
+
 # ---------------------------------------------------------------------------
 # UMAP density (binned 2D histogram, log10 colour scale)
 # Matches scprocess plot_umap_density exactly.
@@ -132,24 +158,51 @@ plot_umap_cluster <- function(umap_dt, clust_dt, name) {
   plot_dt <- merge(umap_dt, clust_dt, by = 'cell_id', all.x = TRUE)[, .(
     UMAP1   = rescale(UMAP1, to = c(0.05, 0.95)),
     UMAP2   = rescale(UMAP2, to = c(0.05, 0.95)),
-    cluster
-  )][, cluster := factor(cluster)]
+    cluster,
+    centroid_group = if ('centroid_group' %in% names(clust_dt)) centroid_group else cluster,
+    centroid_label = if ('centroid_label' %in% names(clust_dt)) centroid_label else cluster
+  )]
+
+  if (is.factor(clust_dt$cluster)) {
+    cluster_levels <- levels(clust_dt$cluster)
+  } else {
+    cluster_levels <- order_cluster_labels(plot_dt$cluster)
+  }
+  plot_dt[, cluster := factor(as.character(cluster), levels = cluster_levels)]
+  plot_dt[, centroid_group := as.character(centroid_group)]
+  plot_dt[, centroid_label := as.character(centroid_label)]
   plot_dt <- plot_dt[sample(.N, .N)]
 
-  # add labels to clusters
-  cl_labels <- plot_dt[, .(N = .N), by = cluster][order(cluster)]
-  cl_labels[, cl_label := sprintf("%s (%d)", cluster, signif(N, 2))]
-  label_lu  <- setNames(cl_labels$cl_label, cl_labels$cluster)
+  label_dt <- plot_dt[
+    !is.na(centroid_group) & nzchar(centroid_group),
+    .(
+      UMAP1 = median(UMAP1),
+      UMAP2 = median(UMAP2),
+      centroid_label = centroid_label[1]
+    ),
+    by = centroid_group
+  ]
 
   # define colours
-  cl_cols <- rep(nice_cols, times = 10)[seq_along(label_lu)]
-  names(cl_cols) <- label_lu
+  cl_cols <- make_plot_palette(levels(plot_dt$cluster))
   n_col      <- 4
-  n_rows_lgd <- ceiling(length(label_lu) / n_col)
+  n_rows_lgd <- ceiling(length(cl_cols) / n_col)
 
   ggplot(plot_dt) +
-    aes(x = UMAP1, y = UMAP2, colour = label_lu[as.character(cluster)]) +
+    aes(x = UMAP1, y = UMAP2, colour = cluster) +
     geom_point(size = 0.1) +
+    geom_text_repel(
+      data = label_dt,
+      aes(x = UMAP1, y = UMAP2, label = centroid_label),
+      inherit.aes = FALSE,
+      size = 3,
+      seed = 1,
+      min.segment.length = 0,
+      max.overlaps = Inf,
+      box.padding = 0.3,
+      point.padding = 0.15,
+      segment.color = 'grey55'
+    ) +
     scale_colour_manual(values = cl_cols,
       guide = guide_legend(override.aes = list(size = 3), nrow = n_rows_lgd)) +
     scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
@@ -159,6 +212,57 @@ plot_umap_cluster <- function(umap_dt, clust_dt, name) {
       legend.title.position = "left", legend.position = "bottom",
       axis.ticks = element_blank(), axis.text = element_blank()) +
     labs(colour = name)
+}
+
+plot_cluster_composition_bars <- function(int_dt, cl_cols, split_var) {
+  stopifnot(length(cl_cols) > 0, split_var %in% names(int_dt))
+
+  plot_ls <- lapply(cl_cols, function(cl_col) {
+    stopifnot(cl_col %in% names(int_dt))
+    this_dt <- copy(int_dt)[
+      !is.na(get(cl_col)) & !is.na(get(split_var)) & as.character(get(split_var)) != '',
+      .(cluster = as.character(get(cl_col)), split = as.character(get(split_var)))
+    ]
+    if (nrow(this_dt) == 0) {
+      return(NULL)
+    }
+    this_dt[, cluster := factor(cluster, levels = order_cluster_labels(cluster))]
+    this_dt[, resolution := factor(cluster_resolution_label(cl_col), levels = vapply(cl_cols, cluster_resolution_label, character(1)))]
+    this_dt[, .N, by = .(resolution, cluster, split)][, prop := N / sum(N), by = .(resolution, cluster)]
+  })
+
+  plot_dt <- rbindlist(plot_ls, use.names = TRUE, fill = TRUE)
+  if (nrow(plot_dt) == 0) {
+    return(
+      ggplot() +
+        annotate('text', x = 0, y = 0, label = sprintf('No cells had usable values for %s', split_var)) +
+        theme_void()
+    )
+  }
+
+  split_levels <- plot_dt[, .(N = sum(N)), by = split][order(-N), split]
+  plot_dt[, split := factor(split, levels = split_levels)]
+  split_cols <- setNames(
+    rep(grDevices::hcl.colors(max(length(split_levels), 3), palette = 'Set 3'), length.out = length(split_levels)),
+    split_levels
+  )
+
+  ggplot(plot_dt, aes(x = cluster, y = prop, fill = split)) +
+    geom_col(width = 0.82) +
+    facet_wrap(~ resolution, ncol = 1, scales = 'free_x') +
+    scale_fill_manual(values = split_cols, drop = FALSE) +
+    scale_y_continuous(labels = label_percent(accuracy = 1), expand = expansion(mult = c(0, 0.02))) +
+    theme_bw() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      strip.background = element_rect(fill = 'white'),
+      legend.position = 'bottom',
+      legend.title.position = 'left'
+    ) +
+    guides(fill = guide_legend(ncol = max(1, ceiling(length(split_levels) / 12)))) +
+    labs(x = 'cluster', y = 'proportion', fill = split_var)
 }
 
 # ---------------------------------------------------------------------------
