@@ -151,9 +151,21 @@ build_export_counts <- function(h5_pattern, obs_dt) {
   h5_files <- Sys.glob(h5_pattern)
   assert_that(length(h5_files) > 0, msg = sprintf("No filtered H5 files matched '%s'", h5_pattern))
 
-  sample_ids <- unique(obs_dt$sample_id)
+  sample_ids <- unique(as.character(obs_dt$sample_id))
+  sample_ids <- trimws(sample_ids)
+  sample_ids <- sample_ids[!is.na(sample_ids) & sample_ids != ""]
+  if (length(sample_ids) == 0L) {
+    stop("No valid sample_id values found for export after filtering NA/blank IDs")
+  }
+
   h5_map <- setNames(h5_files, vapply(h5_files, infer_sample_id_from_h5_export, character(1)))
-  assert_that(all(sample_ids %in% names(h5_map)), msg = "Missing filtered H5 files for one or more export samples")
+  missing_samples <- setdiff(sample_ids, names(h5_map))
+  if (length(missing_samples) > 0L) {
+    stop(sprintf(
+      "Missing filtered H5 files for export samples: %s",
+      paste(head(missing_samples, 10), collapse = ", ")
+    ))
+  }
 
   gene_keys <- NULL
   mats <- vector("list", length(sample_ids))

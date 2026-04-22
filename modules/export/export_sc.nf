@@ -61,8 +61,8 @@ process EXPORT_SEURAT {
     export HOME="\$PWD"
 
     Rscript ${script} \
-        --h5_pattern filt_counts_*.h5 \
-        --qc_pattern qc_metrics_*.csv.gz \
+        --h5_pattern 'filt_counts_*.h5' \
+        --qc_pattern 'qc_metrics_*.csv.gz' \
         --integration_csv ${integration_csv} \
         --annotation_csv ${annotationArg} \
         --genome_gtf ${genome_gtf} \
