@@ -37,7 +37,10 @@ def helpMessage() {
         --chemistry         10x chemistry string (default: 3v4)
                             Accepted: 3v2, 3v3, 3v4, 3LT, 5v1, 5v2, 5v3, multiome
         --outputDir         Output directory (default: results)
-        --run_ambient       Run ambient RNA removal with decontX (default: true)
+        --run_ambient       Run ambient RNA cleanup stage (default: true)
+        --ambient_method    Ambient method (default: decontx). Accepted: decontx, cellbender
+        --cellbender_env_name Preinstalled conda env name used to run CellBender (default: cellbender)
+        --cellbender_mig_device MIG UUID for CellBender GPU slice (e.g. MIG-xxxx); empty = auto-detect
         --run_qc            Run cell-level QC (default: true; requires --run_ambient)
         --run_hvg           Run HVG selection (default: true; requires --run_qc)
         --run_integration   Run Harmony integration (default: true; requires --run_hvg)
@@ -57,10 +60,6 @@ def helpMessage() {
                     or cell_type/marker_gene columns
         --annotation_sel_res      Single clustering resolution to carry from
                     integration into annotation (default: 0.2)
-        --barcode_v2_splice_context  Splice QC context for Barcode_estimation_v2
-                         (snrna, scrna, auto; default: snrna)
-        --barcode_v2_ed_fdr          EmptyDrops FDR cutoff for Barcode_estimation_v2
-                         (default: 0.001)
         --help              Show this message
 
     Profiles:
@@ -122,6 +121,10 @@ workflow {
     }
     if (params.run_annotation && !params.annotation_marker_csv) {
         error "--annotation_marker_csv is required when --run_annotation is true"
+    }
+    def ambientMethod = (params.ambient_method ?: 'decontx').toString().trim().toLowerCase()
+    if (!(ambientMethod in ['decontx', 'cellbender'])) {
+        error "--ambient_method must be one of: decontx, cellbender"
     }
     if (params.run_qc && !params.run_ambient) {
         error "--run_qc requires --run_ambient"
@@ -257,6 +260,7 @@ workflow {
     genome_gtf     : ${params.genome_gtf}
     chemistry      : ${params.chemistry}
     run_ambient    : ${params.run_ambient}
+    ambient_method : ${ambientMethod}
     run_qc         : ${params.run_qc}
     run_hvg        : ${params.run_hvg}
     run_integration: ${params.run_integration}
@@ -279,7 +283,6 @@ workflow {
             reports_dir: "${params.outputDir}/reports",
             pipeline_steps: [
                 mapping: true,
-                barcode_v2: true,
                 ambient: params.run_ambient,
                 qc: params.run_ambient && params.run_qc,
                 hvg: params.run_ambient && params.run_qc && params.run_hvg,
@@ -301,18 +304,19 @@ workflow {
                 ],
                 workflow_flags: [
                     run_ambient: params.run_ambient,
+                    ambient_method: ambientMethod,
                     run_qc: params.run_qc,
                     run_hvg: params.run_hvg,
                     run_integration: params.run_integration,
                     run_annotation: params.run_annotation,
                     export: exportMode,
                 ],
-                barcode_v2: [
-                    barcode_v2_min_umis_empty: params.barcode_v2_min_umis_empty,
-                    barcode_v2_ed_niters: params.barcode_v2_ed_niters,
-                    barcode_v2_ed_fdr: params.barcode_v2_ed_fdr,
-                    barcode_v2_splice_context: params.barcode_v2_splice_context,
-                    barcode_v2_low_count_strategy: params.barcode_v2_low_count_strategy,
+                cellbender: [
+                    env_name: params.cellbender_env_name,
+                    mig_device: params.cellbender_mig_device,
+                    expected_cells_override: params.cellbender_expected_cells,
+                    total_droplets_override: params.cellbender_total_droplets_included,
+                    low_count_override: params.cellbender_low_count_threshold,
                 ],
                 metadata: [
                     metadata_csv: params.metadata_csv,

@@ -24,10 +24,9 @@ payload <- fromJSON("landing_page_payload.json", simplifyVector = FALSE)
 report_files <- sort(list.files(".", pattern = "\\.html$", full.names = FALSE))
 report_files <- setdiff(report_files, "index.html")
 
-stage_order <- c("mapping", "barcode_v2", "ambient", "qc", "hvg", "integration", "annotation", "zoom")
+stage_order <- c("mapping", "ambient", "qc", "hvg", "integration", "annotation", "zoom")
 stage_titles <- c(
   mapping = "Mapping",
-  barcode_v2 = "Barcode v2",
   ambient = "Ambient",
   qc = "QC",
   hvg = "HVG",
@@ -38,8 +37,8 @@ stage_titles <- c(
 
 known_reports <- list(
   mapping_report.html = list(title = "Mapping diagnostics", category = "Core", stage = "mapping", blurb = "Barcode knee plots and read-level mapping diagnostics across samples."),
-  barcode_report_v2.html = list(title = "Barcode caller v2 audit", category = "Core", stage = "barcode_v2", blurb = "Audit outputs from the standalone barcode caller v2 workflow."),
   ambient_report.html = list(title = "Ambient RNA diagnostics", category = "Core", stage = "ambient", blurb = "decontX summaries, contamination estimates, and ambient cleanup diagnostics."),
+  cellbender_report.html = list(title = "CellBender diagnostics", category = "Core", stage = "ambient", blurb = "Estimated-vs-called barcode comparisons and CellBender call diagnostics across samples."),
   qc_report.html = list(title = "Cell-level QC", category = "Core", stage = "qc", blurb = "Filtering metrics, threshold summaries, and QC visualizations."),
   hvg_report.html = list(title = "HVG selection", category = "Core", stage = "hvg", blurb = "Highly variable gene selection diagnostics and ambient-gene context."),
   integration_report.html = list(title = "Integration diagnostics", category = "Core", stage = "integration", blurb = "Harmony integration, cluster structure, metadata overlays, and QC-feature UMAPs."),
@@ -142,7 +141,6 @@ flatten_params <- function(x, section = NULL) {
 
 step_labels <- c(
   mapping = "Mapping",
-  barcode_v2 = "Barcode v2",
   ambient = "Ambient",
   qc = "QC",
   hvg = "HVG",
@@ -205,12 +203,6 @@ main_flow_html <- vapply(main_flow_nodes, function(stage_name) {
   status <- if (isTRUE(enabled_steps[[stage_name]])) "active" else "muted"
   render_stage_node(stage_titles[[stage_name]], stage_report_file(stage_name), status)
 }, character(1))
-
-barcode_node_html <- render_stage_node(
-  stage_titles[["barcode_v2"]],
-  stage_report_file("barcode_v2"),
-  if (isTRUE(enabled_steps[["barcode_v2"]])) "active" else "muted"
-)
 
 zoom_df <- report_df[report_df$stage == "zoom", , drop = FALSE]
 zoom_nodes_html <- if (nrow(zoom_df) > 0) {
@@ -428,10 +420,6 @@ cat(sprintf(
 cat('<div class="dag-wrap">')
 cat('<div class="dag-row">')
 cat(paste(main_flow_html, collapse = '<span class="dag-arrow">&rarr;</span>'))
-cat('</div>')
-cat('<div class="dag-row branch">')
-cat('<span class="dag-arrow">&boxur;</span>')
-cat(barcode_node_html)
 cat('</div>')
 if (length(zoom_nodes_html) > 0) {
   cat('<div class="dag-row branch">')

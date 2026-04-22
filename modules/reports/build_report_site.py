@@ -8,12 +8,11 @@ import shutil
 from pathlib import Path
 
 
-STAGE_ORDER = ["mapping", "barcode_v2", "ambient", "qc", "hvg", "integration", "annotation", "zoom", "other"]
+STAGE_ORDER = ["mapping", "ambient", "qc", "hvg", "integration", "annotation", "zoom", "other"]
 
 STAGE_LABELS = {
     "overview": "Overview",
     "mapping": "Mapping",
-    "barcode_v2": "Barcode v2",
     "ambient": "Ambient",
     "qc": "QC",
     "hvg": "HVG",
@@ -29,15 +28,15 @@ KNOWN_REPORTS = {
         "stage": "mapping",
         "blurb": "Barcode knee plots and read-level mapping diagnostics across samples.",
     },
-    "barcode_report_v2.html": {
-        "title": "Barcode caller v2 audit",
-        "stage": "barcode_v2",
-        "blurb": "Audit outputs from the standalone barcode caller v2 workflow.",
-    },
     "ambient_report.html": {
         "title": "Ambient RNA diagnostics",
         "stage": "ambient",
         "blurb": "decontX summaries, contamination estimates, and ambient cleanup diagnostics.",
+    },
+    "cellbender_report.html": {
+        "title": "CellBender diagnostics",
+        "stage": "ambient",
+        "blurb": "Estimated-vs-called barcode comparisons and CellBender call diagnostics across samples.",
     },
     "qc_report.html": {
         "title": "Cell-level QC",

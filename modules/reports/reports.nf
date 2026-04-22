@@ -25,30 +25,27 @@ process MAPPING_REPORT {
 }
 
 // ---------------------------------------------------------------------------
-// Barcode caller v2 report (one HTML across all samples)
+// CellBender report (one HTML across all samples)
 // ---------------------------------------------------------------------------
 
-process BARCODE_REPORT_V2 {
+process CELLBENDER_REPORT {
     label     "process_reports"
-    tag       "barcode_report_v2"
+    tag       "cellbender_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
   publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    path audit_csvs     // barcode_audit_v2_*.csv.gz
-    path summary_csvs   // barcode_summary_v2_*.csv
-    path report_qmd     // barcode_report_v2.qmd
-    path plots_r        // barcode_v2_plots.R
+    path summary_csvs   // cb_summary_*.csv
+    path labels_csvs    // cb_barcode_labels_*.csv.gz
+    path report_qmd     // cellbender_report.qmd
 
     output:
-    path "barcode_report_v2.html", emit: html
+    path "cellbender_report.html", emit: html
 
     script:
     """
     export HOME="\$PWD"
-    export BARCODE_V2_SPLICE_CONTEXT="${params.barcode_v2_splice_context}"
-    export BARCODE_V2_ED_FDR="${params.barcode_v2_ed_fdr}"
-    quarto render "${report_qmd}" --output barcode_report_v2.html
+    quarto render "${report_qmd}" --output cellbender_report.html
     """
 }
 

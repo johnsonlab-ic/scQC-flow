@@ -3,11 +3,11 @@
 include { SIMPLEAF_INDEX    } from '../modules/mapping/mapping.nf'
 include { SIMPLEAF_QUANT    } from '../modules/mapping/mapping.nf'
 include { BARCODE_ESTIMATION } from '../modules/mapping/mapping.nf'
-include { BARCODE_ESTIMATION_V2 } from '../modules/mapping/mapping.nf'
 include { MAPPING_REPORT    } from '../modules/reports/reports.nf'
-include { BARCODE_REPORT_V2 } from '../modules/reports/reports.nf'
 include { DECONTX           } from '../modules/ambient/ambient.nf'
+include { CELLBENDER        } from '../modules/ambient/ambient.nf'
 include { AMBIENT_REPORT    } from '../modules/reports/reports.nf'
+include { CELLBENDER_REPORT } from '../modules/reports/reports.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
 include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
 include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
@@ -115,11 +115,6 @@ workflow MAPPING {
         channel.value(file("${projectDir}/modules/mapping/barcode_estimation.R"))
     )
 
-    BARCODE_ESTIMATION_V2(
-        SIMPLEAF_QUANT.out.quant_dirs,
-        channel.value(file("${projectDir}/modules/mapping/barcode_estimation_v2.R"))
-    )
-
     // ------------------------------------------------------------------
     // 5. Mapping report
     // ------------------------------------------------------------------
@@ -128,33 +123,20 @@ workflow MAPPING {
         channel.value(file("${projectDir}/modules/reports/mapping_report.qmd"))
     )
 
-    BARCODE_REPORT_V2(
-        BARCODE_ESTIMATION_V2.out.audit.map { _id, csv -> csv }.collect(),
-        BARCODE_ESTIMATION_V2.out.summaries.map { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/reports/barcode_report_v2.qmd")),
-        channel.value(file("${projectDir}/modules/reports/barcode_v2_plots.R"))
-    )
-
     emit:
     h5_files       = BARCODE_ESTIMATION.out.h5_files
     knee_data      = BARCODE_ESTIMATION.out.knee_data
     ambient_params = BARCODE_ESTIMATION.out.ambient_params
-    barcode_v2_h5_files = BARCODE_ESTIMATION_V2.out.h5_files
-    barcode_v2_audit = BARCODE_ESTIMATION_V2.out.audit
-    barcode_v2_summaries = BARCODE_ESTIMATION_V2.out.summaries
-    barcode_v2_barcodes = BARCODE_ESTIMATION_V2.out.barcodes
-    barcode_v2_ambient_params = BARCODE_ESTIMATION_V2.out.ambient_params
-    report         = MAPPING_REPORT.out.html.mix(BARCODE_REPORT_V2.out.html)
+    report         = MAPPING_REPORT.out.html
 }
 
 // =============================================================================
 // AMBIENT
 //
-// H5 + knee CSV -> decontX -> ambient report
+// H5 + knee CSV -> {decontX | CellBender} -> ambient report
 //
-// Takes the H5 and knee CSV from MAPPING (v1 barcode estimation).
-// Runs decontX per sample using the in_empty_plateau flag from the knee CSV
-// to define the background, and expected_cells to define the cell population.
+// Both methods consume the same raw H5 + knee CSV inputs from MAPPING and
+// emit filtered H5 matrices under the same filename contract.
 // =============================================================================
 
 workflow AMBIENT {
@@ -165,31 +147,55 @@ workflow AMBIENT {
 
     main:
 
-    // ------------------------------------------------------------------
-    // 1. Join H5 + knee CSV per sample, run decontX
-    // ------------------------------------------------------------------
-    dcx_input = h5_ch.join(knee_ch)   // tuple(sampleId, h5, knee_csv)
+    def ambientMethod = (params.ambient_method ?: 'decontx').toString().trim().toLowerCase()
+    if (!(ambientMethod in ['decontx', 'cellbender'])) {
+        error "Unsupported --ambient_method '${ambientMethod}'. Use one of: decontx, cellbender"
+    }
 
-    DECONTX(
-        dcx_input,
-        channel.value(file("${projectDir}/modules/ambient/decontx.R"))
-    )
+    joined_input = h5_ch.join(knee_ch)   // tuple(sampleId, h5, knee_csv)
 
-    // ------------------------------------------------------------------
-    // 2. Ambient report (one HTML across all samples)
-    // ------------------------------------------------------------------
-    AMBIENT_REPORT(
-        DECONTX.out.qc_metrics.map { _id, csv -> csv }.collect(),
-        DECONTX.out.barcodes.map   { _id, csv -> csv }.collect(),
-        DECONTX.out.dcx_params.map { _id, csv -> csv }.collect(),
-        DECONTX.out.summaries.map  { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/reports/ambient_report.qmd"))
-    )
+    def ambient_h5_files
+    def ambient_barcodes
+    def ambient_report
+
+    if (ambientMethod == 'cellbender') {
+        CELLBENDER(
+            joined_input,
+            channel.value(file("${projectDir}/modules/ambient/cellbender_postprocess.py"))
+        )
+
+        CELLBENDER_REPORT(
+            CELLBENDER.out.summaries.map { _id, csv -> csv }.collect(),
+            CELLBENDER.out.labels.map { _id, csv -> csv }.collect(),
+            channel.value(file("${projectDir}/modules/reports/cellbender_report.qmd"))
+        )
+
+        ambient_h5_files = CELLBENDER.out.h5_files
+        ambient_barcodes = CELLBENDER.out.barcodes
+        ambient_report = CELLBENDER_REPORT.out.html
+    } else {
+        DECONTX(
+            joined_input,
+            channel.value(file("${projectDir}/modules/ambient/decontx.R"))
+        )
+
+        AMBIENT_REPORT(
+            DECONTX.out.qc_metrics.map { _id, csv -> csv }.collect(),
+            DECONTX.out.barcodes.map   { _id, csv -> csv }.collect(),
+            DECONTX.out.dcx_params.map { _id, csv -> csv }.collect(),
+            DECONTX.out.summaries.map  { _id, csv -> csv }.collect(),
+            channel.value(file("${projectDir}/modules/reports/ambient_report.qmd"))
+        )
+
+        ambient_h5_files = DECONTX.out.h5_files
+        ambient_barcodes = DECONTX.out.barcodes
+        ambient_report = AMBIENT_REPORT.out.html
+    }
 
     emit:
-    h5_files = DECONTX.out.h5_files
-    barcodes = DECONTX.out.barcodes
-    report   = AMBIENT_REPORT.out.html
+    h5_files = ambient_h5_files
+    barcodes = ambient_barcodes
+    report   = ambient_report
 }
 
 // =============================================================================
@@ -199,9 +205,9 @@ workflow AMBIENT {
 //
 // Takes raw H5 files (all droplets) from MAPPING, knee CSVs from MAPPING
 // (to identify empty vs. cell-ranked droplets), and filtered H5 files
-// (decontX-processed cells) from AMBIENT. Constructs pseudobulk matrices:
+// (ambient-cleaned cells from decontX or CellBender) from AMBIENT. Constructs pseudobulk matrices:
 // - Empty: sum S+U+A counts across empty-ranked barcodes per sample
-// - Cells: sum S+U+A counts across decontX-identified cells per sample
+// - Cells: sum S+U+A counts across ambient-cleaned called cells per sample
 // Then runs EdgeR comparison to identify ambient genes (FDR<0.05, logFC>0).
 //
 // Outputs:
@@ -262,7 +268,7 @@ workflow SAMPLE_METADATA {
 //
 // Filtered H5 -> per-sample QC (metrics + doublet detection) -> QC report
 //
-// Takes decontX-filtered H5 files from AMBIENT and the genome GTF.
+// Takes ambient-cleaned filtered H5 files from AMBIENT and the genome GTF.
 // Runs SAMPLE_QC per sample (scDblFinder, hard + soft thresholds),
 // then renders a combined QC report.
 // =============================================================================

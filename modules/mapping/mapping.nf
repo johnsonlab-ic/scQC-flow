@@ -4,7 +4,6 @@
 //   SIMPLEAF_INDEX     — build index from FASTA + GTF
 //   SIMPLEAF_QUANT     — run simpleaf quant (resolves whitelist from chemistry)
 //   BARCODE_ESTIMATION — knee detection, H5 creation, ambient params
-//   BARCODE_ESTIMATION_V2 — standalone barcode caller + audit outputs
 
 // ---------------------------------------------------------------------------
 // Index building (always runs — takes genome FASTA + GTF)
@@ -167,53 +166,4 @@ process BARCODE_ESTIMATION {
     """
 }
 
-// ---------------------------------------------------------------------------
-// Barcode estimation v2: standalone caller with explicit decision zones.
-// ---------------------------------------------------------------------------
-
-process BARCODE_ESTIMATION_V2 {
-    label     "process_high"
-    tag       "$sampleId"
-    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/mapping_v2/af_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
-
-    input:
-    tuple val(sampleId), path(quant_dir)
-    path  script
-
-    output:
-    tuple val(sampleId), path("af_counts_mat_v2.h5"), emit: h5_files
-    tuple val(sampleId), path("barcode_audit_v2_${sampleId}.csv.gz"), emit: audit
-    tuple val(sampleId), path("barcode_summary_v2_${sampleId}.csv"), emit: summaries
-    tuple val(sampleId), path("cell_barcodes_v2_${sampleId}.csv"), emit: barcodes
-    tuple val(sampleId), env('CB_EXPECTED_CELLS_V2'), env('CB_LOW_COUNT_THRESHOLD_V2'), env('KNEE1_V2'), env('SHIN1_V2'), env('KNEE2_V2'), env('SHIN2_V2'), env('ED_FDR_V2'), emit: ambient_params
-
-    script:
-    """
-    set -euo pipefail
-
-    Rscript ${script} \
-        --sample_id          "${sampleId}" \
-        --quant_dir          "${quant_dir}/af_quant" \
-        --h5_out             "af_counts_mat_v2.h5" \
-        --audit_out          "barcode_audit_v2_${sampleId}.csv.gz" \
-        --summary_out        "barcode_summary_v2_${sampleId}.csv" \
-        --barcodes_out       "cell_barcodes_v2_${sampleId}.csv" \
-        --ambient_env_out    "ambient_params_v2_${sampleId}.env" \
-        --min_umis_empty     ${params.barcode_v2_min_umis_empty} \
-        --niters             ${params.barcode_v2_ed_niters} \
-        --ed_fdr             ${params.barcode_v2_ed_fdr} \
-        --splice_context     '${params.barcode_v2_splice_context}' \
-        --low_count_strategy '${params.barcode_v2_low_count_strategy}'
-
-    source "ambient_params_v2_${sampleId}.env"
-    export CB_EXPECTED_CELLS_V2
-    export CB_LOW_COUNT_THRESHOLD_V2
-    export KNEE1_V2
-    export SHIN1_V2
-    export KNEE2_V2
-    export SHIN2_V2
-    export ED_FDR_V2
-    """
-}
 

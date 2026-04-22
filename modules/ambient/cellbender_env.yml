@@ -1,0 +1,13 @@
+name: cellbender
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=2.1.*
+  - pytorch-cuda=12.1
+  - pip
+  - pip:
+    - cellbender==0.3.2
