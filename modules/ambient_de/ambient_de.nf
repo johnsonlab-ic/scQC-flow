@@ -29,7 +29,7 @@ process AMBIENT_DE {
     label     "process_high"
     tag       "ambient_de"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/ambient_de", mode: params.publish_mode_nonreport, overwrite: true
+    publishDir "${params.outputDir}/ambient/ambient_de", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     path raw_h5_files      // collected barcode_matrix_*.h5 (uniquely named via STAGE_RAW_H5)

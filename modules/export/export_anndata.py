@@ -208,6 +208,8 @@ def _sanitize_obs(obs_df):
         if pd.api.types.is_object_dtype(obs_df[col]):
             obs_df[col] = obs_df[col].astype('string')
     obs_df.index = obs_df['cell_id'].astype(str)
+    obs_df.index.name = 'cell_id'
+    obs_df = obs_df.drop(columns=['cell_id'])
     return obs_df
 
 
@@ -247,6 +249,27 @@ def _make_adata(counts_mat, obs_df, var_df, include_doublet_umap):
     return adata
 
 
+def _concat_h5ad_on_disk(input_paths, output_path, label):
+    if not input_paths:
+        return
+
+    try:
+        from anndata.experimental import concat_on_disk
+
+        concat_on_disk(
+            input_paths,
+            output_path,
+            axis=0,
+            join='outer',
+            label=label,
+        )
+    except Exception:
+        # Fallback for environments where concat_on_disk is unavailable
+        adatas = [ad.read_h5ad(path) for path in input_paths]
+        combined = ad.concat(adatas, axis=0, join='outer', label=label)
+        combined.write_h5ad(output_path, compression='gzip')
+
+
 def main():
     parser = argparse.ArgumentParser(description='Export scQC-flow results as AnnData objects')
     parser.add_argument('--h5_pattern', required=True)
@@ -254,26 +277,86 @@ def main():
     parser.add_argument('--integration_csv', required=True)
     parser.add_argument('--annotation_csv', required=True)
     parser.add_argument('--genome_gtf', required=True)
-    parser.add_argument('--out_all', required=True)
-    parser.add_argument('--out_clean', required=True)
+    parser.add_argument('--out_dir', required=True)
+    parser.add_argument('--write_combined', default='true', help='Write combined objects (true/false)')
     args = parser.parse_args()
 
+    write_combined = args.write_combined.lower() == 'true'
+    out_dir = args.out_dir
+    os.makedirs(os.path.join(out_dir, 'anndata'), exist_ok=True)
+
+    print('Loading metadata and annotations...')
     obs_df = _load_cell_metadata(args.integration_csv, args.qc_pattern, args.annotation_csv)
     gtf_df = _parse_gtf(args.genome_gtf)
 
-    all_obs = obs_df.copy()
-    all_counts, gene_keys, ordered_all = _build_count_matrix(args.h5_pattern, all_obs)
-    all_obs = all_obs.set_index('cell_id').loc[ordered_all].reset_index()
-    var_df = _build_var_df(gtf_df, gene_keys)
-    all_adata = _make_adata(all_counts, all_obs, var_df, include_doublet_umap=True)
-    all_adata.write_h5ad(args.out_all, compression='gzip')
+    # Get unique samples
+    unique_samples = sorted(obs_df['sample_id'].unique())
+    print(f'Processing {len(unique_samples)} samples')
 
-    clean_mask = (~all_obs['is_dbl'].fillna(False).astype(bool)) & (~all_obs['in_dbl_cl'].fillna(False).astype(bool))
-    clean_obs = all_obs.loc[clean_mask].copy().reset_index(drop=True)
-    clean_counts, _, ordered_clean = _build_count_matrix(args.h5_pattern, clean_obs)
-    clean_obs = clean_obs.set_index('cell_id').loc[ordered_clean].reset_index()
-    clean_adata = _make_adata(clean_counts, clean_obs, var_df, include_doublet_umap=False)
-    clean_adata.write_h5ad(args.out_clean, compression='gzip')
+    # Per-sample processing
+    all_paths = []
+    clean_paths = []
+
+    for sample_id in unique_samples:
+        print(f'Processing sample: {sample_id}')
+
+        # All cells for this sample
+        sample_obs_all = obs_df[obs_df['sample_id'] == sample_id].copy().reset_index(drop=True)
+        if len(sample_obs_all) == 0:
+            print(f'  Skipping {sample_id}: no cells found')
+            continue
+
+        try:
+            all_counts, gene_keys, ordered_all = _build_count_matrix(args.h5_pattern, sample_obs_all)
+            sample_obs_all = sample_obs_all.set_index('cell_id').loc[ordered_all].reset_index()
+            var_df = _build_var_df(gtf_df, gene_keys)
+            all_adata = _make_adata(all_counts, sample_obs_all, var_df, include_doublet_umap=True)
+
+            out_path = os.path.join(out_dir, 'anndata', f'sample_{sample_id}_all.h5ad')
+            all_adata.write_h5ad(out_path, compression='gzip')
+            print(f'  Saved all cells: {all_adata.n_obs} cells')
+
+            if write_combined:
+                all_paths.append(out_path)
+
+            # Clean cells for this sample
+            clean_mask = (~sample_obs_all['is_dbl'].fillna(False).astype(bool)) & \
+                         (~sample_obs_all['in_dbl_cl'].fillna(False).astype(bool))
+            clean_obs = sample_obs_all.loc[clean_mask].copy().reset_index(drop=True)
+
+            if len(clean_obs) > 0:
+                clean_counts, _, ordered_clean = _build_count_matrix(args.h5_pattern, clean_obs)
+                clean_obs = clean_obs.set_index('cell_id').loc[ordered_clean].reset_index()
+                clean_adata = _make_adata(clean_counts, clean_obs, var_df, include_doublet_umap=False)
+
+                out_path = os.path.join(out_dir, 'anndata', f'sample_{sample_id}_clean.h5ad')
+                clean_adata.write_h5ad(out_path, compression='gzip')
+                print(f'  Saved clean cells: {clean_adata.n_obs} cells')
+
+                if write_combined:
+                    clean_paths.append(out_path)
+        except Exception as e:
+            print(f'  Error processing sample {sample_id}: {e}')
+            continue
+
+    # Write combined objects if requested
+    if write_combined and len(all_paths) > 0:
+        print('Building combined objects...')
+
+        # Combine all cells
+        print('  Combining all cells...')
+        out_path = os.path.join(out_dir, 'anndata', 'combined_all.h5ad')
+        _concat_h5ad_on_disk(all_paths, out_path, label='sample_id')
+        print(f'  Saved combined all: {out_path}')
+
+        # Combine clean cells
+        if len(clean_paths) > 0:
+            print('  Combining clean cells...')
+            out_path = os.path.join(out_dir, 'anndata', 'combined_clean.h5ad')
+            _concat_h5ad_on_disk(clean_paths, out_path, label='sample_id')
+            print(f'  Saved combined clean: {out_path}')
+
+    print('AnnData export complete!')
 
 
 if __name__ == '__main__':

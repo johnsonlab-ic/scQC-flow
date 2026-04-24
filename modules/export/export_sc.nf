@@ -13,15 +13,18 @@ process EXPORT_SCANPY {
     path script
 
     output:
-    path "scqcflow_all_cells.h5ad", emit: all_cells
-    path "scqcflow_clean_cells.h5ad", emit: clean_cells
+    path "anndata/sample_*_all.h5ad", emit: per_sample_all
+    path "anndata/sample_*_clean.h5ad", emit: per_sample_clean
+    path "anndata/combined_all.h5ad", optional: true, emit: combined_all
+    path "anndata/combined_clean.h5ad", optional: true, emit: combined_clean
 
     script:
     def annotationArg = annotation_labels_csv.name == 'NO_FILE' ? 'NO_FILE' : annotation_labels_csv.name
+    def writeCombined = params.export_write_combined ?: true
     """
     set -euo pipefail
-    export MPLCONFIGDIR="\$PWD/.mplconfig"
-    export NUMBA_CACHE_DIR="\$PWD/.numba"
+    export MPLCONFIGDIR="/tmp/.mplconfig"
+    export NUMBA_CACHE_DIR="/tmp/.numba"
     export PYTHONUNBUFFERED=1
 
     python3 -u ${script} \
@@ -30,8 +33,8 @@ process EXPORT_SCANPY {
         --integration_csv ${integration_csv} \
         --annotation_csv ${annotationArg} \
         --genome_gtf ${genome_gtf} \
-        --out_all scqcflow_all_cells.h5ad \
-        --out_clean scqcflow_clean_cells.h5ad
+        --out_dir . \
+        --write_combined ${writeCombined}
     """
 }
 
@@ -51,11 +54,14 @@ process EXPORT_SEURAT {
     path utils_r
 
     output:
-    path "scqcflow_all_cells.rds", emit: all_cells
-    path "scqcflow_clean_cells.rds", emit: clean_cells
+    path "seurat/sample_*_all.rds", emit: per_sample_all
+    path "seurat/sample_*_clean.rds", emit: per_sample_clean
+    path "seurat/combined_all.rds", optional: true, emit: combined_all
+    path "seurat/combined_clean.rds", optional: true, emit: combined_clean
 
     script:
     def annotationArg = annotation_labels_csv.name == 'NO_FILE' ? 'NO_FILE' : annotation_labels_csv.name
+    def writeCombined = params.export_write_combined ?: true
     """
     set -euo pipefail
     export HOME="\$PWD"
@@ -67,7 +73,7 @@ process EXPORT_SEURAT {
         --annotation_csv ${annotationArg} \
         --genome_gtf ${genome_gtf} \
         --utils_r ${utils_r} \
-        --out_all scqcflow_all_cells.rds \
-        --out_clean scqcflow_clean_cells.rds
+        --out_dir . \
+        --write_combined ${writeCombined}
     """
 }

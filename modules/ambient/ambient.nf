@@ -4,7 +4,7 @@ process DECONTX {
     label     "process_high"
     tag       "$sampleId"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/ambient/dcx_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
+  publishDir "${params.outputDir}/ambient/decontx/${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     tuple val(sampleId), path(h5_file), path(knee_csv)
@@ -38,7 +38,7 @@ process DECONTX {
 process CELLBENDER {
     label     "process_cellbender"
     tag       "$sampleId"
-    publishDir "${params.outputDir}/ambient/cellbender_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
+  publishDir "${params.outputDir}/ambient/cellbender/${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     tuple val(sampleId), path(h5_file), path(knee_csv)

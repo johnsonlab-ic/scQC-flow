@@ -163,7 +163,7 @@ process ZOOM_REPORT {
     label     "process_reports"
     tag       "zoom_report_${zoom_name}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image:latest"
-    publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/zoom", mode: params.publish_mode_reports, overwrite: true
 
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt), path(zoom_marker_stats), path(zoom_marker_logcpms)

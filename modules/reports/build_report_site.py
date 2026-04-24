@@ -241,7 +241,7 @@ def inject_shell(html_text, page, pages, payload):
 
     groups = group_pages(pages)
     nav_html = render_nav(groups, page["file"])
-    overview_link = '<a class="report-site-overview-link" href="index.html">Overview</a>'
+    overview_link = '' if page["file"] == "index.html" else '<a class="report-site-overview-link" href="index.html">Overview</a>'
 
     shell_open = (
         '<div class="report-site-shell">'

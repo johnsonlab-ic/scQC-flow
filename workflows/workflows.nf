@@ -192,50 +192,20 @@ workflow AMBIENT {
         ambient_report = AMBIENT_REPORT.out.html
     }
 
-    emit:
-    h5_files = ambient_h5_files
-    barcodes = ambient_barcodes
-    report   = ambient_report
-}
-
-// =============================================================================
-// AMBIENT_DE
-//
-// Raw H5 + knee CSV + filtered H5 -> EdgeR comparison -> DE table + pseudobulk
-//
-// Takes raw H5 files (all droplets) from MAPPING, knee CSVs from MAPPING
-// (to identify empty vs. cell-ranked droplets), and filtered H5 files
-// (ambient-cleaned cells from decontX or CellBender) from AMBIENT. Constructs pseudobulk matrices:
-// - Empty: sum S+U+A counts across empty-ranked barcodes per sample
-// - Cells: sum S+U+A counts across ambient-cleaned called cells per sample
-// Then runs EdgeR comparison to identify ambient genes (FDR<0.05, logFC>0).
-//
-// Outputs:
-//   - edger_dt.csv.gz      differential expression results
-//   - pb_empties.rds       SummarizedExperiment with empty pseudobulk counts
-// =============================================================================
-
-workflow AMBIENT_DE_WF {
-
-    take:
-    raw_h5_ch    // tuple(sampleId, h5_file) from MAPPING.h5_files
-    knee_ch      // tuple(sampleId, knee_csv) from MAPPING.knee_data
-    filt_h5_ch   // tuple(sampleId, h5_file) from AMBIENT.h5_files
-
-    main:
-
-    // Stage raw H5 files with unique names for collection
-    STAGE_RAW_H5(raw_h5_ch)
+    STAGE_RAW_H5(h5_ch)
 
     AMBIENT_DE_PROC(
         STAGE_RAW_H5.out.h5.collect(),
         knee_ch.map { _id, csv -> csv }.collect(),
-        filt_h5_ch.map { _id, h5 -> h5 }.collect(),
+        ambient_h5_files.map { _id, h5 -> h5 }.collect(),
         channel.value(file(params.genome_gtf)),
         channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
     )
 
     emit:
+    h5_files   = ambient_h5_files
+    barcodes   = ambient_barcodes
+    report     = ambient_report
     de_table   = AMBIENT_DE_PROC.out.de_table
     pb_empties = AMBIENT_DE_PROC.out.pb_empties
 }
@@ -334,8 +304,8 @@ workflow HVG {
     take:
     h5_ch         // tuple(sampleId, h5_file)      from AMBIENT.h5_files
     qc_metrics_ch // tuple(sampleId, csv_gz)        from QC.qc_metrics
-    de_table      // path edger_dt.csv.gz           from AMBIENT_DE.de_table
-    pb_empties    // path pb_empties.rds            from AMBIENT_DE.pb_empties
+    de_table      // path edger_dt.csv.gz           from AMBIENT.de_table
+    pb_empties    // path pb_empties.rds            from AMBIENT.pb_empties
 
     main:
 

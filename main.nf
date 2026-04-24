@@ -3,7 +3,6 @@ nextflow.enable.dsl=2
 include { MAPPING           } from './workflows/workflows'
 include { SAMPLE_METADATA   } from './workflows/workflows'
 include { AMBIENT           } from './workflows/workflows'
-include { AMBIENT_DE_WF     } from './workflows/workflows'
 include { QC                } from './workflows/workflows'
 include { HVG               } from './workflows/workflows'
 include { INTEGRATION       } from './workflows/workflows'
@@ -37,6 +36,9 @@ def helpMessage() {
         --chemistry         10x chemistry string (default: 3v4)
                             Accepted: 3v2, 3v3, 3v4, 3LT, 5v1, 5v2, 5v3, multiome
         --outputDir         Output directory (default: results)
+        --publish_mapping_simpleaf
+                            Publish large simpleaf mapping directories to
+                            outputDir/mapping (default: false)
         --run_ambient       Run ambient RNA cleanup stage (default: true)
         --ambient_method    Ambient method (default: decontx). Accepted: decontx, cellbender
         --cellbender_env_name Preinstalled conda env name used to run CellBender (default: cellbender)
@@ -48,6 +50,9 @@ def helpMessage() {
                     requires --run_integration)
         --export            Export integrated objects (default: none).
                     Accepted: none, anndata, seurat, both
+        --export_write_combined
+                Also write combined export object(s) in addition to
+                per-sample outputs (default: true)
         zoom                Nested zoom configuration map in nextflow.config.
                 Each zoom can subset by integration cluster or annotation label,
                 then rerun HVG selection, integration, and marker analysis.
@@ -273,12 +278,40 @@ workflow {
     ===================================
     """
 
+    def landingStartValue = workflow.start ?: new Date()
+    def landingStartedAt
+    if (landingStartValue instanceof java.util.Date) {
+        landingStartedAt = landingStartValue.toInstant()
+            .atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+    } else if (landingStartValue instanceof java.time.Instant) {
+        landingStartedAt = landingStartValue
+            .atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+    } else if (landingStartValue instanceof java.time.OffsetDateTime) {
+        landingStartedAt = landingStartValue.format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+    } else if (landingStartValue instanceof java.time.ZonedDateTime) {
+        landingStartedAt = landingStartValue
+            .toOffsetDateTime()
+            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+    } else if (landingStartValue instanceof java.time.LocalDateTime) {
+        landingStartedAt = landingStartValue
+            .atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+    } else {
+        landingStartedAt = new Date().toInstant()
+            .atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+    }
+
     def landingPayload = groovy.json.JsonOutput.prettyPrint(
         groovy.json.JsonOutput.toJson([
             pipeline: 'scQC-flow',
             run_name: workflow.runName,
             profile: workflow.profile ?: 'default',
-            generated_at: new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()),
+            started_at: landingStartedAt,
+            generated_at: null,
+            runtime_seconds: null,
             output_dir: params.outputDir,
             reports_dir: "${params.outputDir}/reports",
             pipeline_steps: [
@@ -375,6 +408,7 @@ workflow {
         .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
 
     def sample_metadata_ch
+    def landing_integration_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     def annotation_cell_labels_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     if (params.metadata_csv) {
         SAMPLE_METADATA(samples_ch.map { sampleId, _sampleName, _fastqPath -> sampleId }.collect())
@@ -399,13 +433,6 @@ workflow {
         )
         report_pages = report_pages.mix(AMBIENT.out.report)
 
-        // Ambient DE analysis (always runs if ambient runs)
-        AMBIENT_DE_WF(
-            MAPPING.out.h5_files,
-            MAPPING.out.knee_data,
-            AMBIENT.out.h5_files
-        )
-
         // --------------------------------------------------------------
         // 3. Cell-level QC (opt-in via --run_qc, requires ambient)
         // --------------------------------------------------------------
@@ -420,8 +447,8 @@ workflow {
                 HVG(
                     AMBIENT.out.h5_files,
                     QC.out.qc_metrics,
-                    AMBIENT_DE_WF.out.de_table,
-                    AMBIENT_DE_WF.out.pb_empties
+                    AMBIENT.out.de_table,
+                    AMBIENT.out.pb_empties
                 )
                 report_pages = report_pages.mix(HVG.out.report)
 
@@ -437,6 +464,7 @@ workflow {
                         HVG.out.dbl_hvg_counts,
                         QC.out.qc_metrics
                     )
+                    landing_integration_ch = INTEGRATION.out.integration_dt
                     report_pages = report_pages.mix(INTEGRATION.out.report)
 
                     if (params.run_annotation) {
@@ -453,7 +481,7 @@ workflow {
                             channel.fromList(normalizedZoomSpecs),
                             AMBIENT.out.h5_files,
                             QC.out.qc_metrics,
-                            AMBIENT_DE_WF.out.de_table,
+                            AMBIENT.out.de_table,
                             INTEGRATION.out.integration_dt,
                             annotation_cell_labels_ch
                         )
@@ -487,12 +515,18 @@ workflow {
         }
     }
 
+    def traceFileCh = params.containsKey('trace_report_suffix')
+        ? channel.value(file("${params.outputDir}/pipeline_info/execution_trace_${params.trace_report_suffix}.txt"))
+        : channel.value(file("${projectDir}/templates/NO_FILE"))
+
     REPORT_SITE(
         report_pages.collect(),
         channel.value(file("${projectDir}/modules/reports/landing_page.qmd")),
         landingPayload,
+        landing_integration_ch,
         channel.value(file("${projectDir}/modules/reports/build_report_site.py")),
         channel.value(file("${projectDir}/modules/reports/site.css")),
-        channel.value(file("${projectDir}/modules/reports/site.js"))
+        channel.value(file("${projectDir}/modules/reports/site.js")),
+        traceFileCh
     )
 }

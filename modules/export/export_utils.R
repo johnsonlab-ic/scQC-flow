@@ -4,6 +4,10 @@ suppressPackageStartupMessages({
   library(Matrix)
   library(rhdf5)
   library(stringr)
+  library(Seurat)
+  tryCatch(library(BPCells), error = function(e) {
+    warning("BPCells not available; using standard matrices for combined objects")
+  })
 })
 
 parse_gtf_annotations_export <- function(gtf_f) {
@@ -196,7 +200,7 @@ build_export_counts <- function(h5_pattern, obs_dt) {
     ordered_ids <- c(ordered_ids, wanted_ids)
   }
 
-  combined <- do.call(cBind, mats)
+  combined <- Reduce(cbind2, mats)
   colnames(combined) <- ordered_ids
   list(counts = combined, gene_keys = gene_keys, ordered_ids = ordered_ids)
 }
@@ -212,4 +216,64 @@ build_gene_metadata_export <- function(gene_keys, gtf_dt) {
     var_dt[missing_idx, gene_type := "unknown"]
   }
   var_dt
+}
+
+convert_seurat_to_bpcells <- function(seu) {
+  merged <- seu
+
+  # Seurat v5: collapse per-object layers into unified layers when available.
+  tryCatch({
+    if ("JoinLayers" %in% getNamespaceExports("SeuratObject")) {
+      merged <- SeuratObject::JoinLayers(merged)
+    }
+  }, error = function(e) {
+    message(sprintf("  Note: JoinLayers skipped (%s)", e$message))
+  })
+
+  # Attempt to use BPCells for memory efficiency if available
+  tryCatch({
+    if (requireNamespace("BPCells", quietly = TRUE)) {
+      message("  Converting counts to BPCells format for memory efficiency...")
+      counts_mat <- GetAssayData(merged, assay = DefaultAssay(merged), slot = "counts")
+
+      # Create temporary BPCells matrix directory
+      bpcells_dir <- tempfile(pattern = "bpcells_")
+      dir.create(bpcells_dir)
+
+      # Convert sparse matrix to BPCells and read back
+      bpcells_mat <- BPCells::write_matrix_dir(
+        mat = counts_mat,
+        dir = file.path(bpcells_dir, "counts"),
+        overwrite = TRUE
+      )
+      bpcells_mat_read <- BPCells::read_matrix_dir(file.path(bpcells_dir, "counts"))
+
+      # Replace counts with BPCells matrix
+      merged[[DefaultAssay(merged)]]@counts <- bpcells_mat_read
+
+      message("  BPCells conversion complete")
+    }
+  }, error = function(e) {
+    message(sprintf("  Note: BPCells not available or conversion failed; using standard matrices (%s)", e$message))
+  })
+
+  merged
+}
+
+merge_with_bpcells <- function(seu_list) {
+  assert_that(length(seu_list) > 0, msg = "No Seurat objects provided for merging")
+
+  if (length(seu_list) == 1) {
+    return(convert_seurat_to_bpcells(seu_list[[1]]))
+  }
+
+  message(sprintf("  Merging %d Seurat objects", length(seu_list)))
+
+  # Standard merge to combine metadata and reductions
+  merged <- seu_list[[1]]
+  for (i in seq(2, length(seu_list))) {
+    merged <- merge(merged, seu_list[[i]], add.cell.ids = NULL, merge.data = TRUE)
+  }
+
+  convert_seurat_to_bpcells(merged)
 }

@@ -12,7 +12,7 @@
 process SIMPLEAF_INDEX {
     label  "process_simpleaf"
     tag    "simpleaf_index"
-    publishDir "${params.outputDir}/simpleaf_index", mode: params.publish_mode_nonreport, overwrite: true
+    publishDir "${params.outputDir}/mapping/simpleaf_index", mode: params.publish_mode_nonreport, overwrite: true
     conda  "bioconda::simpleaf"
 
     input:
@@ -56,7 +56,7 @@ process SIMPLEAF_QUANT {
     label  "process_simpleaf"
     tag    "$sampleId"
     conda  "bioconda::simpleaf"
-    publishDir "${params.outputDir}/mapping/af_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
+    publishDir "${params.outputDir}/mapping/simpleaf_quant/af_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true, enabled: params.publish_mapping_simpleaf
 
     input:
     tuple val(sampleId), val(sampleName), path(fastqPath)
@@ -133,7 +133,7 @@ process BARCODE_ESTIMATION {
     label     "process_high"
     tag       "$sampleId"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/mapping/af_${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
+    publishDir "${params.outputDir}/mapping/barcode_estimation/${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     tuple val(sampleId), path(quant_dir)

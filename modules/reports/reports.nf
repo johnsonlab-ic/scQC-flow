@@ -8,7 +8,7 @@ process MAPPING_REPORT {
     label     "process_reports"
     tag       "mapping_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/mapping", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path knee_data_csvs   // collected knee_plot_data_*.csv files — v1 (DropletUtils 1.30)
@@ -32,7 +32,7 @@ process CELLBENDER_REPORT {
     label     "process_reports"
     tag       "cellbender_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path summary_csvs   // cb_summary_*.csv
@@ -57,7 +57,7 @@ process AMBIENT_REPORT {
     label     "process_reports"
     tag       "ambient_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path qc_metrics_csvs   // barcodes_qc_metrics_*.csv.gz  — pre/post S/U/A per barcode
@@ -84,7 +84,7 @@ process QC_REPORT {
     label     "process_reports"
     tag       "qc_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/qc", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path qc_metrics_csvs   // collected qc_metrics_*.csv.gz files
@@ -118,7 +118,7 @@ process HVG_REPORT {
     label     "process_reports"
     tag       "hvg_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/hvg", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path hvg_stats_csv     // hvg_stats.csv.gz — per-gene HVG stats
@@ -146,7 +146,7 @@ process INTEGRATION_REPORT {
     label     "process_reports"
     tag       "integration_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/integration", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path integration_csv   // integration_dt.csv.gz — UMAP + cluster assignments
@@ -174,7 +174,7 @@ process ANNOTATION_REPORT {
     label     "process_reports"
     tag       "annotation_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true
+  publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path integration_csv
@@ -213,9 +213,11 @@ process REPORT_SITE {
     path report_htmls
     path landing_qmd
     val landing_payload_json
+    path integration_csv
     path builder_script
     path site_css
     path site_js
+    path trace_file
 
     output:
     path "site/*", emit: site
@@ -227,6 +229,86 @@ process REPORT_SITE {
     export HOME="\$PWD"
 
     printf '%s' '${payloadB64}' | base64 --decode > landing_page_payload.json
+
+    python3 - <<'PY'
+import csv
+import datetime as dt
+import json
+import re
+from pathlib import Path
+
+
+def parse_nf_duration_ms(s):
+    if not s or s.strip() in ('', '-'):
+        return None
+    total = 0.0
+    for val, unit in re.findall(r'([0-9.]+)(ms|s|m|h|d)', s):
+        v = float(val)
+        if unit == 'ms':   total += v
+        elif unit == 's':  total += v * 1_000
+        elif unit == 'm':  total += v * 60_000
+        elif unit == 'h':  total += v * 3_600_000
+        elif unit == 'd':  total += v * 86_400_000
+    return total or None
+
+
+def runtime_from_trace(trace_path):
+    min_submit = None
+    max_complete = None
+    try:
+        with open(trace_path, newline='', encoding='utf-8') as fh:
+            for row in csv.DictReader(fh, delimiter=chr(9)):
+                if row.get('status') != 'COMPLETED':
+                    continue
+                submit_str = (row.get('submit') or '').strip()
+                dur_str    = (row.get('duration') or '').strip()
+                if not submit_str or submit_str == '-':
+                    continue
+                submit_dt = None
+                for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+                    try:
+                        submit_dt = dt.datetime.strptime(submit_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if submit_dt is None:
+                    continue
+                if min_submit is None or submit_dt < min_submit:
+                    min_submit = submit_dt
+                dur_ms = parse_nf_duration_ms(dur_str)
+                if dur_ms is not None:
+                    complete_dt = submit_dt + dt.timedelta(milliseconds=dur_ms)
+                    if max_complete is None or complete_dt > max_complete:
+                        max_complete = complete_dt
+    except Exception:
+        pass
+    if min_submit is not None and max_complete is not None:
+        return max(0, int((max_complete - min_submit).total_seconds()))
+    return None
+
+
+payload_path = Path("landing_page_payload.json")
+payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+now = dt.datetime.now().astimezone()
+payload["generated_at"] = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+trace_path = "${trace_file}"
+runtime_seconds = None
+if trace_path and not trace_path.endswith("NO_FILE"):
+    runtime_seconds = runtime_from_trace(trace_path)
+
+if runtime_seconds is None:
+    started_at = payload.get("started_at")
+    if started_at:
+        try:
+            runtime_seconds = max(0, int((now - dt.datetime.fromisoformat(started_at)).total_seconds()))
+        except ValueError:
+            pass
+
+payload["runtime_seconds"] = runtime_seconds
+payload_path.write_text(json.dumps(payload, indent=2) + chr(10), encoding="utf-8")
+PY
 
     quarto render "${landing_qmd}" --output index.html
 

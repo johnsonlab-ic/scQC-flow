@@ -16,6 +16,7 @@ execute:
 
 ```{r setup}
 suppressPackageStartupMessages({
+  library(data.table)
   library(jsonlite)
   library(knitr)
 })
@@ -177,6 +178,48 @@ report_df$stage_rank <- match(report_df$stage, stage_order)
 report_df$stage_rank[is.na(report_df$stage_rank)] <- 999
 report_df <- report_df[order(report_df$stage_rank, report_df$title), ]
 
+format_runtime <- function(seconds) {
+  if (is.null(seconds) || length(seconds) == 0 || is.na(seconds)) {
+    return("Not available")
+  }
+
+  seconds <- as.integer(seconds)
+  hours <- seconds %/% 3600
+  minutes <- (seconds %% 3600) %/% 60
+  secs <- seconds %% 60
+
+  parts <- character(0)
+  if (hours > 0) {
+    parts <- c(parts, sprintf("%dh", hours))
+  }
+  if (minutes > 0 || hours > 0) {
+    parts <- c(parts, sprintf("%dm", minutes))
+  }
+  parts <- c(parts, sprintf("%ds", secs))
+  paste(parts, collapse = " ")
+}
+
+get_retained_cells <- function() {
+  integration_files <- Sys.glob("integration_dt*.csv.gz")
+  integration_files <- integration_files[basename(integration_files) != "NO_FILE"]
+  if (length(integration_files) == 0) {
+    return(NA_integer_)
+  }
+
+  tryCatch({
+    integration_dt <- fread(integration_files[[1]], select = "UMAP1", showProgress = FALSE)
+    sum(!is.na(integration_dt$UMAP1))
+  }, error = function(...) {
+    NA_integer_
+  })
+}
+
+ambient_method <- payload$params$workflow_flags$ambient_method
+ambient_method <- if (is.null(ambient_method) || !nzchar(ambient_method)) "Not available" else ambient_method
+runtime_text <- format_runtime(payload$runtime_seconds)
+retained_cells <- get_retained_cells()
+retained_cells_text <- if (is.na(retained_cells)) "Not available" else format(retained_cells, big.mark = ",")
+
 has_report <- function(file_name) {
   file_name %in% report_df$file
 }
@@ -204,6 +247,19 @@ main_flow_html <- vapply(main_flow_nodes, function(stage_name) {
   render_stage_node(stage_titles[[stage_name]], stage_report_file(stage_name), status)
 }, character(1))
 
+branch_source_stage <- if (isTRUE(enabled_steps[["annotation"]])) "annotation" else "integration"
+branch_source_index <- match(branch_source_stage, main_flow_nodes)
+branch_prefix_html <- character(0)
+if (!is.na(branch_source_index) && branch_source_index > 1) {
+  for (stage_name in main_flow_nodes[seq_len(branch_source_index - 1)]) {
+    branch_prefix_html <- c(
+      branch_prefix_html,
+      render_stage_node(stage_titles[[stage_name]], NA_character_, "muted", "ghost"),
+      '<span class="dag-arrow ghost">&rarr;</span>'
+    )
+  }
+}
+
 zoom_df <- report_df[report_df$stage == "zoom", , drop = FALSE]
 zoom_nodes_html <- if (nrow(zoom_df) > 0) {
   vapply(seq_len(nrow(zoom_df)), function(i) {
@@ -219,6 +275,9 @@ report_sections <- report_sections[vapply(report_sections, nrow, integer(1)) > 0
 
 ```{=html}
 <style>
+#title-block-header {
+  display: none;
+}
 .hero {
   padding: 1.5rem 1.75rem;
   border-radius: 18px;
@@ -283,44 +342,6 @@ report_sections <- report_sections[vapply(report_sections, nrow, integer(1)) > 0
   border-color: #d8dee2;
   color: #667780;
 }
-.report-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 1rem;
-  margin: 1rem 0 1.5rem 0;
-}
-.report-card {
-  border: 1px solid #d8dee2;
-  border-radius: 16px;
-  padding: 1rem;
-  background: #ffffff;
-  box-shadow: 0 8px 22px rgba(22, 31, 38, 0.06);
-}
-.report-card .kicker {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: #61727c;
-  margin-bottom: 0.5rem;
-}
-.report-card h3 {
-  margin: 0 0 0.4rem 0;
-  font-size: 1.05rem;
-}
-.report-card p {
-  margin: 0 0 0.85rem 0;
-  color: #44545d;
-}
-.report-link {
-  display: inline-block;
-  text-decoration: none;
-  font-weight: 600;
-}
-.path-line {
-  color: #4f606a;
-  font-family: monospace;
-  font-size: 0.9rem;
-}
 .dag-wrap {
   margin: 1rem 0 1.75rem 0;
   padding: 1.1rem 1.15rem;
@@ -336,7 +357,7 @@ report_sections <- report_sections[vapply(report_sections, nrow, integer(1)) > 0
   margin: 0.65rem 0;
 }
 .dag-row.branch {
-  padding-left: 1.25rem;
+  padding-left: 0;
 }
 .dag-arrow {
   color: #6c7c86;
@@ -375,6 +396,10 @@ report_sections <- report_sections[vapply(report_sections, nrow, integer(1)) > 0
   background: linear-gradient(135deg, #fff5ea 0%, #fffdf8 100%);
   border-color: #e0c6a8;
 }
+.dag-node.ghost,
+.dag-arrow.ghost {
+  visibility: hidden;
+}
 .section-label {
   margin: 1.35rem 0 0.4rem 0;
   font-size: 1rem;
@@ -393,13 +418,13 @@ description_text <- if (length(description_steps) > 0) {
 }
 
 cat(sprintf(
-  '<div class="hero"><h1>%s</h1><p>This landing page summarises the current pipeline run, captures the effective configuration, and links to every generated HTML report. Enabled stages for this run: %s.</p><div class="meta-grid"><div class="meta-card"><div class="meta-label">Run name</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Profile</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Reports</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Zoom reports</div><div class="meta-value">%s</div></div></div><div class="badge-row">%s</div></div>',
-  payload$pipeline,
+  '<div class="hero"><h1>Run overview</h1><p>Summary of this scQC-flow run, including the effective configuration and direct links to each generated report. Enabled stages: %s.</p><div class="meta-grid"><div class="meta-card"><div class="meta-label">Run name</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Profile</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Ambient method</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Cells retained</div><div class="meta-value">%s</div></div><div class="meta-card"><div class="meta-label">Run time</div><div class="meta-value">%s</div></div></div><div class="badge-row">%s</div></div>',
   description_text,
   payload$run_name,
   payload$profile,
-  length(report_files),
-  zoom_count,
+  ambient_method,
+  retained_cells_text,
+  runtime_text,
   paste(step_badges, collapse = "")
 ))
 ```
@@ -407,14 +432,15 @@ cat(sprintf(
 ## Run overview
 
 * **Generated at:** `r payload$generated_at`
+* **Run time:** `r runtime_text`
+* **Total cells retained:** `r retained_cells_text`
+* **Ambient method:** `r ambient_method`
 * **Output directory:** `r payload$output_dir`
 * **Reports directory:** `r payload$reports_dir`
 * **Raw data directory:** `r payload$params$input_output$raw_data_dir`
 * **Chemistry:** `r payload$params$references$chemistry`
 
-## Reports
-
-### Pipeline flow
+## Pipeline flow
 
 ```{r pipeline_flow, results='asis'}
 cat('<div class="dag-wrap">')
@@ -423,6 +449,9 @@ cat(paste(main_flow_html, collapse = '<span class="dag-arrow">&rarr;</span>'))
 cat('</div>')
 if (length(zoom_nodes_html) > 0) {
   cat('<div class="dag-row branch">')
+  if (length(branch_prefix_html) > 0) {
+    cat(paste(branch_prefix_html, collapse = ''))
+  }
   cat('<span class="dag-arrow">&boxur;</span>')
   cat(render_stage_node('Zoom subsets', NA_character_, 'active', 'zoom'))
   cat('<span class="dag-arrow">&rarr;</span>')
@@ -432,37 +461,21 @@ if (length(zoom_nodes_html) > 0) {
 cat('</div>')
 ```
 
-```{r report_cards, results='asis'}
-if (nrow(report_df) == 0) {
-  cat('No report HTML files were staged into the landing page process.\n')
-} else {
-  for (section_name in names(report_sections)) {
-    section_df <- report_sections[[section_name]]
-    cat(sprintf('<div class="section-label">%s</div>', stage_titles[[section_name]]))
-    cat('<div class="report-grid">')
-    for (i in seq_len(nrow(section_df))) {
-      row <- section_df[i, ]
-      cat(sprintf(
-        '<div class="report-card"><div class="kicker">%s</div><h3>%s</h3><p>%s</p><a class="report-link" href="%s">Open report</a><div class="path-line">%s</div></div>',
-        row$category,
-        row$title,
-        row$blurb,
-        row$file,
-        row$file
-      ))
-    }
-    cat('</div>')
-  }
-}
-```
-
 ## Report manifest
 
 ```{r report_table}
+report_manifest_df <- data.frame(
+  stage = report_df$stage,
+  report = sprintf('<a href="%s">%s</a>', report_df$file, report_df$title),
+  file = sprintf('<a href="%s">%s</a>', report_df$file, report_df$file),
+  stringsAsFactors = FALSE
+)
+
 knitr::kable(
-  report_df[, c('stage', 'title', 'category', 'file')],
-  col.names = c('Stage', 'Report', 'Category', 'File'),
-  caption = 'Generated HTML reports linked from this landing page'
+  report_manifest_df,
+  col.names = c('Stage', 'Report', 'File'),
+  caption = 'Generated HTML reports linked from this landing page',
+  escape = FALSE
 )
 ```
 
