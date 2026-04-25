@@ -79,6 +79,7 @@ feature_sources <- list(
 )
 
 present_leiden <- grep("^(RNA_snn_res\\.|leiden_)", names(int_dt), value = TRUE)
+present_leiden <- present_leiden[order(as.numeric(sub("^(RNA_snn_res\\.|leiden_)", "", present_leiden)))]
 int_dt_pass2 <- int_dt[!is.na(UMAP1)]
 
 feature_cols <- unique(unlist(lapply(feature_sources, `[[`, "source")))

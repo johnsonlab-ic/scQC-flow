@@ -4,12 +4,13 @@ source("annotation_utils.R")
 
 run_annotation_markers <- function() {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) != 12) {
+  if (length(args) != 13) {
     stop(
       paste(
         "Usage: marker_genes.R <integration_csv> <genome_gtf> <marker_csv>",
         "<sel_res> <min_cl_size> <min_cells>",
-        "<out_markers> <out_logcpms> <out_panel> <out_marker_expr> <out_cell_labels> <h5_pattern>"
+        "<out_markers> <out_logcpms> <out_panel> <out_marker_expr> <out_cell_labels>",
+        "<out_top_marker_expr> <h5_pattern>"
       )
     )
   }
@@ -25,7 +26,8 @@ run_annotation_markers <- function() {
   out_panel <- args[9]
   out_marker_expr <- args[10]
   out_cell_labels <- args[11]
-  h5_pattern <- args[12]
+  out_top_marker_expr <- args[12]
+  h5_pattern <- args[13]
 
   h5_files <- Sys.glob(h5_pattern)
   assert_that(length(h5_files) > 0, msg = sprintf("No filtered H5 files matched '%s'", h5_pattern))
@@ -60,17 +62,27 @@ run_annotation_markers <- function() {
   cell_labels_dt <- merge(umap_dt[, .(sample_id, cell_id, cluster)], cluster_label_dt[, .(cluster, label, label_score, n_markers)], by = "cluster", all.x = TRUE, sort = FALSE)
   marker_expr_dt <- load_h5_marker_expression(h5_files, panel_dt, umap_dt)
 
+  top_mkrs_dt <- marker_dt[
+    logFC > 0 &
+    logcpm.sel >= log(50 + 1) &
+    !grepl("(lincRNA|lncRNA|pseudogene|antisense)", gene_type, perl = TRUE)
+  ] |> get_top_markers(fdr_cut = 0.01, n_top = 10, max_zero_p = 0.5)
+  top_sel_dt <- unique(top_mkrs_dt[, .(label = as.character(cluster), symbol, gene_id)])
+  top_marker_expr_dt <- load_h5_marker_expression(h5_files, top_sel_dt, umap_dt)
+
   fwrite(marker_dt, out_markers)
   fwrite(logcpms_dt, out_logcpms)
   fwrite(panel_dt, out_panel)
   saveRDS(marker_expr_dt, out_marker_expr)
   fwrite(cell_labels_dt, out_cell_labels)
+  saveRDS(top_marker_expr_dt, out_top_marker_expr)
 
   message("Wrote marker statistics: ", out_markers)
   message("Wrote logCPM summaries: ", out_logcpms)
   message("Wrote processed marker panel: ", out_panel)
   message("Wrote marker-expression cache: ", out_marker_expr)
   message("Wrote per-cell annotation labels: ", out_cell_labels)
+  message("Wrote top-marker expression cache: ", out_top_marker_expr)
   message("=== ANNOTATION done ===")
 }
 

@@ -406,6 +406,7 @@ workflow ANNOTATION {
         RUN_ANNOTATION_MARKERS.out.logcpms,
         RUN_ANNOTATION_MARKERS.out.marker_panel,
         RUN_ANNOTATION_MARKERS.out.marker_expr,
+        RUN_ANNOTATION_MARKERS.out.top_marker_expr,
         RUN_ANNOTATION_MARKERS.out.cell_labels,
         channel.value(file("${projectDir}/modules/reports/annotation_report.qmd")),
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R")),
@@ -417,6 +418,7 @@ workflow ANNOTATION {
     logcpms = RUN_ANNOTATION_MARKERS.out.logcpms
     marker_panel = RUN_ANNOTATION_MARKERS.out.marker_panel
     marker_expr = RUN_ANNOTATION_MARKERS.out.marker_expr
+    top_marker_expr = RUN_ANNOTATION_MARKERS.out.top_marker_expr
     cell_labels = RUN_ANNOTATION_MARKERS.out.cell_labels
     report = ANNOTATION_REPORT.out.html
 }

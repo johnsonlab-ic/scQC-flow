@@ -37,6 +37,15 @@ cell_labels_f <- "annotation_cell_labels.csv.gz"
 cl_col <- paste0("RNA_snn_res.", sel_res)
 stopifnot("Selected annotation resolution not found in integration output" = cl_col %in% names(int_dt))
 
+# Save sample-level metadata columns before subsetting (used for composition barcharts)
+core_int_re <- "^(cell_id|UMAP1|UMAP2|embedding|dbl_|is_dbl|is_doublet|RNA_snn_res\\.|leiden_)"
+meta_var_cols <- setdiff(names(int_dt)[!grepl(core_int_re, names(int_dt))], "sample_id")
+sample_meta_dt <- if (length(meta_var_cols) > 0) {
+  unique(int_dt[get(cl_col) != "" | is.na(get(cl_col)), c("sample_id", meta_var_cols), with = FALSE], by = "sample_id")
+} else {
+  data.table(sample_id = unique(int_dt$sample_id))
+}
+
 int_dt <- int_dt[!is.na(get(cl_col)) & sample_id != "", .(
   sample_id,
   cell_id,
@@ -100,6 +109,11 @@ panel_ls <- setNames(
 )
 
 cell_exp_dt <- data.table()
+top_marker_expr_dt <- if (file.exists("annotation_top_marker_expression.rds")) {
+  readRDS("annotation_top_marker_expression.rds")
+} else {
+  data.table()
+}
 ```
 
 ## Annotation setup
@@ -157,16 +171,32 @@ if (nrow(top_heatmap_panel_dt) > 0) {
 
 ## Top marker genes by cluster at resolution `r sel_res`
 
-```{r plot_top_markers, fig.height = 9, fig.width = 10, results = 'asis'}
+```{r plot_top_markers, results = 'asis'}
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in cl_ord) {
-  cat('###', sel_cl, '\n\n')
-  if (sel_cl %in% top_min_dt$cluster) {
+  cat(sprintf("### %s\n\n", sel_cl))
+  has_markers  <- sel_cl %in% as.character(top_min_dt$cluster)
+  has_umap_expr <- nrow(top_marker_expr_dt) > 0 &&
+    any(as.character(top_marker_expr_dt$label) == as.character(sel_cl))
+  if (!has_markers) {
+    cat("No marker genes passed the display filters for this cluster.\n\n")
+  } else if (!has_umap_expr) {
     print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
+    cat("\n\n")
   } else {
-    cat('No marker genes passed the display filters for this cluster.\n\n')
+    cat("::: {.panel-tabset}\n\n")
+    cat("#### Expression dotplot\n\n")
+    print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
+    cat("\n\n")
+    cat("#### UMAP feature plots\n\n")
+    g_umap <- plot_top_marker_umap_facet(
+      sel_cl, top_min_dt, top_marker_expr_dt,
+      int_dt[, .(cell_id, UMAP1, UMAP2)]
+    )
+    if (!is.null(g_umap)) print(g_umap)
+    cat("\n\n")
+    cat(":::\n\n")
   }
-  cat('\n\n')
 }
 cat(':::\n\n')
 ```
@@ -209,6 +239,71 @@ g_cluster <- plot_umap_cluster(
 print(g_label + g_cluster + patchwork::plot_layout(widths = c(1, 1)))
 ```
 
+## Cell-type composition by sample
+
+Stacked bar charts show cell-type proportions per sample. Each bar is normalised within a sample to 100%. When metadata covariates are available, samples are faceted by covariate value (one tab per covariate).
+
+```{r celltype_composition, fig.height = 5, fig.width = 10, results = 'asis'}
+comp_dt <- int_dt[, .N, by = .(sample_id, label)]
+comp_dt[, prop := N / sum(N), by = sample_id]
+
+cat_meta_cols <- meta_var_cols[sapply(meta_var_cols, function(col) {
+  v <- sample_meta_dt[[col]]
+  is.character(v) || is.factor(v)
+})]
+
+label_levels <- levels(int_dt$label)
+label_cols <- setNames(
+  rep(nice_cols, length.out = length(label_levels)),
+  label_levels
+)
+
+add_comp_bar_theme <- function(p, label_cols, label_levels) {
+  p +
+    geom_col(width = 0.8, colour = "black", linewidth = 0.2) +
+    scale_fill_manual(values = label_cols, drop = FALSE) +
+    scale_y_continuous(labels = label_percent(accuracy = 1), expand = expansion(mult = c(0, 0.02))) +
+    theme_bw() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor    = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      strip.background = element_rect(fill = "white"),
+      legend.position  = "bottom",
+      legend.title.position = "left"
+    ) +
+    guides(fill = guide_legend(ncol = max(1, ceiling(length(label_levels) / 10)))) +
+    labs(x = "sample", y = "proportion", fill = "cell type")
+}
+
+if (length(cat_meta_cols) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (meta_col in cat_meta_cols) {
+    cat(sprintf("### %s\n\n", meta_col))
+    plot_comp <- merge(
+      comp_dt,
+      sample_meta_dt[, c("sample_id", meta_col), with = FALSE],
+      by = "sample_id"
+    )
+    plot_comp[, (meta_col) := factor(as.character(get(meta_col)))]
+    g <- add_comp_bar_theme(
+      ggplot(plot_comp, aes(x = sample_id, y = prop, fill = label)) +
+        facet_wrap(reformulate(meta_col), scales = "free_x"),
+      label_cols, label_levels
+    )
+    print(g)
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  g <- add_comp_bar_theme(
+    ggplot(comp_dt, aes(x = sample_id, y = prop, fill = label)),
+    label_cols, label_levels
+  )
+  print(g)
+}
+```
+
 ## Top 50 marker tables by cluster at resolution `r sel_res`
 
 The tables below list up to 50 positive markers per cluster after excluding genes that match `r not_ok_re` and requiring expression above the annotation CPM threshold. Each table shows 25 rows per page.
@@ -216,8 +311,8 @@ The tables below list up to 50 positive markers per cluster after excluding gene
 ```{r top_marker_tables, results = 'asis'}
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in cl_ord) {
-  cat('###', sel_cl, '\n\n')
-  sel_tbl <- top50_dt[cluster == sel_cl, .(
+  cat(sprintf("### %s\n\n", sel_cl))
+  sel_tbl <- top50_dt[as.character(cluster) == as.character(sel_cl), .(
     rank = marker_rank,
     symbol,
     gene_type,
@@ -228,7 +323,7 @@ for (sel_cl in cl_ord) {
     zero_prop = round(prop_zero, 3)
   )]
   if (nrow(sel_tbl) > 0) {
-    print(DT::datatable(
+    print(htmltools::tagList(DT::datatable(
       sel_tbl,
       rownames = FALSE,
       class = 'compact stripe hover',
@@ -239,7 +334,7 @@ for (sel_cl in cl_ord) {
         autoWidth = TRUE,
         scrollX = TRUE
       )
-    ))
+    )))
   } else {
     cat('No marker genes passed the table filters for this cluster.\n\n')
   }

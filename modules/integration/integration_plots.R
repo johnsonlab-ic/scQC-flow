@@ -248,7 +248,7 @@ plot_cluster_composition_bars <- function(int_dt, cl_cols, split_var) {
   )
 
   ggplot(plot_dt, aes(x = cluster, y = prop, fill = split)) +
-    geom_col(width = 0.82) +
+    geom_col(width = 0.82, colour = "black", linewidth = 0.25) +
     facet_wrap(~ resolution, ncol = 1, scales = 'free_x') +
     scale_fill_manual(values = split_cols, drop = FALSE) +
     scale_y_continuous(labels = label_percent(accuracy = 1), expand = expansion(mult = c(0, 0.02))) +

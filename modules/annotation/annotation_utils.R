@@ -726,3 +726,41 @@ plot_expression_umap_pair <- function(expr_dt, meta_dt,
 
   g_cluster + g_expr + plot_layout(widths = c(1, 1))
 }
+
+plot_top_marker_umap_facet <- function(sel_cl, top_mkrs_dt, top_expr_dt, int_umap_dt, ncol = 4) {
+  sel_mkrs <- top_mkrs_dt[cluster == sel_cl, .(gene_id, symbol)]
+  if (nrow(sel_mkrs) == 0 || nrow(top_expr_dt) == 0) return(NULL)
+
+  gene_levels <- unique(sel_mkrs$symbol)
+  base_dt <- int_umap_dt[, .(cell_id, UMAP1, UMAP2)]
+
+  sel_expr <- top_expr_dt[
+    as.character(label) == as.character(sel_cl) & symbol %in% gene_levels,
+    .(cell_id, symbol, expr)
+  ]
+  if (nrow(sel_expr) == 0) return(NULL)
+
+  expr_wide <- dcast(sel_expr, cell_id ~ symbol, value.var = "expr", fill = 0)
+  plot_dt <- merge(base_dt, expr_wide, by = "cell_id", all.x = TRUE)
+  present_genes <- gene_levels[gene_levels %in% names(plot_dt)]
+  for (g in present_genes) set(plot_dt, which(is.na(plot_dt[[g]])), g, 0)
+
+  plot_dt_long <- melt(
+    plot_dt,
+    id.vars    = c("cell_id", "UMAP1", "UMAP2"),
+    measure.vars = present_genes,
+    variable.name = "symbol",
+    value.name    = "expr"
+  )
+  plot_dt_long[, symbol := factor(as.character(symbol), levels = present_genes)]
+
+  ggplot(plot_dt_long[order(expr)], aes(UMAP1, UMAP2, colour = expr)) +
+    geom_point(size = 0.15, stroke = 0) +
+    scale_colour_viridis_c(option = "magma", guide = "none") +
+    facet_wrap(~ symbol, ncol = ncol) +
+    theme_void() +
+    theme(
+      strip.text   = element_text(size = 7, margin = margin(b = 2)),
+      panel.spacing = unit(2, "pt")
+    )
+}
