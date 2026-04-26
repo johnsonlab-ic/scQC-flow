@@ -288,7 +288,7 @@ if (length(cat_meta_cols) > 0) {
     plot_comp[, (meta_col) := factor(as.character(get(meta_col)))]
     g <- add_comp_bar_theme(
       ggplot(plot_comp, aes(x = sample_id, y = prop, fill = label)) +
-        facet_wrap(reformulate(meta_col), scales = "free_x"),
+        facet_wrap(reformulate(paste0("`", meta_col, "`")), scales = "free_x"),
       label_cols, label_levels
     )
     print(g)
