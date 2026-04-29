@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 # hvg_selection.py
 #
-# Seurat VST HVG selection — identical to scprocess's hvgs.py logic.
+# Seurat VST HVG selection — matches scprocess hvgs.py logic.
 #
-# Algorithm:
-#   1. Load per-sample H5 files, sum S+U+A counts
-#   2. Filter to QC-passing singlets (keep=True, excludes doublets)
-#   3. Compute per-sample mean/variance on raw counts
-#   4. Fit loess to estimate trended variance (Seurat VST approach)
-#   5. Compute standardized (regularized) variance per gene
-#   6. Rank genes, exclude ambient genes (from edger_dt), select top N
-#   7. Output: hvg_stats.csv.gz, hvg_counts.h5 (singlets), dbl_hvg_counts.h5 (doublets)
+# Two-pass design to avoid loading all samples simultaneously:
 #
-# Outputs match scprocess format so integration can load both matrices.
+#   Pass 1 (per sample, one at a time):
+#     Load H5 → sum S+U+A → filter to QC singlets → compute VST stats → free matrix.
+#     Matches scprocess calculate_std_var_stats_for_sample pattern.
+#
+#   Aggregate: concat per-sample stats → rank HVGs (multi-batch Seurat VST).
+#
+#   Pass 2 (per sample, one at a time):
+#     Load H5 → sum S+U+A → extract HVG rows only → append to output lists → free.
+#     hstack of HVG-only slices is safe: ~4k genes x sparse cells << full gene matrix.
+#     Matches scprocess create_hvg_matrix / create_doublets_matrix pattern.
+#
+# Peak memory: O(n_genes x max_cells_per_sample), independent of number of samples.
+# Output: hvg_stats.csv.gz, hvg_counts.h5 (singlets), dbl_hvg_counts.h5 (doublets)
 
 import argparse
 import glob
@@ -185,30 +190,21 @@ def _calculate_estimated_vars(mean, var, n_cells, span=0.3):
 def _calculate_regularized_variance(sparse_csr, reg_std, clip_val, mean, n_cells):
     """
     Calculate standardized variance with clipping (identical to scprocess).
-    For each non-zero entry: clip to clip_val, then compute variance of clipped values.
+    Uses np.bincount for vectorized accumulation — matches scprocess numba.prange logic.
     """
     n_genes = sparse_csr.shape[0]
-    sq_counts_sum = np.zeros(n_genes, dtype=np.float64)
-    counts_sum = np.zeros(n_genes, dtype=np.float64)
-
-    # Convert to CSC for column-major access (scprocess iterates over nnz)
     csc = sparse_csr.tocsc()
     indices = csc.indices
     data = csc.data.astype(np.float64)
 
-    # Clip and accumulate
-    for i in range(len(data)):
-        idx = indices[i]
-        element = min(data[i], clip_val[idx])
-        sq_counts_sum[idx] += element**2
-        counts_sum[idx] += element
+    clipped = np.minimum(data, clip_val[indices])
+    sq_counts_sum = np.bincount(indices, weights=clipped ** 2, minlength=n_genes)
+    counts_sum    = np.bincount(indices, weights=clipped,      minlength=n_genes)
 
-    # Standardized variance formula (matches scprocess exactly)
     variances_norm = (
         (n_cells * mean**2 + sq_counts_sum - 2 * counts_sum * mean) /
         ((n_cells - 1) * reg_std**2)
     )
-
     return variances_norm
 
 
@@ -304,7 +300,6 @@ def run_hvg_selection(h5_files, qc_csv_files, n_top_genes, out_stats, out_h5,
     # ------------------------------------------------------------------
     sym_map = _parse_gtf(gtf_path) if gtf_path else None
 
-    # Load ambient gene list from edgeR DE results
     ambient_genes = set()
     if edger_csv:
         print(f"Loading ambient genes from: {edger_csv}")
@@ -313,178 +308,188 @@ def run_hvg_selection(h5_files, qc_csv_files, n_top_genes, out_stats, out_h5,
         print(f"  Ambient genes to exclude: {len(ambient_genes)}")
 
     # ------------------------------------------------------------------
-    # 1. Load QC metrics per sample — build per-sample singlet/doublet sets
+    # 1. Load QC metrics — build per-sample singlet/doublet cell sets
     # ------------------------------------------------------------------
-    # Index QC CSVs by sample_id so filtering is strictly per-sample.
-    # This prevents a barcode that is a singlet in sample A from
-    # inadvertently being selected as a singlet in sample B.
     qc_frames = [pd.read_csv(f) for f in qc_csv_files]
     qc_all = pd.concat(qc_frames, ignore_index=True)
     qc_all['cell_id'] = qc_all['cell_id'].astype(str)
     qc_all['sample_id'] = qc_all['sample_id'].astype(str)
 
-    qc_by_sample = {}
-    for sid, grp in qc_all.groupby('sample_id'):
-        qc_by_sample[str(sid)] = grp
+    qc_by_sample = {str(sid): grp for sid, grp in qc_all.groupby('sample_id')}
 
-    n_singlets_total = int(((qc_all['keep'] == True) & (qc_all['scdbl_class'] != 'doublet')).sum())
-    n_doublets_total = int((qc_all['scdbl_class'] == 'doublet').sum())
-    print(f"QC-passing singlets: {n_singlets_total}")
-    print(f"Doublets: {n_doublets_total}")
+    print(f"QC-passing singlets: {int(((qc_all['keep'] == True) & (qc_all['scdbl_class'] != 'doublet')).sum())}")
+    print(f"Doublets:            {int((qc_all['scdbl_class'] == 'doublet').sum())}")
 
     # ------------------------------------------------------------------
-    # 2. Load each H5, sum SUA, build per-sample matrices
+    # Pass 1: per-sample VST stats — one sample at a time, no combined matrix.
+    # Matches scprocess calculate_std_var_stats_for_sample pattern.
     # ------------------------------------------------------------------
-    sample_mats_singlet = []
-    sample_bcs_singlet = []
-    sample_ids_singlet = []
-    sample_mats_doublet = []
-    sample_bcs_doublet = []
+    print("\n--- Pass 1: per-sample VST stats ---")
+    h5_files_sorted = sorted(h5_files)
+    per_sample_stats = []
     gene_list = None
+    sym_ensembl_ids = None
 
-    for h5f in sorted(h5_files):
+    for h5f in h5_files_sorted:
         sample_id = re.sub(r'^(?:.*/)?filt_counts_', '', h5f).replace('.h5', '')
 
         mat, features, barcodes = _read_h5_csc(h5f)
         summed, genes = _sum_sua(mat, features)
+        del mat
 
         if gene_list is None:
             gene_list = genes
-        else:
-            if not np.array_equal(gene_list, genes):
-                raise ValueError(f"Gene lists differ between samples: {h5f}")
+            sym_ensembl_ids = (
+                np.array([sym_map.get(g, f"{g}_{g}") for g in gene_list])
+                if sym_map is not None else gene_list
+            )
+        elif not np.array_equal(gene_list, genes):
+            raise ValueError(f"Gene lists differ between samples: {h5f}")
 
-        # Use per-sample QC to avoid cross-sample barcode collisions
         qc_s = qc_by_sample.get(sample_id)
         if qc_s is None:
-            raise ValueError(f"No QC CSV found for sample '{sample_id}'. "
+            raise ValueError(f"No QC CSV for sample '{sample_id}'. "
                              f"Available: {list(qc_by_sample.keys())}")
-        singlet_cells_s = set(qc_s.loc[(qc_s['keep'] == True) & (qc_s['scdbl_class'] != 'doublet'), 'cell_id'])
-        doublet_cells_s = set(qc_s.loc[qc_s['scdbl_class'] == 'doublet', 'cell_id'])
 
-        # Singlet cells for this sample — prefix barcodes with sample_id for global uniqueness
+        singlet_cells_s = set(qc_s.loc[
+            (qc_s['keep'] == True) & (qc_s['scdbl_class'] != 'doublet'), 'cell_id'
+        ])
         sing_idx = np.array([i for i, bc in enumerate(barcodes) if bc in singlet_cells_s])
-        if len(sing_idx) > 0:
-            sample_mats_singlet.append(summed[:, sing_idx])
-            sample_bcs_singlet.extend([f"{sample_id}_{bc}" for bc in barcodes[sing_idx].tolist()])
-            sample_ids_singlet.extend([sample_id] * len(sing_idx))
-            print(f"  {sample_id}: {len(sing_idx)} singlets")
 
-        # Doublet cells for this sample — prefix barcodes with sample_id for global uniqueness
-        dbl_idx = np.array([i for i, bc in enumerate(barcodes) if bc in doublet_cells_s])
-        if len(dbl_idx) > 0:
-            sample_mats_doublet.append(summed[:, dbl_idx])
-            sample_bcs_doublet.extend([f"{sample_id}_{bc}" for bc in barcodes[dbl_idx].tolist()])
-            print(f"  {sample_id}: {len(dbl_idx)} doublets")
+        if len(sing_idx) == 0:
+            print(f"  {sample_id}: no singlets, skipping")
+            del summed
+            continue
 
-    if len(sample_mats_singlet) == 0:
+        # Column-slice to singlets, free the full sample matrix immediately
+        sing_mat = summed[:, sing_idx]
+        del summed
+
+        csr = sing_mat.tocsr()
+        del sing_mat
+        n_cells = csr.shape[1]
+
+        mean, var = _calculate_feature_stats(csr, sym_ensembl_ids)
+        reg_std, clip_val, _ = _calculate_estimated_vars(mean, var, n_cells, span=0.3)
+        variances_norm = _calculate_regularized_variance(csr, reg_std, clip_val, mean, n_cells)
+        del csr
+
+        per_sample_stats.append(pd.DataFrame({
+            'gene_id':        sym_ensembl_ids,
+            'sample_id':      sample_id,
+            'mean':           mean,
+            'variance':       var,
+            'variances_norm': variances_norm,
+            'n_cells':        n_cells,
+        }))
+        print(f"  {sample_id}: {n_cells} singlets — VST stats done")
+
+    if not per_sample_stats:
         raise ValueError("No singlet cells remain after QC filtering.")
 
-    # Combined singlet matrix (genes x cells)
-    combined_singlet = hstack(sample_mats_singlet, format='csc')
-    all_bcs_singlet = np.array(sample_bcs_singlet)
-    all_sample_ids_singlet = np.array(sample_ids_singlet)
-    print(f"Combined singlet matrix: {combined_singlet.shape[0]} genes x {combined_singlet.shape[1]} cells")
-
     # ------------------------------------------------------------------
-    # 3. Map gene IDs to SYMBOL_ENSEMBL
+    # Aggregate stats and rank HVGs
     # ------------------------------------------------------------------
-    if sym_map is not None:
-        sym_ensembl_ids = np.array([sym_map.get(g, f"{g}_{g}") for g in gene_list])
-    else:
-        sym_ensembl_ids = gene_list
-
-    # ------------------------------------------------------------------
-    # 4. Compute per-sample Seurat VST statistics
-    # ------------------------------------------------------------------
-    n_samples = len(set(sample_ids_singlet))
-    print(f"Computing Seurat VST stats across {n_samples} samples...")
+    print("\n--- Ranking HVGs ---")
+    all_stats = pd.concat(per_sample_stats, ignore_index=True)
+    del per_sample_stats
+    n_samples = all_stats['sample_id'].nunique()
+    print(f"Aggregating stats across {n_samples} samples...")
 
     if n_samples == 1:
-        # Single sample: compute stats on the full matrix
-        csr = combined_singlet.tocsr()
-        n_cells = csr.shape[1]
-        mean, var = _calculate_feature_stats(csr, sym_ensembl_ids)
-        reg_std, clip_val, est_var = _calculate_estimated_vars(mean, var, n_cells, span=0.3)
-        variances_norm = _calculate_regularized_variance(csr, reg_std, clip_val, mean, n_cells)
-
-        hvg_df = _rank_hvgs(sym_ensembl_ids, variances_norm, ambient_genes, n_top_genes)
+        hvg_df = _rank_hvgs(
+            sym_ensembl_ids, all_stats['variances_norm'].values, ambient_genes, n_top_genes
+        )
     else:
-        # Multi-sample: compute stats per sample, aggregate
-        per_sample_stats = []
-        unique_samples = list(dict.fromkeys(sample_ids_singlet))
-
-        for sample_id in unique_samples:
-            # Get column indices for this sample
-            col_idx = np.where(all_sample_ids_singlet == sample_id)[0]
-            sample_mat = combined_singlet[:, col_idx].tocsr()
-            n_cells = sample_mat.shape[1]
-
-            if n_cells == 0:
-                continue
-
-            mean, var = _calculate_feature_stats(sample_mat, sym_ensembl_ids)
-            reg_std, clip_val, est_var = _calculate_estimated_vars(mean, var, n_cells, span=0.3)
-            variances_norm = _calculate_regularized_variance(
-                sample_mat, reg_std, clip_val, mean, n_cells
-            )
-
-            sample_df = pd.DataFrame({
-                'gene_id': sym_ensembl_ids,
-                'sample_id': sample_id,
-                'mean': mean,
-                'variance': var,
-                'variances_norm': variances_norm,
-                'n_cells': n_cells,
-            })
-            per_sample_stats.append(sample_df)
-            print(f"    {sample_id}: {n_cells} cells, stats computed")
-
-        all_stats = pd.concat(per_sample_stats, ignore_index=True)
         hvg_df = _rank_hvgs_multi_batch(all_stats, ambient_genes, n_top_genes)
+    del all_stats
 
     # ------------------------------------------------------------------
-    # 5. Save HVG stats CSV
+    # Save HVG stats CSV
     # ------------------------------------------------------------------
     hvg_out = hvg_df[['gene_id', 'variances_norm', 'highly_variable',
                        'highly_variable_nbatches', 'highly_variable_rank']].copy()
     hvg_out = hvg_out.sort_values(
         ['highly_variable_nbatches', 'highly_variable_rank'],
-        ascending=[False, True],
-        na_position='last'
+        ascending=[False, True], na_position='last'
     )
     with gzip.open(out_stats, 'wt') as fh:
         hvg_out.to_csv(fh, index=False)
-    n_hvgs = hvg_out['highly_variable'].sum()
-    print(f"Written HVG stats: {out_stats}  ({n_hvgs} HVGs)")
+    print(f"Written HVG stats: {out_stats}  ({int(hvg_out['highly_variable'].sum())} HVGs)")
 
     # ------------------------------------------------------------------
-    # 6. Create singlet HVG count matrix (raw counts, HVG genes only)
+    # Pass 2: build HVG-only count matrices — one sample at a time.
+    # HVG rows only (4k << 60k genes), so the final hstack is small.
+    # Matches scprocess create_hvg_matrix / create_doublets_matrix pattern.
     # ------------------------------------------------------------------
-    hvg_gene_ids = set(hvg_df[hvg_df['highly_variable'] == True]['gene_id'].tolist())
+    print("\n--- Pass 2: building HVG count matrices ---")
+    hvg_gene_ids = set(hvg_df.loc[hvg_df['highly_variable'] == True, 'gene_id'].tolist())
     hvg_mask = np.array([g in hvg_gene_ids for g in sym_ensembl_ids])
     hvg_genes = sym_ensembl_ids[hvg_mask]
 
-    hvg_singlet_csc = combined_singlet[hvg_mask, :]
-    _write_h5_csc(out_h5, hvg_singlet_csc, hvg_genes, all_bcs_singlet)
-    # Store sample_ids for integration
+    singlet_hvg_mats = []
+    all_bcs_singlet = []
+    all_sample_ids_singlet = []
+    doublet_hvg_mats = []
+    all_bcs_doublet = []
+
+    for h5f in h5_files_sorted:
+        sample_id = re.sub(r'^(?:.*/)?filt_counts_', '', h5f).replace('.h5', '')
+
+        mat, features, barcodes = _read_h5_csc(h5f)
+        summed, _ = _sum_sua(mat, features)
+        del mat
+
+        qc_s = qc_by_sample[sample_id]
+        singlet_cells_s = set(qc_s.loc[
+            (qc_s['keep'] == True) & (qc_s['scdbl_class'] != 'doublet'), 'cell_id'
+        ])
+        doublet_cells_s = set(qc_s.loc[qc_s['scdbl_class'] == 'doublet', 'cell_id'])
+
+        sing_idx = np.array([i for i, bc in enumerate(barcodes) if bc in singlet_cells_s])
+        dbl_idx  = np.array([i for i, bc in enumerate(barcodes) if bc in doublet_cells_s])
+
+        # Convert to CSR once for efficient row-slicing to HVGs, then column-slice per group
+        summed_csr = summed.tocsr()
+        del summed
+        hvg_summed = summed_csr[hvg_mask, :]   # (n_hvgs x all_cells) — small
+        del summed_csr
+
+        if len(sing_idx) > 0:
+            singlet_hvg_mats.append(hvg_summed[:, sing_idx])
+            all_bcs_singlet.extend([f"{sample_id}_{bc}" for bc in barcodes[sing_idx]])
+            all_sample_ids_singlet.extend([sample_id] * len(sing_idx))
+            print(f"  {sample_id}: {len(sing_idx)} singlets")
+
+        if len(dbl_idx) > 0:
+            doublet_hvg_mats.append(hvg_summed[:, dbl_idx])
+            all_bcs_doublet.extend([f"{sample_id}_{bc}" for bc in barcodes[dbl_idx]])
+            print(f"  {sample_id}: {len(dbl_idx)} doublets")
+
+        del hvg_summed
+
+    if not singlet_hvg_mats:
+        raise ValueError("No singlet cells after pass 2.")
+
+    # hstack HVG-only slices — safe: n_hvgs x total_cells is sparse and small
+    combined_singlet = hstack(singlet_hvg_mats, format='csc')
+    all_bcs_singlet_arr = np.array(all_bcs_singlet)
+    all_sample_ids_arr  = np.array(all_sample_ids_singlet)
+
+    _write_h5_csc(out_h5, combined_singlet, hvg_genes, all_bcs_singlet_arr)
     with h5py.File(out_h5, 'a') as f:
         f.create_dataset('matrix/sample_ids',
-                         data=np.array(all_sample_ids_singlet, dtype='S'),
+                         data=np.array(all_sample_ids_arr, dtype='S'),
                          compression='gzip')
-    print(f"Written singlet HVG matrix: {out_h5}  ({hvg_singlet_csc.shape[0]} genes x {hvg_singlet_csc.shape[1]} cells)")
+    print(f"Written singlet HVG matrix: {out_h5}  "
+          f"({combined_singlet.shape[0]} genes x {combined_singlet.shape[1]} cells)")
 
-    # ------------------------------------------------------------------
-    # 7. Create doublet HVG count matrix (raw counts, HVG genes only)
-    # ------------------------------------------------------------------
-    if len(sample_mats_doublet) > 0:
-        combined_doublet = hstack(sample_mats_doublet, format='csc')
-        all_bcs_doublet = np.array(sample_bcs_doublet)
-        hvg_doublet_csc = combined_doublet[hvg_mask, :]
-        _write_h5_csc(out_dbl_h5, hvg_doublet_csc, hvg_genes, all_bcs_doublet)
-        print(f"Written doublet HVG matrix: {out_dbl_h5}  ({hvg_doublet_csc.shape[0]} genes x {hvg_doublet_csc.shape[1]} cells)")
+    if doublet_hvg_mats:
+        combined_doublet = hstack(doublet_hvg_mats, format='csc')
+        _write_h5_csc(out_dbl_h5, combined_doublet, hvg_genes, np.array(all_bcs_doublet))
+        print(f"Written doublet HVG matrix: {out_dbl_h5}  "
+              f"({combined_doublet.shape[0]} genes x {combined_doublet.shape[1]} cells)")
     else:
-        # Write empty H5 so downstream knows no doublets
         empty_mat = csc_matrix((len(hvg_genes), 0), dtype=np.float64)
         _write_h5_csc(out_dbl_h5, empty_mat, hvg_genes, np.array([], dtype='U'))
         print(f"Written empty doublet HVG matrix: {out_dbl_h5} (no doublets)")
