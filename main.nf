@@ -25,7 +25,8 @@ def helpMessage() {
         nextflow run main.nf -profile <profile> [params]
 
     Required params:
-        --raw_data_dir      Parent directory; each subdirectory is one sample
+        --raw_data_dir      Parent directory (or comma-separated list of directories);
+                            each subdirectory is one sample
                             (each subdir must contain *_R1_* and *_R2_* FASTQs)
         --cellrangerPath    Path to Cell Ranger install directory
                             (whitelists are extracted from lib/python/cellranger/barcodes/)
@@ -100,8 +101,11 @@ workflow {
     if (!params.raw_data_dir) {
         error "--raw_data_dir is required"
     }
-    if (!file(params.raw_data_dir).exists()) {
-        error "--raw_data_dir does not exist: ${params.raw_data_dir}"
+    def rawDataDirs = params.raw_data_dir.toString().split(',').collect { it.trim() }
+    rawDataDirs.each { dir ->
+        if (!file(dir).exists()) {
+            error "--raw_data_dir does not exist: ${dir}"
+        }
     }
     if (!params.cellrangerPath) {
         error "--cellrangerPath is required (Cell Ranger install directory)"
@@ -404,7 +408,7 @@ workflow {
     // Sample discovery: each subdir of raw_data_dir is one sample
     // ------------------------------------------------------------------
     samples_ch = channel
-        .fromPath("${params.raw_data_dir}/*", type: 'dir')
+        .fromPath(rawDataDirs.collect { "${it}/*" }, type: 'dir')
         .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
 
     def sample_metadata_ch
