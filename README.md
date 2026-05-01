@@ -1,16 +1,20 @@
 
 # scQC-flow
 
-Nextflow pipeline for single-cell/single-nucleus RNA-seq quality control and reporting.
+Nextflow DSL2 pipeline for single-cell/single-nucleus RNA-seq mapping, QC, and reporting.
 
 **Features:**
-- Cell Ranger mapping (optional, integrated)
-- Optional CellBender ambient RNA removal (CPU/GPU)
-- Nuclear fraction analysis (DropletQC)
-- Doublet detection (scDblFinder)
-- CellBender vs Cell Ranger droplet calling comparison with knee-plots
-- Seurat object creation with pre/post-QC filtering
-- Automated HTML reports
+- FASTQ → count matrix mapping via simpleaf (alevin-fry)
+- Ambient RNA removal via decontX (or CellBender)
+- Per-cell QC with hard and soft thresholds
+- Doublet detection (scDblFinder, 2-pass design)
+- HVG selection (Seurat VST, batch-aware)
+- Harmony integration → Leiden clustering → UMAP
+- Pseudobulk marker gene annotation (edgeR one-vs-rest)
+- Cell type labelling from user-supplied marker panel
+- Zoom subsets (re-analysis of cluster subsets)
+- Export to AnnData (.h5ad) or Seurat (.rds)
+- Automated HTML reports collected into a landing page
 
 ---
 
@@ -18,85 +22,74 @@ Nextflow pipeline for single-cell/single-nucleus RNA-seq quality control and rep
 
 ### Requirements
 - Nextflow (>=25.04)
-- Docker or Singularity
+- Docker (all non-mapping processes) or Singularity (HPC)
+- conda (for simpleaf mapping processes)
+- Cell Ranger installation (for barcode whitelists only)
 
 ### Basic Usage
-
-The recommended way to run the pipeline is to specify the output directory and work directory separately:
 
 ```bash
 nextflow run main.nf -profile offline \
   -w ./my_project/work \
-  --run_mode qc \
-  --mapped_data_dir /path/to/mapped_dirs \
+  --raw_data_dir /path/to/fastq_parent_dir \
+  --cellrangerPath /path/to/cellranger \
+  --genome_fasta /path/to/genome.fa \
+  --genome_gtf /path/to/genes.gtf \
+  --metadata_csv /path/to/metadata.csv \
   --outputDir ./my_project/outputs
 ```
 
 **Where:**
-- `-w ./my_project/work` — Nextflow work directory (temporary files, intermediate results)
+- `-w ./my_project/work` — Nextflow work directory (intermediate files; safe to delete after run)
 - `--outputDir ./my_project/outputs` — Final results and reports
 
-This keeps your project organized with a clean separation:
+Output structure:
 ```
-my_project/
-├── work/              # Nextflow work directory (can be safely deleted after run)
-└── outputs/           # Final results
-    ├── mapping/
-    ├── cellbender/
-    ├── dropletqc/
-    ├── scdblfinder/
-    ├── seurat/
-    ├── reports/
-    └── pipeline_info/ # Execution timeline, report, trace, DAG
+my_project/outputs/
+├── mapping/           # simpleaf quant outputs + H5 matrices
+├── ambient/           # decontX-filtered H5 + barcodes
+├── qc/                # per-cell QC metrics CSVs
+├── hvg/               # HVG count matrices + stats
+├── integration/       # integration_dt.csv.gz (UMAP + clusters)
+├── annotation/        # marker DE, logCPMs, cell labels
+├── export/            # .h5ad / .rds exports
+├── reports/           # all HTML reports + landing page
+└── pipeline_info/     # timeline, trace, DAG
 ```
 
-All execution artifacts (timeline, report, trace, DAG) are collected into `pipeline_info/` for easier debugging.
+### Run Examples
 
-### Run Mode Examples
-
-**QC Only (pre-mapped data):**
+**Mapping + full QC + integration + annotation:**
 ```bash
-MY_PROJECT="/data/my_project"
-mkdir -p "$MY_PROJECT/work" "$MY_PROJECT/outputs"
-
 nextflow run main.nf -profile offline \
-  -w "$MY_PROJECT/work" \
-  --run_mode qc \
-  --mapped_data_dir /path/to/mapped_dirs \
-  --outputDir "$MY_PROJECT/outputs"
-```
-
-**Mapping + QC:**
-```bash
-MY_PROJECT="/data/my_project"
-mkdir -p "$MY_PROJECT/work" "$MY_PROJECT/outputs"
-
-nextflow run main.nf -profile offline \
-  -w "$MY_PROJECT/work" \
-  --run_mode both \
-  --raw_data_dir /path/to/raw_fastq_dirs \
+  --raw_data_dir /path/to/raw \
   --cellrangerPath /path/to/cellranger \
-  --transcriptome /path/to/refdata-gex-GRCh38-2024-A \
-  --outputDir "$MY_PROJECT/outputs"
+  --genome_fasta /path/to/genome.fa \
+  --genome_gtf /path/to/genes.gtf \
+  --metadata_csv /path/to/metadata.csv \
+  --metadata_vars 'brainregion condition' \
+  --run_annotation true \
+  --annotation_marker_csv /path/to/markers.csv \
+  --outputDir ./outputs
 ```
 
-**With CellBender and GPU:**
+**Skip mapping (pre-mapped H5s already exist):**  
+Not currently supported as a standalone mode — mapping is always run. Pre-existing mapping outputs can be reused via Nextflow caching if the work directory is preserved.
+
+**Export to AnnData:**
 ```bash
 nextflow run main.nf -profile offline \
-  -w "$MY_PROJECT/work" \
-  --run_mode qc \
-  --mapped_data_dir /path/to/mapped_dirs \
-  --cellbender true \
-  --gpu true \
-  --outputDir "$MY_PROJECT/outputs"
+  [... required params ...] \
+  --export anndata \
+  --outputDir ./outputs
 ```
 
 ---
 
 ## Input Discovery
 
-- For `run_mode = mapping` or `both`: set `--raw_data_dir`. Each subdirectory is treated as one sample (name = folder name).
-- For `run_mode = qc`: set `--mapped_data_dir`. Each subdirectory is treated as one mapped sample (name = folder name).
+- Each subdirectory of `--raw_data_dir` is treated as one sample; the folder name becomes the sample ID.
+- No samplesheet CSV is needed.
 
 No samplesheet CSV is needed — the pipeline discovers samples automatically from the directory structure.
 
@@ -104,36 +97,73 @@ No samplesheet CSV is needed — the pipeline discovers samples automatically fr
 
 ## Execution Artifacts
 
-The pipeline automatically generates execution reports collected in `${outputDir}/pipeline_info/`:
-
-- **execution_timeline_*.html** — Interactive timeline showing task execution order and duration
-- **execution_report_*.html** — Comprehensive execution summary (CPU, memory, retries, etc.)
-- **execution_trace_*.txt** — Detailed task execution trace for debugging
-- **pipeline_dag_*.html** — Visual DAG showing workflow dependencies
-
-These are timestamped to prevent collisions across multiple runs. They are useful for:
-- Understanding bottlenecks and resource usage
-- Debugging failed tasks
-- Auditing pipeline execution history
+All execution artifacts are collected in `${outputDir}/pipeline_info/`:
+- **execution_timeline_*.html** — Task execution timeline
+- **execution_report_*.html** — CPU, memory, retry summary
+- **execution_trace_*.txt** — Detailed per-task trace
+- **pipeline_dag_*.html** — Visual DAG of workflow dependencies
 
 ---
 
 ## Parameters
 
+### Required
+| Parameter | Description |
+|-----------|-------------|
+| `--raw_data_dir` | Parent dir of FASTQ sample folders (each subdir = one sample) |
+| `--cellrangerPath` | Cell Ranger installation (for barcode whitelists) |
+| `--genome_fasta` | Reference genome FASTA |
+| `--genome_gtf` | Reference genome GTF |
+
+### Workflow Control
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--run_mode` | `qc` | `mapping`, `qc`, or `both` |
-| `--raw_data_dir` | `null` | Required for `mapping`/`both`; parent dir of FASTQ sample folders |
-| `--mapped_data_dir` | `null` | Required for `qc`; parent dir of mapped sample folders |
-| `--mapper` | `cellranger` | Mapper to run for mapping stage |
-| `--cellrangerPath` | `null` | Cell Ranger binary path or install directory |
-| `--transcriptome` | `null` | Cell Ranger transcriptome reference directory |
+| `--chemistry` | `3v4` | 10x chemistry: `3v2`, `3v3`, `3v4`, `3LT`, `5v1`, `5v2`, `5v3`, `multiome` |
 | `--outputDir` | `results` | Output directory |
-| `--cellbender` | `false` | Run CellBender ambient RNA removal |
-| `--gpu` | `false` | Use GPU for CellBender |
-| `--report` | `true` | Generate HTML QC reports |
-| `--book` | `false` | Combine reports into a book |
-| `--max_mito` | `20.0` | Max mitochondrial % threshold |
-| `--min_nuclear` | `0.4` | Min nuclear fraction threshold |
-| `--metadata` | `null` | Optional metadata CSV |
+| `--run_ambient` | `true` | Run ambient RNA removal |
+| `--ambient_method` | `decontx` | `decontx` or `cellbender` |
+| `--run_qc` | `true` | Run cell-level QC (requires `--run_ambient`) |
+| `--run_hvg` | `true` | Run HVG selection (requires `--run_qc`) |
+| `--run_integration` | `true` | Run Harmony integration (requires `--run_hvg` + `--metadata_csv`) |
+| `--run_annotation` | `false` | Run pseudobulk annotation (requires `--run_integration` + `--annotation_marker_csv`) |
+| `--run_zooms` | `false` | Run cluster zoom re-analysis (requires `--run_integration`) |
+| `--export` | `none` | Export format: `none`, `anndata`, `seurat`, or `both` |
+
+### Metadata
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--metadata_csv` | — | Sample metadata CSV (required for integration) |
+| `--metadata_id_col` | `sample_id` | Column mapping to sample IDs |
+| `--metadata_vars` | — | Space-separated columns for Harmony batch correction |
+| `--annotation_marker_csv` | — | Long-format marker CSV (required for annotation); columns: `label`, `symbol` |
+
+### QC Thresholds
+| Parameter | Description |
+|-----------|-------------|
+| `--qc_hard_min_counts` | Hard min counts (cells removed before downstream) |
+| `--qc_hard_min_feats` | Hard min features |
+| `--qc_hard_max_mito` | Hard max mitochondrial % |
+| `--qc_min_counts` | Soft min counts (flagged, retained) |
+| `--qc_min_feats` | Soft min features |
+| `--qc_max_mito` | Soft max mito % |
+| `--qc_min_mito` | Soft min mito % |
+| `--qc_max_splice` | Soft max splice % |
+| `--qc_min_splice` | Soft min splice % |
+
+### Algorithm Parameters
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--hvg_n_hvgs` | `2000` | Number of HVGs to select |
+| `--exclude_mito` | `false` | Exclude mito genes from HVG/integration |
+| `--integration_n_dims` | `30` | PCA dimensions |
+| `--integration_theta` | `2.0` | Harmony theta |
+| `--integration_leiden_res` | `'0.2 0.5 1.0'` | Space-separated Leiden resolutions |
+| `--integration_cluster_seed` | `42` | Random seed |
+| `--integration_dbl_res` | `2.0` | Pass-1 doublet Leiden resolution |
+| `--integration_dbl_cl_prop` | `0.5` | Doublet-enriched cluster threshold |
+| `--annotation_sel_res` | `0.2` | Leiden resolution for annotation |
+| `--annotation_min_cl_size` | — | Min cluster size for annotation |
+| `--annotation_min_cells` | `10` | Min cells per pseudobulk sample |
+| `--annotation_top_n` | `10` | Top N markers per cluster |
+| `--export_write_combined` | `true` | Write combined export objects |
 

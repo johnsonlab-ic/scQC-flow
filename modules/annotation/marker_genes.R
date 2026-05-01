@@ -4,13 +4,13 @@ source("annotation_utils.R")
 
 run_annotation_markers <- function() {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) != 13) {
+  if (length(args) != 15) {
     stop(
       paste(
         "Usage: marker_genes.R <integration_csv> <genome_gtf> <marker_csv>",
         "<sel_res> <min_cl_size> <min_cells>",
         "<out_markers> <out_logcpms> <out_panel> <out_marker_expr> <out_cell_labels>",
-        "<out_top_marker_expr> <h5_pattern>"
+        "<out_top_marker_expr> <out_pseudobulk> <n_cores> <h5_pattern>"
       )
     )
   }
@@ -27,7 +27,13 @@ run_annotation_markers <- function() {
   out_marker_expr <- args[10]
   out_cell_labels <- args[11]
   out_top_marker_expr <- args[12]
-  h5_pattern <- args[13]
+  out_pseudobulk <- args[13]
+  n_cores <- as.integer(args[14])
+  h5_pattern <- args[15]
+
+  if (is.na(n_cores) || n_cores < 1L) {
+    n_cores <- 1L
+  }
 
   h5_files <- Sys.glob(h5_pattern)
   assert_that(length(h5_files) > 0, msg = sprintf("No filtered H5 files matched '%s'", h5_pattern))
@@ -35,12 +41,22 @@ run_annotation_markers <- function() {
   message("=== ANNOTATION ===")
   message("Selected resolution: ", sel_res)
   message("Filtered H5 files: ", length(h5_files))
+  message("Workers: ", n_cores)
 
   biotypes_dt <- parse_gtf_annotations(genome_gtf)
   ann_dt <- load_annotation_cells(integration_f, sel_res, min_cl_size)
-  pb_obj <- build_pseudobulk_from_h5s(h5_files, ann_dt, biotypes_dt)
-  logcpms_dt <- make_logcpms_all(pb_obj, min_cells = min_cells)
-  marker_dt <- calc_find_markers_pseudobulk(logcpms_dt, pb_obj$row_dt)
+
+  if (file.exists(out_pseudobulk)) {
+    message("Loading pseudobulk checkpoint: ", out_pseudobulk)
+    pb_obj <- readRDS(out_pseudobulk)
+  } else {
+    pb_obj <- build_pseudobulk_from_h5s(h5_files, ann_dt, biotypes_dt, n_cores = n_cores)
+    saveRDS(pb_obj, out_pseudobulk, compress = FALSE)
+    message("Wrote pseudobulk checkpoint: ", out_pseudobulk)
+  }
+
+  prep_obj <- prepare_cluster_matrices(pb_obj, min_cells = min_cells)
+  marker_dt <- calc_find_markers_pseudobulk(prep_obj, pb_obj$row_dt)
   panel_dt <- normalize_marker_panel(marker_csv, biotypes_dt, marker_dt)
 
   cluster_label_dt <- assign_cluster_labels_from_panel(marker_dt, panel_dt, min_cpm = 50)
@@ -60,15 +76,24 @@ run_annotation_markers <- function() {
   cluster_label_dt <- merge(data.table(cluster = cl_ord), cluster_label_dt, by = "cluster", all.x = TRUE, sort = FALSE)
   cluster_label_dt[is.na(label), `:=`(label = "Unassigned", label_score = NA_real_, n_markers = 0L)]
   cell_labels_dt <- merge(umap_dt[, .(sample_id, cell_id, cluster)], cluster_label_dt[, .(cluster, label, label_score, n_markers)], by = "cluster", all.x = TRUE, sort = FALSE)
-  marker_expr_dt <- load_h5_marker_expression(h5_files, panel_dt, umap_dt)
 
   top_mkrs_dt <- marker_dt[
     logFC > 0 &
     logcpm.sel >= log(50 + 1) &
     !grepl("(lincRNA|lncRNA|pseudogene|antisense)", gene_type, perl = TRUE)
   ] |> get_top_markers(fdr_cut = 0.01, n_top = 10, max_zero_p = 0.5)
+
+  cpms_gene_ids <- unique(c(panel_dt$gene_id, top_mkrs_dt$gene_id))
+  logcpms_dt <- make_logcpms_for_genes(prep_obj, pb_obj$row_dt, gene_ids = cpms_gene_ids)
+
   top_sel_dt <- unique(top_mkrs_dt[, .(label = as.character(cluster), symbol, gene_id)])
-  top_marker_expr_dt <- load_h5_marker_expression(h5_files, top_sel_dt, umap_dt)
+  expr_ls <- load_h5_marker_expression_multi(
+    h5_files,
+    sel_dt_list = list(panel = panel_dt, top = top_sel_dt),
+    int_dt = umap_dt
+  )
+  marker_expr_dt <- expr_ls$panel
+  top_marker_expr_dt <- expr_ls$top
 
   fwrite(marker_dt, out_markers)
   fwrite(logcpms_dt, out_logcpms)

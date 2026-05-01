@@ -120,7 +120,7 @@ load_annotation_cells <- function(integration_f, sel_res, min_cl_size) {
   ann_dt
 }
 
-build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt) {
+build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1L) {
   sample_ids <- unique(ann_dt$sample_id)
   cluster_ids <- levels(ann_dt$cluster)
 
@@ -128,49 +128,62 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt) {
   h5_map <- setNames(h5_files, h5_sample_ids)
   assert_that(all(sample_ids %in% names(h5_map)), msg = "Missing filtered H5 files for one or more integrated samples")
 
-  cluster_vecs <- setNames(lapply(cluster_ids, function(cluster_id) {
-    setNames(vector("list", length(sample_ids)), sample_ids)
-  }), cluster_ids)
-  n_cells_dt <- CJ(sample_id = sample_ids, cluster = cluster_ids)
-  n_cells_dt[, n_cells := 0L]
-
-  gene_ids <- NULL
-
-  for (sample_id_val in sample_ids) {
+  workers <- max(1L, min(as.integer(n_cores), length(sample_ids)))
+  sample_results <- parallel::mclapply(sample_ids, mc.cores = workers, FUN = function(sample_id_val) {
     counts_mat <- read_sparse_h5_matrix(h5_map[[sample_id_val]]) |> sum_sua_counts()
-    if (is.null(gene_ids)) {
-      gene_ids <- rownames(counts_mat)
-    } else {
-      assert_that(identical(gene_ids, rownames(counts_mat)), msg = "Gene IDs differ across filtered H5 files")
-    }
 
     sample_cells <- ann_dt[sample_id == sample_id_val]
     global_ids <- paste(sample_id_val, colnames(counts_mat), sep = "_")
     matched <- match(global_ids, sample_cells$cell_id)
-    keep_idx <- !is.na(matched)
-    counts_mat <- counts_mat[, keep_idx, drop = FALSE]
+    keep_idx <- which(!is.na(matched))
+    assert_that(length(keep_idx) > 0, msg = sprintf("No integrated cells matched filtered H5 for sample %s", sample_id_val))
+
+    counts_sel <- counts_mat[, keep_idx, drop = FALSE]
     sample_clusters <- as.character(sample_cells$cluster[matched[keep_idx]])
 
-    assert_that(ncol(counts_mat) > 0, msg = sprintf("No integrated cells matched filtered H5 for sample %s", sample_id_val))
+    cluster_fac <- factor(sample_clusters, levels = cluster_ids)
+    cluster_model <- sparseMatrix(
+      i = seq_along(cluster_fac),
+      j = as.integer(cluster_fac),
+      x = 1,
+      dims = c(length(cluster_fac), length(cluster_ids)),
+      dimnames = list(NULL, cluster_ids)
+    )
 
-    for (cluster_id_val in cluster_ids) {
-      this_idx <- sample_clusters == cluster_id_val
-      n_cells_dt[sample_id == sample_id_val & cluster == cluster_id_val, n_cells := sum(this_idx)]
-      vec <- if (any(this_idx)) {
-        Matrix::rowSums(counts_mat[, this_idx, drop = FALSE])
-      } else {
-        numeric(nrow(counts_mat))
-      }
-      cluster_vecs[[cluster_id_val]][[sample_id_val]] <- matrix(
-        as.numeric(vec),
-        ncol = 1,
-        dimnames = list(rownames(counts_mat), sample_id_val)
-      )
-    }
+    cluster_sums <- counts_sel %*% cluster_model
+    colnames(cluster_sums) <- cluster_ids
+    n_cells <- Matrix::colSums(cluster_model)
+
+    list(
+      sample_id = sample_id_val,
+      gene_ids = rownames(counts_sel),
+      cluster_sums = cluster_sums,
+      n_cells = as.numeric(n_cells)
+    )
+  })
+
+  gene_ids <- sample_results[[1]]$gene_ids
+  for (res in sample_results) {
+    assert_that(identical(gene_ids, res$gene_ids), msg = "Gene IDs differ across filtered H5 files")
   }
+  sample_lu <- setNames(sample_results, vapply(sample_results, function(x) x$sample_id, character(1)))
+
+  n_cells_dt <- rbindlist(lapply(sample_results, function(res) {
+    data.table(
+      sample_id = res$sample_id,
+      cluster = cluster_ids,
+      n_cells = as.integer(res$n_cells)
+    )
+  }))
 
   cluster_mats <- lapply(cluster_ids, function(cluster_id) {
-    do.call(cbind, cluster_vecs[[cluster_id]][sample_ids])
+    mats <- lapply(sample_ids, function(sample_id_val) {
+      res <- sample_lu[[sample_id_val]]
+      x <- res$cluster_sums[, cluster_id, drop = FALSE]
+      colnames(x) <- sample_id_val
+      x
+    })
+    do.call(cbind, mats)
   })
   names(cluster_mats) <- cluster_ids
 
@@ -187,8 +200,8 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt) {
   list(cluster_mats = cluster_mats, n_cells_dt = n_cells_dt, row_dt = row_dt)
 }
 
-make_logcpms_all <- function(pb_obj, min_cells = 10, pseudo_count = 10) {
-  out_ls <- list()
+prepare_cluster_matrices <- function(pb_obj, min_cells = 10) {
+  out <- list()
 
   for (cluster_id_val in names(pb_obj$cluster_mats)) {
     x <- pb_obj$cluster_mats[[cluster_id_val]]
@@ -206,7 +219,7 @@ make_logcpms_all <- function(pb_obj, min_cells = 10, pseudo_count = 10) {
     n_cells_vec <- n_cells_vec[use_idx]
 
     if (ncol(x) > 1) {
-      out_idx <- scater::isOutlier(colSums(x), log = TRUE, type = "lower", nmads = 3)
+      out_idx <- scater::isOutlier(Matrix::colSums(x), log = TRUE, type = "lower", nmads = 3)
       x <- x[, !out_idx, drop = FALSE]
       sample_ids <- sample_ids[!out_idx]
       n_cells_vec <- n_cells_vec[!out_idx]
@@ -220,74 +233,124 @@ make_logcpms_all <- function(pb_obj, min_cells = 10, pseudo_count = 10) {
     dge_obj <- edgeR::calcNormFactors(dge_obj, method = "TMMwsp")
     lib_sizes <- dge_obj$samples$lib.size * dge_obj$samples$norm.factors
 
-    tmp_dt <- as.data.table(as.matrix(x), keep.rownames = "gene_id")
-    tmp_dt <- melt(tmp_dt, id.vars = "gene_id", variable.name = "sample_id", value.name = "count")
-    tmp_dt <- merge(tmp_dt, data.table(sample_id = sample_ids, lib_size = lib_sizes, n_cells = n_cells_vec), by = "sample_id")
-    tmp_dt[, `:=`(
+    out[[cluster_id_val]] <- list(
+      counts = x,
+      sample_ids = sample_ids,
+      n_cells = n_cells_vec,
+      lib_sizes = lib_sizes
+    )
+  }
+
+  assert_that(length(out) > 0, msg = "No pseudobulk samples passed annotation minimum-cell filtering")
+  out
+}
+
+make_logcpms_for_genes <- function(prep_obj, rows_dt, gene_ids, pseudo_count = 10) {
+  gene_ids <- unique(gene_ids)
+  if (length(gene_ids) == 0) {
+    return(data.table())
+  }
+
+  out_ls <- lapply(names(prep_obj), function(cluster_id_val) {
+    x <- prep_obj[[cluster_id_val]]$counts
+    keep_idx <- which(rownames(x) %in% gene_ids)
+    if (length(keep_idx) == 0) {
+      return(NULL)
+    }
+
+    x <- x[keep_idx, , drop = FALSE]
+    sm <- summary(x)
+    dt <- data.table(
+      gene_id = rownames(x)[sm$i],
+      sample_id = colnames(x)[sm$j],
+      count = as.numeric(sm$x)
+    )
+
+    # Keep explicit zeros for selected genes/samples so plotting behaves consistently.
+    full_dt <- CJ(gene_id = rownames(x), sample_id = prep_obj[[cluster_id_val]]$sample_ids)
+    dt <- merge(full_dt, dt, by = c("gene_id", "sample_id"), all.x = TRUE)
+    dt[is.na(count), count := 0]
+    dt <- merge(
+      dt,
+      data.table(
+        sample_id = prep_obj[[cluster_id_val]]$sample_ids,
+        lib_size = prep_obj[[cluster_id_val]]$lib_sizes,
+        n_cells = prep_obj[[cluster_id_val]]$n_cells
+      ),
+      by = "sample_id",
+      all.x = TRUE
+    )
+    dt[, `:=`(
       cluster = cluster_id_val,
       logcpm = log(count / lib_size * 1e6 + pseudo_count)
     )]
-    out_ls[[cluster_id_val]] <- tmp_dt
-  }
+    dt
+  })
 
-  logcpms_all <- rbindlist(out_ls, use.names = TRUE)
-  assert_that(nrow(logcpms_all) > 0, msg = "No pseudobulk samples passed annotation minimum-cell filtering")
-  merge(logcpms_all, pb_obj$row_dt, by = "gene_id", all.x = TRUE)
+  logcpms_dt <- rbindlist(Filter(Negate(is.null), out_ls), use.names = TRUE)
+  merge(logcpms_dt, rows_dt, by = "gene_id", all.x = TRUE)
 }
 
-calc_find_markers_pseudobulk <- function(logcpms_all, rows_dt) {
-  cl_ls <- unique(logcpms_all$cluster)
-  x_ls <- setNames(lapply(cl_ls, function(cluster_id) {
-    logcpms_all[cluster == cluster_id, .(gene_id, col_lab = sprintf("%s-%s", cluster, sample_id), count)] |>
-      dcast(gene_id ~ col_lab, value.var = "count", fill = 0) |>
-      as.matrix(rownames = "gene_id")
-  }), cl_ls)
+calc_find_markers_pseudobulk <- function(prep_obj, rows_dt) {
+  cl_ls <- names(prep_obj)
 
-  x_full <- do.call(cbind, x_ls)
-  dge_all <- edgeR::DGEList(x_full, remove.zeros = TRUE)
+  count_ls <- lapply(cl_ls, function(cluster_id) {
+    x <- prep_obj[[cluster_id]]$counts
+    colnames(x) <- sprintf("%s-%s", cluster_id, colnames(x))
+    x
+  })
+  x_full <- do.call(cbind, count_ls)
+
   des_all <- data.table(
-    cluster = str_extract(colnames(dge_all), "^[^-]+"),
-    sample_id = str_extract(colnames(dge_all), "(?<=-).+")
+    col_lab = colnames(x_full),
+    cluster = str_extract(colnames(x_full), "^[^-]+"),
+    sample_id = str_extract(colnames(x_full), "(?<=-).+")
   )
 
-  keep_gs <- edgeR::filterByExpr(dge_all, group = des_all$cluster, min.count = 1)
-  dge <- dge_all[keep_gs, , keep.lib.sizes = FALSE]
+  keep_gs <- edgeR::filterByExpr(edgeR::DGEList(x_full), group = des_all$cluster, min.count = 1)
+  x_full <- x_full[keep_gs, , drop = FALSE]
+
+  dge <- edgeR::DGEList(x_full, remove.zeros = TRUE)
   dge <- edgeR::calcNormFactors(dge, method = "TMMwsp")
   dge <- edgeR::estimateDisp(dge)
+  logcpm_mat <- edgeR::cpm(dge, log = TRUE, prior.count = 10)
 
-  mkrs_dt <- rbindlist(lapply(cl_ls, function(cluster_id) {
-    this_data <- copy(des_all)[, is_cluster := cluster == cluster_id]
-    this_design <- model.matrix(~ is_cluster, data = this_data)
+  mkrs_ls <- vector("list", length(cl_ls))
+  zeros_ls <- vector("list", length(cl_ls))
+  relcpms_ls <- vector("list", length(cl_ls))
+
+  for (ii in seq_along(cl_ls)) {
+    cluster_id <- cl_ls[[ii]]
+    is_cluster <- des_all$cluster == cluster_id
+
+    this_design <- model.matrix(~ is_cluster)
     fit <- edgeR::glmQLFit(dge, design = this_design)
     fit <- edgeR::glmTreat(fit, coef = "is_clusterTRUE")
     top_dt <- topTags(fit, n = Inf, sort.by = "none") |>
       as.data.frame() |>
       as.data.table(keep.rownames = "gene_id")
     top_dt[, cluster := cluster_id]
-    top_dt
-  }), use.names = TRUE)
+    mkrs_ls[[ii]] <- top_dt
 
-  cpms_ok <- rbindlist(lapply(cl_ls, function(cluster_id) {
-    ok_samples <- str_extract(colnames(x_ls[[cluster_id]]), "(?<=-).+")
-    logcpms_all[cluster == cluster_id & sample_id %in% ok_samples]
-  }))
-  cpm_means <- cpms_ok[, .(mean_logcpm = mean(logcpm), n_batches = .N), by = .(cluster, gene_id)]
-
-  rel_cpms <- rbindlist(lapply(cl_ls, function(cluster_id) {
-    cpms_sel <- cpm_means[cluster == cluster_id, .(cluster, gene_id, logcpm.sel = mean_logcpm)]
-    cpms_other <- cpm_means[cluster != cluster_id, .(logcpm.other = sum(n_batches * mean_logcpm) / sum(n_batches)), by = gene_id]
-    merge(cpms_sel, cpms_other, by = "gene_id")
-  }))
-
-  zeros_dt <- rbindlist(lapply(cl_ls, function(cluster_id) {
-    this_x <- x_ls[[cluster_id]]
-    data.table(
+    this_x <- x_full[, is_cluster, drop = FALSE]
+    zeros_ls[[ii]] <- data.table(
       cluster = cluster_id,
       gene_id = rownames(this_x),
-      n_zero = rowSums(this_x == 0),
+      n_zero = Matrix::rowSums(this_x == 0),
       n_cl = ncol(this_x)
     )
-  }))
+
+    relcpms_ls[[ii]] <- data.table(
+      cluster = cluster_id,
+      gene_id = rownames(logcpm_mat),
+      logcpm.sel = rowMeans(logcpm_mat[, is_cluster, drop = FALSE]),
+      logcpm.other = rowMeans(logcpm_mat[, !is_cluster, drop = FALSE])
+    )
+  }
+
+  mkrs_dt <- rbindlist(mkrs_ls, use.names = TRUE)
+  zeros_dt <- rbindlist(zeros_ls, use.names = TRUE)
+  rel_cpms <- rbindlist(relcpms_ls, use.names = TRUE)
 
   mkrs_dt <- merge(mkrs_dt, zeros_dt, by = c("cluster", "gene_id"))
   mkrs_dt <- merge(mkrs_dt, rel_cpms, by = c("cluster", "gene_id"))
@@ -603,15 +666,32 @@ plot_umap_cluster <- function(umap_dt, clust_dt, name) {
     labs(colour = name)
 }
 
-load_h5_marker_expression <- function(h5_files, sel_dt, int_dt, pseudo_count = 10) {
-  sel_dt <- unique(sel_dt[, .(label, symbol, gene_id)])
-  marker_ids <- unique(sel_dt$gene_id)
+load_h5_marker_expression_multi <- function(h5_files, sel_dt_list, int_dt, pseudo_count = 10) {
+  if (length(sel_dt_list) == 0) {
+    return(list())
+  }
+
+  clean_sel <- lapply(sel_dt_list, function(sel_dt) {
+    if (is.null(sel_dt) || nrow(sel_dt) == 0) {
+      return(data.table(label = character(), symbol = character(), gene_id = character()))
+    }
+    unique(sel_dt[, .(label, symbol, gene_id)])
+  })
+
+  marker_ids <- unique(unlist(lapply(clean_sel, function(x) x$gene_id), use.names = FALSE))
+  out_names <- names(clean_sel)
+  if (is.null(out_names) || any(out_names == "")) {
+    out_names <- paste0("set", seq_along(clean_sel))
+    names(clean_sel) <- out_names
+  }
+
   if (length(marker_ids) == 0 || length(h5_files) == 0) {
-    return(data.table())
+    empty <- data.table()
+    return(setNames(replicate(length(clean_sel), empty, simplify = FALSE), names(clean_sel)))
   }
 
   cell_meta <- unique(int_dt[, .(sample_id, cell_id, UMAP1, UMAP2)])
-  out_ls <- vector("list", length(h5_files))
+  out_ls <- setNames(lapply(seq_along(clean_sel), function(...) vector("list", length(h5_files))), names(clean_sel))
 
   for (ii in seq_along(h5_files)) {
     h5_f <- h5_files[[ii]]
@@ -639,21 +719,40 @@ load_h5_marker_expression <- function(h5_files, sel_dt, int_dt, pseudo_count = 1
     expr_mat <- log(expr_mat + pseudo_count)
     colnames(expr_mat) <- global_ids[keep_idx]
 
-    expr_dt <- as.data.table(expr_mat, keep.rownames = "gene_id")
-    expr_dt <- melt(expr_dt, id.vars = "gene_id", variable.name = "cell_id", value.name = "logcount")
-    expr_dt <- merge(expr_dt, sel_dt, by = "gene_id", all.x = TRUE, allow.cartesian = TRUE)
-    expr_dt <- merge(expr_dt, sample_meta[, .(cell_id, UMAP1, UMAP2)], by = "cell_id", all.x = TRUE)
-    out_ls[[ii]] <- expr_dt
+    expr_base_dt <- as.data.table(expr_mat, keep.rownames = "gene_id")
+    expr_base_dt <- melt(expr_base_dt, id.vars = "gene_id", variable.name = "cell_id", value.name = "logcount")
+    expr_base_dt <- merge(expr_base_dt, sample_meta[, .(cell_id, UMAP1, UMAP2)], by = "cell_id", all.x = TRUE)
+
+    for (nm in names(clean_sel)) {
+      sel_dt <- clean_sel[[nm]]
+      if (nrow(sel_dt) == 0) {
+        next
+      }
+      tmp_dt <- merge(expr_base_dt, sel_dt, by = "gene_id", all = FALSE, allow.cartesian = TRUE)
+      out_ls[[nm]][[ii]] <- tmp_dt
+    }
   }
 
-  cell_exp_dt <- rbindlist(Filter(Negate(is.null), out_ls), use.names = TRUE)
-  if (nrow(cell_exp_dt) == 0) {
-    return(cell_exp_dt)
-  }
+  out_dt <- lapply(names(clean_sel), function(nm) {
+    dt <- rbindlist(Filter(Negate(is.null), out_ls[[nm]]), use.names = TRUE)
+    if (nrow(dt) == 0) {
+      return(dt)
+    }
+    dt[, expr := logcount]
+    dt[, symbol := factor(symbol, levels = unique(clean_sel[[nm]]$symbol))]
+    dt
+  })
+  names(out_dt) <- names(clean_sel)
+  out_dt
+}
 
-  cell_exp_dt[, expr := logcount]
-  cell_exp_dt[, symbol := factor(symbol, levels = unique(sel_dt$symbol))]
-  cell_exp_dt
+load_h5_marker_expression <- function(h5_files, sel_dt, int_dt, pseudo_count = 10) {
+  load_h5_marker_expression_multi(
+    h5_files,
+    sel_dt_list = list(default = sel_dt),
+    int_dt = int_dt,
+    pseudo_count = pseudo_count
+  )$default
 }
 
 plot_expression_umap_pair <- function(expr_dt, meta_dt,
