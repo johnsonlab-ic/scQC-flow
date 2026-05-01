@@ -128,11 +128,23 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
   h5_map <- setNames(h5_files, h5_sample_ids)
   assert_that(all(sample_ids %in% names(h5_map)), msg = "Missing filtered H5 files for one or more integrated samples")
 
-  workers <- max(1L, min(as.integer(n_cores), length(sample_ids)))
-  build_one_sample <- function(sample_id_val) {
-    counts_mat <- read_sparse_h5_matrix(h5_map[[sample_id_val]]) |> sum_sua_counts()
+  tasks <- lapply(sample_ids, function(sample_id_val) {
+    list(
+      sample_id = sample_id_val,
+      h5_f = h5_map[[sample_id_val]],
+      sample_cells = ann_dt[sample_id == sample_id_val, .(cell_id, cluster)]
+    )
+  })
+  result_dir <- tempfile("annotation_pb_")
+  dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(result_dir, recursive = TRUE, force = TRUE), add = TRUE)
 
-    sample_cells <- ann_dt[sample_id == sample_id_val]
+  workers <- max(1L, min(as.integer(n_cores), length(sample_ids), 4L))
+  build_one_sample <- function(task) {
+    counts_mat <- read_sparse_h5_matrix(task$h5_f) |> sum_sua_counts()
+
+    sample_id_val <- task$sample_id
+    sample_cells <- task$sample_cells
     global_ids <- paste(sample_id_val, colnames(counts_mat), sep = "_")
     matched <- match(global_ids, sample_cells$cell_id)
     keep_idx <- which(!is.na(matched))
@@ -154,16 +166,20 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
     colnames(cluster_sums) <- cluster_ids
     n_cells <- Matrix::colSums(cluster_model)
 
-    list(
+    sample_result <- list(
       sample_id = sample_id_val,
       gene_ids = rownames(counts_sel),
       cluster_sums = cluster_sums,
       n_cells = as.numeric(n_cells)
     )
+
+    out_f <- file.path(result_dir, sprintf("%s.rds", sample_id_val))
+    saveRDS(sample_result, out_f, compress = FALSE)
+    list(sample_id = sample_id_val, result_f = out_f)
   }
 
   if (workers == 1L) {
-    sample_results <- lapply(sample_ids, build_one_sample)
+    sample_refs <- lapply(tasks, build_one_sample)
   } else {
     cl <- parallel::makePSOCKcluster(workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
@@ -174,11 +190,16 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
     }))
     parallel::clusterExport(
       cl,
-      varlist = c("ann_dt", "cluster_ids", "h5_map", "read_sparse_h5_matrix", "sum_sua_counts", "build_one_sample"),
+      varlist = c("cluster_ids", "result_dir", "read_sparse_h5_matrix", "sum_sua_counts", "build_one_sample"),
       envir = environment()
     )
-    sample_results <- parallel::parLapply(cl, sample_ids, build_one_sample)
+    sample_refs <- parallel::parLapply(cl, tasks, build_one_sample)
   }
+
+  sample_results <- lapply(sample_refs, function(ref) {
+    assert_that(file.exists(ref$result_f), msg = sprintf("Missing pseudobulk temp result for sample %s", ref$sample_id))
+    readRDS(ref$result_f)
+  })
 
   gene_ids <- sample_results[[1]]$gene_ids
   for (res in sample_results) {
