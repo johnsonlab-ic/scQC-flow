@@ -129,7 +129,7 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
   assert_that(all(sample_ids %in% names(h5_map)), msg = "Missing filtered H5 files for one or more integrated samples")
 
   workers <- max(1L, min(as.integer(n_cores), length(sample_ids)))
-  sample_results <- parallel::mclapply(sample_ids, mc.cores = workers, FUN = function(sample_id_val) {
+  build_one_sample <- function(sample_id_val) {
     counts_mat <- read_sparse_h5_matrix(h5_map[[sample_id_val]]) |> sum_sua_counts()
 
     sample_cells <- ann_dt[sample_id == sample_id_val]
@@ -160,7 +160,25 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
       cluster_sums = cluster_sums,
       n_cells = as.numeric(n_cells)
     )
-  })
+  }
+
+  if (workers == 1L) {
+    sample_results <- lapply(sample_ids, build_one_sample)
+  } else {
+    cl <- parallel::makePSOCKcluster(workers)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::clusterEvalQ(cl, suppressPackageStartupMessages({
+      library(assertthat)
+      library(Matrix)
+      library(rhdf5)
+    }))
+    parallel::clusterExport(
+      cl,
+      varlist = c("ann_dt", "cluster_ids", "h5_map", "read_sparse_h5_matrix", "sum_sua_counts", "build_one_sample"),
+      envir = environment()
+    )
+    sample_results <- parallel::parLapply(cl, sample_ids, build_one_sample)
+  }
 
   gene_ids <- sample_results[[1]]$gene_ids
   for (res in sample_results) {
