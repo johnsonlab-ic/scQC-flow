@@ -24,12 +24,30 @@ source("integration_plots.R")
 
 # Helper: load logCPMs for specific genes only (memory-efficient)
 load_logcpms_subset <- function(cpms_path, genes_of_interest, verbose = FALSE) {
+  genes_of_interest <- unique(genes_of_interest[!is.na(genes_of_interest) & nzchar(genes_of_interest)])
+  if (length(genes_of_interest) == 0) {
+    return(data.table())
+  }
+
   if (verbose) cat("Loading logCPMs for", length(genes_of_interest), "genes...\n")
-  cpms_full <- fread(cpms_path)
-  sel_genes <- intersect(genes_of_interest, cpms_full$gene_id)
-  out <- cpms_full[gene_id %in% sel_genes]
-  rm(cpms_full); gc(verbose = FALSE)
-  return(out)
+
+  genes_f <- tempfile(fileext = ".txt")
+  on.exit(unlink(genes_f), add = TRUE)
+  fwrite(data.table(gene_id = genes_of_interest), genes_f, col.names = FALSE)
+
+  awk_script <- paste(
+    "NR==FNR { keep[$1]=1; next }",
+    "FNR==1 || ($1 in keep)"
+  )
+  cmd_inner <- sprintf(
+    "set -euo pipefail; gzip -dc %s | awk -F',' %s %s -",
+    shQuote(cpms_path),
+    shQuote(awk_script),
+    shQuote(genes_f)
+  )
+  cmd <- sprintf("bash -lc %s", shQuote(cmd_inner))
+
+  fread(cmd = cmd)
 }
 
 sel_res <- Sys.getenv("ANNOTATION_SEL_RES", "0.2")
@@ -62,10 +80,9 @@ sample_meta_dt <- if (length(meta_var_cols) > 0) {
   data.table(sample_id = unique(int_dt$sample_id))
 }
 
-# Keep full int_dt for metadata UMAP visualization, create subset for annotation
-int_dt_full <- int_dt
 umap_vars <- unique(c("sample_id", meta_var_cols))
-umap_vars <- umap_vars[umap_vars %in% names(int_dt_full)]
+umap_vars <- umap_vars[umap_vars %in% names(int_dt)]
+int_umap_for_meta <- int_dt[!is.na(UMAP1), c("cell_id", "UMAP1", "UMAP2", umap_vars), with = FALSE]
 
 int_dt <- int_dt[!is.na(get(cl_col)) & sample_id != "", .(
   sample_id,
@@ -140,11 +157,7 @@ genes_for_plots <- unique(c(
 cpms_dt <- load_logcpms_subset(cpms_path, genes_for_plots, verbose = TRUE)
 
 cell_exp_dt <- data.table()
-top_marker_expr_dt <- if (file.exists("annotation_top_marker_expression.rds")) {
-  readRDS("annotation_top_marker_expression.rds")
-} else {
-  data.table()
-}
+top_marker_expr_dt <- NULL
 
 # Clean up after initial data preparation
 gc(verbose = FALSE)
@@ -208,6 +221,12 @@ if (nrow(top_heatmap_panel_dt) > 0) {
 ## Top marker genes by cluster at resolution `r sel_res`
 
 ```{r plot_top_markers, results = 'asis'}
+top_marker_expr_dt <- if (file.exists("annotation_top_marker_expression.rds")) {
+  readRDS("annotation_top_marker_expression.rds")
+} else {
+  data.table()
+}
+
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in cl_ord) {
   cat(sprintf("### %s\n\n", sel_cl))
@@ -237,6 +256,7 @@ for (sel_cl in cl_ord) {
   if (which(cl_ord == sel_cl) %% 5 == 0) gc(verbose = FALSE)
 }
 cat(':::\n\n')
+rm(top_marker_expr_dt); gc(verbose = FALSE)
 ```
 
 ## Provided marker genes by label
@@ -433,9 +453,6 @@ if (nrow(cell_exp_dt) > 0) {
 The plots below show how metadata variables are distributed across UMAP space using binned hexagonal plots. Each hexagon is coloured by the proportion of cells with each metadata value, allowing identification of spatial patterns and associations with cell types or clusters.
 
 ```{r plot_metadata_umaps, fig.height = 7, fig.width = 14, results='asis'}
-# Prepare UMAP coordinates from full integration data
-int_umap_for_meta <- int_dt_full[!is.na(UMAP1), c("cell_id", "UMAP1", "UMAP2", umap_vars), with = FALSE]
-
 if (length(umap_vars) > 0 && nrow(int_umap_for_meta) > 0) {
   cat('::: {.panel-tabset}\n\n')
   for (var_name in umap_vars) {
