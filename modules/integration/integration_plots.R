@@ -347,6 +347,45 @@ resolve_cluster_column <- function(int_dt, cl_col) {
 }
 
 # ---------------------------------------------------------------------------
+# UMAP split by metadata variable (binned, showing proportion of each category)
+# Similar to the doublet plot but generalized for any categorical variable
+# ---------------------------------------------------------------------------
+plot_umap_metadata_binned <- function(int_dt, var_name, focus_value = NULL) {
+  stopifnot(all(c("UMAP1", "UMAP2", var_name) %in% names(int_dt)))
+  
+  plot_dt <- copy(int_dt)[!is.na(get(var_name)), c("UMAP1", "UMAP2", var_name), with = FALSE]
+  plot_dt[, UMAP1 := rescale(UMAP1, to = c(0.05, 0.95))]
+  plot_dt[, UMAP2 := rescale(UMAP2, to = c(0.05, 0.95))]
+  
+  # If focus_value specified, compute proportion of that value in each bin
+  # Otherwise compute total count (density)
+  if (!is.null(focus_value)) {
+    plot_dt[, z_value := as.numeric(as.character(get(var_name)) == as.character(focus_value))]
+    stat_layer <- stat_summary_hex(aes(z = z_value), fun = 'mean', bins = 25)
+    fill_label <- sprintf('pct. of %s', focus_value)
+    fill_scale <- scale_fill_distiller(palette = 'RdYlBu', limits = c(0, 1),
+      breaks = pretty_breaks(), direction = -1)
+  } else {
+    plot_dt[, z_value := 1L]
+    stat_layer <- stat_summary_hex(aes(z = z_value), fun = 'sum', bins = 25)
+    fill_label <- 'cell count'
+    fill_scale <- scale_fill_distiller(palette = 'RdBu', trans = 'log10')
+  }
+  
+  ggplot(plot_dt) +
+    aes(x = UMAP1, y = UMAP2) +
+    stat_layer +
+    fill_scale +
+    labs(fill = fill_label) +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(), axis.ticks = element_blank(),
+      axis.text = element_blank(), aspect.ratio = 1,
+      legend.title.position = 'left', legend.position = 'bottom')
+}
+
+# ---------------------------------------------------------------------------
 # Cluster mixing diagnostics across samples
 # Matches scprocess plot_cluster_entropies exactly.
 # ---------------------------------------------------------------------------

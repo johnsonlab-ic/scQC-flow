@@ -209,6 +209,48 @@ tbl <- cluster_counts_tbl(int_dt_pass2, marker_cl_col)
 knitr::kable(tbl, caption = sprintf('Cell counts at res %s', marker_sel_res))
 ```
 
+## Metadata across UMAP space
+
+The plots below show how metadata variables are distributed across UMAP space using binned hexagonal plots. Each hexagon is coloured by the proportion of cells with each metadata value, allowing identification of spatial patterns and associations with cell types or clusters.
+
+```{r plot_metadata_umaps, fig.height = 7, fig.width = 14, results='asis'}
+if (length(umap_vars) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (var_name in umap_vars) {
+    cat('###', var_name, '\n\n')
+    var_vals <- int_dt_pass2[[var_name]]
+    var_vals <- var_vals[!is.na(var_vals)]
+    
+    if (length(var_vals) == 0) {
+      cat('No values available for this variable.\n\n')
+      next
+    }
+    
+    # For categorical variables, show each category in a separate plot
+    if (!is.numeric(var_vals) || uniqueN(var_vals) <= 12) {
+      unique_vals <- unique(as.character(var_vals))
+      unique_vals <- sort(unique_vals)
+      n_cols <- min(3, length(unique_vals))
+      n_rows <- ceiling(length(unique_vals) / n_cols)
+      
+      plot_list <- lapply(unique_vals, function(focus_val) {
+        plot_umap_metadata_binned(int_dt_pass2, var_name, focus_value = focus_val)
+      })
+      
+      combined <- wrap_plots(plot_list, ncol = n_cols, guides = 'auto')
+      print(combined)
+    } else {
+      # For continuous variables, show overall density
+      print(plot_umap_metadata_binned(int_dt_pass2, var_name, focus_value = NULL))
+    }
+    cat('\n\n')
+  }
+  cat(':::\n\n')
+} else {
+  cat('No metadata variables available for visualization.\n\n')
+}
+```
+
 ## Session info
 
 <details>

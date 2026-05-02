@@ -62,6 +62,11 @@ sample_meta_dt <- if (length(meta_var_cols) > 0) {
   data.table(sample_id = unique(int_dt$sample_id))
 }
 
+# Keep full int_dt for metadata UMAP visualization, create subset for annotation
+int_dt_full <- int_dt
+umap_vars <- unique(c("sample_id", meta_var_cols))
+umap_vars <- umap_vars[umap_vars %in% names(int_dt_full)]
+
 int_dt <- int_dt[!is.na(get(cl_col)) & sample_id != "", .(
   sample_id,
   cell_id,
@@ -420,6 +425,51 @@ if (nrow(cell_exp_dt) > 0) {
   cat(':::\n\n')
 } else {
   cat('No filtered H5 inputs were available to render marker expression UMAPs.\n\n')
+}
+```
+
+## Metadata across UMAP space
+
+The plots below show how metadata variables are distributed across UMAP space using binned hexagonal plots. Each hexagon is coloured by the proportion of cells with each metadata value, allowing identification of spatial patterns and associations with cell types or clusters.
+
+```{r plot_metadata_umaps, fig.height = 7, fig.width = 14, results='asis'}
+# Prepare UMAP coordinates from full integration data
+int_umap_for_meta <- int_dt_full[!is.na(UMAP1), c("cell_id", "UMAP1", "UMAP2", umap_vars), with = FALSE]
+
+if (length(umap_vars) > 0 && nrow(int_umap_for_meta) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (var_name in umap_vars) {
+    cat('###', var_name, '\n\n')
+    var_vals <- int_umap_for_meta[[var_name]]
+    var_vals <- var_vals[!is.na(var_vals)]
+    
+    if (length(var_vals) == 0) {
+      cat('No values available for this variable.\n\n')
+      next
+    }
+    
+    # For categorical variables, show each category in a separate plot
+    if (!is.numeric(var_vals) || uniqueN(var_vals) <= 12) {
+      unique_vals <- unique(as.character(var_vals))
+      unique_vals <- sort(unique_vals)
+      n_cols <- min(3, length(unique_vals))
+      
+      plot_list <- lapply(unique_vals, function(focus_val) {
+        plot_umap_metadata_binned(int_umap_for_meta, var_name, focus_value = focus_val)
+      })
+      
+      combined <- wrap_plots(plot_list, ncol = n_cols, guides = 'auto')
+      print(combined)
+    } else {
+      # For continuous variables, show overall density
+      print(plot_umap_metadata_binned(int_umap_for_meta, var_name, focus_value = NULL))
+    }
+    cat('\n\n')
+  }
+  cat(':::\n\n')
+  rm(int_umap_for_meta); gc(verbose = FALSE)
+} else {
+  cat('No metadata variables available for visualization.\n\n')
 }
 ```
 
