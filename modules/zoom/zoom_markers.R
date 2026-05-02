@@ -32,8 +32,9 @@ run_zoom_markers <- function() {
   biotypes_dt <- parse_gtf_annotations(genome_gtf)
   ann_dt <- load_annotation_cells(integration_f, sel_res, min_cl_size)
   pb_obj <- build_pseudobulk_from_h5s(h5_files, ann_dt, biotypes_dt)
-  logcpms_dt <- make_logcpms_all(pb_obj, min_cells = min_cells)
-  marker_dt <- calc_find_markers_pseudobulk(logcpms_dt, pb_obj$row_dt)
+  prep_obj <- prepare_cluster_matrices(pb_obj, min_cells = min_cells)
+  logcpms_dt <- make_logcpms_for_genes(prep_obj, pb_obj$row_dt, gene_ids = pb_obj$row_dt$gene_id)
+  marker_dt <- calc_find_markers_pseudobulk(prep_obj, pb_obj$row_dt)
 
   fwrite(marker_dt, out_markers)
   fwrite(logcpms_dt, out_logcpms)
