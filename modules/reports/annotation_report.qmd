@@ -12,11 +12,25 @@ execute:
   warning: false
   message: false
   cache: false
+  # Memory optimization: render plots to PNG immediately (rasterize large ComplexHeatmap objects)
+  fig.keep: 'high'
+  # Garbage collect aggressively in the report
+  include: true
 ---
 
 ```{r setup}
 source("annotation_utils.R")
 source("integration_plots.R")
+
+# Helper: load logCPMs for specific genes only (memory-efficient)
+load_logcpms_subset <- function(cpms_path, genes_of_interest, verbose = FALSE) {
+  if (verbose) cat("Loading logCPMs for", length(genes_of_interest), "genes...\n")
+  cpms_full <- fread(cpms_path)
+  sel_genes <- intersect(genes_of_interest, cpms_full$gene_id)
+  out <- cpms_full[gene_id %in% sel_genes]
+  rm(cpms_full); gc(verbose = FALSE)
+  return(out)
+}
 
 sel_res <- Sys.getenv("ANNOTATION_SEL_RES", "0.2")
 min_cpm_mkr <- as.numeric(Sys.getenv("ANNOTATION_MIN_CPM_MKR", "50"))
@@ -29,7 +43,9 @@ max_zero_p <- as.numeric(Sys.getenv("ANNOTATION_MAX_ZERO_P", "0.5"))
 ```{r load_data}
 int_dt <- fread("integration_dt.csv.gz")
 mkrs_dt <- fread("annotation_markers.csv.gz")
-cpms_dt <- fread("annotation_logcpms.csv.gz")
+# Don't load full logCPMs yet; load on-demand per section
+cpms_path <- "annotation_logcpms.csv.gz"
+cpms_dt <- NULL
 panel_dt <- fread("annotation_marker_panel.csv.gz")
 marker_expr_rds <- "annotation_marker_expression.rds"
 cell_labels_f <- "annotation_cell_labels.csv.gz"
@@ -108,12 +124,25 @@ panel_ls <- setNames(
   panel_label_levels
 )
 
+# Determine which genes will actually be used in plots
+genes_for_plots <- unique(c(
+  panel_dt$gene_id,
+  mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][logcpm.sel >= log(min_cpm_mkr + 1)]$gene_id,
+  top_min_dt$gene_id
+))
+
+# Load logCPMs only for genes that will be displayed
+cpms_dt <- load_logcpms_subset(cpms_path, genes_for_plots, verbose = TRUE)
+
 cell_exp_dt <- data.table()
 top_marker_expr_dt <- if (file.exists("annotation_top_marker_expression.rds")) {
   readRDS("annotation_top_marker_expression.rds")
 } else {
   data.table()
 }
+
+# Clean up after initial data preparation
+gc(verbose = FALSE)
 ```
 
 ## Annotation setup
@@ -150,6 +179,7 @@ suppressMessages(draw(
   annotation_legend_side = "bottom",
   merge_legend = TRUE
 ))
+rm(panel_dt); gc(verbose = FALSE)
 ```
 
 ### Top markers by cluster
@@ -162,6 +192,7 @@ if (nrow(top_heatmap_panel_dt) > 0) {
     annotation_legend_side = "bottom",
     merge_legend = TRUE
   ))
+  rm(top_heatmap_panel_dt); gc(verbose = FALSE)
 } else {
   cat("No top markers passed the display filters for the heatmap.\n")
 }
@@ -197,6 +228,8 @@ for (sel_cl in cl_ord) {
     cat("\n\n")
     cat(":::\n\n")
   }
+  # Clean up after each cluster to avoid memory accumulation
+  if (which(cl_ord == sel_cl) %% 5 == 0) gc(verbose = FALSE)
 }
 cat(':::\n\n')
 ```
@@ -205,7 +238,8 @@ cat(':::\n\n')
 
 ```{r plot_provided_marker_panels, fig.height = 9, fig.width = 10, results = 'asis'}
 cat('::: {.panel-tabset}\n\n')
-for (label_name in names(panel_ls)) {
+for (i_panel in seq_along(names(panel_ls))) {
+  label_name <- names(panel_ls)[i_panel]
   cat('###', label_name, '\n\n')
   sel_panel_dt <- panel_ls[[label_name]]
   highlight_clusters <- as.character(cluster_label_dt[as.character(label) == label_name, cluster])
@@ -217,6 +251,8 @@ for (label_name in names(panel_ls)) {
     title = sprintf('%s provided marker genes', label_name)
   ))
   cat('\n\n')
+  # Clean up every 3 panels
+  if (i_panel %% 3 == 0) gc(verbose = FALSE)
 }
 cat(':::\n\n')
 ```
@@ -352,7 +388,10 @@ cell_exp_dt <- if (file.exists(marker_expr_rds)) readRDS(marker_expr_rds) else d
 
 if (nrow(cell_exp_dt) > 0) {
   cat('::: {.panel-tabset}\n\n')
-  for (label_name in names(panel_ls)) {
+  int_umap_subset <- int_dt[, .(cell_id, UMAP1, UMAP2, cluster)]  # Subset once
+  
+  for (i_label in seq_along(names(panel_ls))) {
+    label_name <- names(panel_ls)[i_label]
     cat('###', label_name, '\n\n')
     sel_expr_dt <- cell_exp_dt[as.character(label) == label_name]
     if (nrow(sel_expr_dt) == 0) {
@@ -361,18 +400,23 @@ if (nrow(cell_exp_dt) > 0) {
     }
 
     gene_levels <- unique(as.character(sel_expr_dt$symbol))
-    for (gene_name in gene_levels) {
+    for (i_gene in seq_along(gene_levels)) {
+      gene_name <- gene_levels[i_gene]
       cat('####', gene_name, '\n\n')
       print(plot_expression_umap_pair(
         sel_expr_dt[as.character(symbol) == gene_name, .(cell_id, expr)],
-        int_dt[, .(cell_id, UMAP1, UMAP2, cluster)],
+        int_umap_subset,
         cluster_col = 'cluster',
         gene_name = gene_name,
         cluster_name = sprintf('cluster (res. %s)', sel_res)
       ))
       cat('\n\n')
+      # Aggressive cleanup for large label/gene combinations
+      if (i_gene %% 2 == 0) gc(verbose = FALSE)
     }
+    if (i_label %% 2 == 0) gc(verbose = FALSE)
   }
+  rm(int_umap_subset, cell_exp_dt); gc(verbose = FALSE)
   cat(':::\n\n')
 } else {
   cat('No filtered H5 inputs were available to render marker expression UMAPs.\n\n')
