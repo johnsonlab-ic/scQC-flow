@@ -24,7 +24,7 @@ zoom_values_str <- Sys.getenv("ZOOM_VALUES", "")
 zoom_values <- trimws(strsplit(zoom_values_str, ",")[[1]])
 zoom_values <- zoom_values[nzchar(zoom_values)]
 
-marker_sel_res <- Sys.getenv("ZOOM_MARKER_SEL_RES", "0.2")
+marker_sel_res <- Sys.getenv("ZOOM_MARKER_SEL_RES", "0.5")
 marker_top_n <- as.integer(Sys.getenv("ZOOM_MARKER_TOP_N", "10"))
 marker_min_cpm <- as.numeric(Sys.getenv("ZOOM_MARKER_MIN_CPM", "50"))
 marker_fdr_cut <- as.numeric(Sys.getenv("ZOOM_MARKER_FDR_CUT", "0.01"))
@@ -79,7 +79,7 @@ feature_sources <- list(
 )
 
 present_leiden <- grep("^(RNA_snn_res\\.|leiden_)", names(int_dt), value = TRUE)
-present_leiden <- present_leiden[order(as.numeric(sub("^(RNA_snn_res\\.|leiden_)", "", present_leiden)))]
+present_leiden <- present_leiden[order(as.numeric(sub("^(RNA_snn_res\\.|leiden_)", "", present_leiden)), decreasing = TRUE)]
 int_dt_pass2 <- int_dt[!is.na(UMAP1)]
 
 feature_cols <- unique(unlist(lapply(feature_sources, `[[`, "source")))

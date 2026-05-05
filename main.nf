@@ -218,6 +218,8 @@ workflow {
 
             def integrationLeidenRaw = rawSpec.integration_leiden_res ?: zoomConfig.default_integration_leiden_res ?: params.integration_leiden_res
             def integrationLeiden = integrationLeidenRaw instanceof Collection ? integrationLeidenRaw.collect { value -> value.toString() }.join(' ') : integrationLeidenRaw.toString()
+            def integrationLeidenVals = integrationLeiden.tokenize(' ').findAll { value -> value?.trim() }
+            def finestIntegrationRes = integrationLeidenVals ? integrationLeidenVals.max { a, b -> (new BigDecimal(a)) <=> (new BigDecimal(b)) } : '0.5'
 
             def normalizedSpec = [
                 name: zoomName,
@@ -231,7 +233,7 @@ workflow {
                 integration_dbl_res: (rawSpec.integration_dbl_res ?: zoomConfig.default_integration_dbl_res ?: params.integration_dbl_res) as BigDecimal,
                 integration_dbl_cl_prop: (rawSpec.integration_dbl_cl_prop ?: zoomConfig.default_integration_dbl_cl_prop ?: params.integration_dbl_cl_prop) as BigDecimal,
                 exclude_mito: rawSpec.containsKey('exclude_mito') ? rawSpec.exclude_mito : (zoomConfig.containsKey('default_exclude_mito') ? zoomConfig.default_exclude_mito : params.exclude_mito),
-                marker_sel_res: (rawSpec.marker_sel_res ?: zoomConfig.default_marker_sel_res ?: '0.2').toString(),
+                marker_sel_res: (rawSpec.marker_sel_res ?: zoomConfig.default_marker_sel_res ?: finestIntegrationRes).toString(),
                 marker_min_cl_size: (rawSpec.marker_min_cl_size ?: zoomConfig.default_marker_min_cl_size ?: 100) as Integer,
                 marker_min_cells: (rawSpec.marker_min_cells ?: zoomConfig.default_marker_min_cells ?: 10) as Integer,
                 marker_top_n: (rawSpec.marker_top_n ?: zoomConfig.default_marker_top_n ?: 10) as Integer,
@@ -244,6 +246,7 @@ workflow {
                 normalizedSpec.values = zoomValues
                 normalizedSpec.cluster_res = (rawSpec.cluster_res ?: zoomConfig.default_cluster_res ?: '0.2').toString()
             } else {
+                normalizedSpec.values = [zoomLabel]
                 normalizedSpec.label = zoomLabel
             }
 
@@ -483,9 +486,10 @@ workflow {
                     if (normalizedZoomSpecs) {
                         ZOOMS(
                             channel.fromList(normalizedZoomSpecs),
+                            MAPPING.out.h5_files,
+                            MAPPING.out.knee_data,
                             AMBIENT.out.h5_files,
                             QC.out.qc_metrics,
-                            AMBIENT.out.de_table,
                             INTEGRATION.out.integration_dt,
                             annotation_cell_labels_ch
                         )

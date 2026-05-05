@@ -21,6 +21,8 @@ include { INTEGRATION_REPORT } from '../modules/reports/reports.nf'
 include { RUN_ANNOTATION_MARKERS } from '../modules/annotation/annotation.nf'
 include { ANNOTATION_REPORT } from '../modules/reports/reports.nf'
 include { PREPARE_ZOOM_SUBSET } from '../modules/zoom/zoom.nf'
+include { STAGE_ZOOM_RAW_H5 } from '../modules/zoom/zoom.nf'
+include { ZOOM_AMBIENT_DE } from '../modules/zoom/zoom.nf'
 include { ZOOM_HVG_SELECTION } from '../modules/zoom/zoom.nf'
 include { RUN_ZOOM_INTEGRATION } from '../modules/zoom/zoom.nf'
 include { RUN_ZOOM_MARKERS } from '../modules/zoom/zoom.nf'
@@ -436,9 +438,10 @@ workflow ZOOMS {
 
     take:
     zoom_specs_ch
+    raw_h5_ch
+    knee_ch
     h5_ch
     qc_metrics_ch
-    de_table
     integration_dt_ch
     annotation_cell_labels_ch
 
@@ -457,11 +460,21 @@ workflow ZOOMS {
         channel.value(file("${projectDir}/modules/zoom/prepare_zoom_subset.py"))
     )
 
-    ZOOM_HVG_SELECTION(
+    STAGE_ZOOM_RAW_H5(raw_h5_ch)
+
+    ZOOM_AMBIENT_DE(
         PREPARE_ZOOM_SUBSET.out.zoom_inputs,
+        STAGE_ZOOM_RAW_H5.out.h5.collect(),
+        knee_ch.map { _id, csv -> csv }.collect(),
         h5_ch.map { _id, h5 -> h5 }.collect(),
         channel.value(file(params.genome_gtf)),
-        de_table,
+        channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
+    )
+
+    ZOOM_HVG_SELECTION(
+        ZOOM_AMBIENT_DE.out.zoom_ambient,
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        channel.value(file(params.genome_gtf)),
         channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
     )
 

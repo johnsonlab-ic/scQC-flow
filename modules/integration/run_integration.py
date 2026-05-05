@@ -631,6 +631,83 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     _log('=== INTEGRATION done ===')
 
 
+def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
+                         n_dims, cluster_seed, theta, res_ls, out_csv):
+    """Single-pass singlet-only integration for zoom workflows."""
+
+    _log('=== ZOOM INTEGRATION (singlet-only) ===')
+    _log(f"Input singlet HVG H5: {hvg_h5}")
+    _log(f"QC files discovered: {len(qc_csv_files)}")
+    _log(f"Metadata vars: {metadata_vars if metadata_vars else ['sample_id']}")
+    _log(f"Exclude mito from normalization: {exclude_mito}")
+    _log(f"Cluster / UMAP seed: {cluster_seed}")
+
+    np.random.seed(cluster_seed)
+    random.seed(cluster_seed)
+
+    with _timed_step('Loading singlet HVG matrix'):
+        hvg_mat, bcs_passed, _ = _get_hvg_mat(hvg_h5, None)
+    _describe_sparse_matrix('  Singlet HVG matrix', hvg_mat)
+
+    with _timed_step('Loading zoom cell metadata'):
+        cells_df = _get_cells_df(qc_csv_files, bcs_passed, [], metadata_vars=metadata_vars)
+    _log(f'  cells_df: {len(cells_df):,} singlet cells')
+
+    with _timed_step('Normalising HVG matrix'):
+        hvg_mat = _normalize_hvg_mat(hvg_mat, cells_df, exclude_mito)
+
+    adata = ad.AnnData(X=hvg_mat.T, obs=cells_df.reset_index(drop=True))
+    adata.obs_names_make_unique()
+    _log(f'  AnnData: {adata.shape[0]:,} cells x {adata.shape[1]:,} genes')
+
+    if metadata_vars and len(metadata_vars) > 0:
+        if len(metadata_vars) == 1:
+            batch_var = metadata_vars[0]
+            adata.obs[batch_var] = adata.obs[batch_var].astype(str)
+        else:
+            batch_var = '_harmony_batch'
+            adata.obs[batch_var] = (
+                adata.obs[metadata_vars].astype(str).agg('__'.join, axis=1)
+            )
+    else:
+        batch_var = 'sample_id'
+        adata.obs[batch_var] = adata.obs[batch_var].astype(str)
+
+    n_batch_levels = adata.obs[batch_var].nunique()
+    _log(
+        f"  Zoom batch variable: '{batch_var}' with {n_batch_levels} level(s)"
+    )
+
+    int_df = _do_one_integration(
+        adata,
+        batch_var=batch_var,
+        n_dims=n_dims,
+        res_ls=res_ls,
+        theta=theta,
+        cluster_seed=cluster_seed,
+    )
+
+    meta_cols = ['sample_id'] + [col for col in metadata_vars if col != 'sample_id']
+    cell_meta_df = cells_df[['cell_id'] + meta_cols].drop_duplicates('cell_id')
+    int_df = int_df.merge(cell_meta_df, on='cell_id', how='left', suffixes=('', '__meta'))
+    for col in meta_cols:
+        meta_col = f'{col}__meta'
+        if meta_col not in int_df.columns:
+            continue
+        if col in int_df.columns:
+            int_df[col] = int_df[col].fillna(int_df[meta_col])
+            int_df = int_df.drop(columns=meta_col)
+        else:
+            int_df = int_df.rename(columns={meta_col: col})
+
+    _log(f'Saving zoom integration table to {out_csv}')
+    with _timed_step('Writing zoom integration output'):
+        with gzip.open(out_csv, 'wt') as fh:
+            int_df.to_csv(fh, index=False)
+    _log(f'  Written {len(int_df):,} rows')
+    _log('=== ZOOM INTEGRATION done ===')
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -659,6 +736,8 @@ if __name__ == '__main__':
                         help='Harmony theta for clean integration pass')
     parser.add_argument('--leiden_res',      type=str, default='0.2 0.5 1.0',
                         help='Space-separated Leiden resolutions for clean pass')
+    parser.add_argument('--singlet_only',    action='store_true',
+                        help='Run single-pass singlet-only integration (used by zoom workflows)')
     parser.add_argument('--out_csv',         type=str, default='integration_dt.csv.gz')
     args = parser.parse_args()
 
@@ -671,17 +750,30 @@ if __name__ == '__main__':
     if not qc_files:
         sys.exit(f"ERROR: no QC files matched pattern '{args.qc_pattern}'")
 
-    run_integration(
-        hvg_h5          = args.hvg_h5,
-        dbl_hvg_h5      = args.dbl_hvg_h5,
-        qc_csv_files    = qc_files,
-        metadata_vars   = metadata_vars,
-        exclude_mito    = args.exclude_mito,
-        n_dims          = args.n_dims,
-        cluster_seed    = args.cluster_seed,
-        dbl_res         = args.dbl_res,
-        dbl_cl_prop     = args.dbl_cl_prop,
-        theta           = args.theta,
-        res_ls          = res_ls,
-        out_csv         = args.out_csv,
-    )
+    if args.singlet_only:
+        run_zoom_integration(
+            hvg_h5          = args.hvg_h5,
+            qc_csv_files    = qc_files,
+            metadata_vars   = metadata_vars,
+            exclude_mito    = args.exclude_mito,
+            n_dims          = args.n_dims,
+            cluster_seed    = args.cluster_seed,
+            theta           = args.theta,
+            res_ls          = res_ls,
+            out_csv         = args.out_csv,
+        )
+    else:
+        run_integration(
+            hvg_h5          = args.hvg_h5,
+            dbl_hvg_h5      = args.dbl_hvg_h5,
+            qc_csv_files    = qc_files,
+            metadata_vars   = metadata_vars,
+            exclude_mito    = args.exclude_mito,
+            n_dims          = args.n_dims,
+            cluster_seed    = args.cluster_seed,
+            dbl_res         = args.dbl_res,
+            dbl_cl_prop     = args.dbl_cl_prop,
+            theta           = args.theta,
+            res_ls          = res_ls,
+            out_csv         = args.out_csv,
+        )

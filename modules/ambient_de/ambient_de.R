@@ -96,8 +96,9 @@ suppressPackageStartupMessages({
 # ===========================================================================
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 1L) stop("Usage: ambient_de.R <genome_gtf>")
+if (!(length(args) %in% c(1L, 2L))) stop("Usage: ambient_de.R <genome_gtf> [subset_qc_csv_glob]")
 gtf_f <- args[1]
+subset_qc_pattern <- if (length(args) == 2L) args[2] else NULL
 
 # --- Locate input files ---
 raw_h5_files  <- sort(Sys.glob("barcode_matrix_*.h5"))
@@ -107,6 +108,17 @@ filt_h5_files <- sort(Sys.glob("filt_counts_*.h5"))
 if (length(raw_h5_files) == 0L) stop("No barcode_matrix_*.h5 files found")
 if (length(knee_files)    == 0L) stop("No knee_plot_data_*.csv files found")
 if (length(filt_h5_files) == 0L) stop("No filt_counts_*.h5 files found")
+
+subset_qc_dt <- NULL
+if (!is.null(subset_qc_pattern)) {
+  subset_qc_files <- sort(Sys.glob(subset_qc_pattern))
+  if (length(subset_qc_files) == 0L) {
+    stop("No subset QC files matched pattern: ", subset_qc_pattern)
+  }
+  subset_qc_dt <- rbindlist(lapply(subset_qc_files, fread), use.names = TRUE, fill = TRUE)
+  subset_qc_dt[, sample_id := as.character(sample_id)]
+  subset_qc_dt[, cell_id := as.character(cell_id)]
+}
 
 # Extract sample IDs from raw H5 filenames (canonical order)
 sample_ids <- sub("\\.h5$", "", sub("^barcode_matrix_", "", basename(raw_h5_files)))
@@ -155,6 +167,12 @@ for (i in seq_along(sample_ids)) {
 
   # --- Cells pseudobulk ---
   filt_mat  <- .get_h5_mx(filt_f)
+  if (!is.null(subset_qc_dt)) {
+    sel_bcs <- intersect(subset_qc_dt[sample_id == sid, unique(cell_id)], colnames(filt_mat))
+    message("  Selected zoom cells: ", length(sel_bcs))
+    if (length(sel_bcs) == 0L) stop("No selected zoom cells found for sample: ", sid)
+    filt_mat <- filt_mat[, sel_bcs, drop = FALSE]
+  }
   filt_sua  <- .sum_sua(filt_mat)
   cell_cols[[sid]] <- Matrix::rowSums(filt_sua)
   rm(filt_mat, filt_sua); gc()
