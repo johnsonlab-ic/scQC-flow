@@ -177,12 +177,12 @@ process ANNOTATION_REPORT {
   publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true
 
     input:
+        path h5_files
     path integration_csv
     path marker_stats_csv
     path logcpms_csv
     path marker_panel_csv
     path marker_expr_rds
-    path top_marker_expr_rds
     path cell_labels_csv
     path report_qmd
     path utils_r

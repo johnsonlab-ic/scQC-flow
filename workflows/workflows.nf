@@ -401,12 +401,12 @@ workflow ANNOTATION {
     )
 
     ANNOTATION_REPORT(
+        h5_ch.map { _id, h5 -> h5 }.collect(),
         integration_dt_ch,
         RUN_ANNOTATION_MARKERS.out.markers,
         RUN_ANNOTATION_MARKERS.out.logcpms,
         RUN_ANNOTATION_MARKERS.out.marker_panel,
         RUN_ANNOTATION_MARKERS.out.marker_expr,
-        RUN_ANNOTATION_MARKERS.out.top_marker_expr,
         RUN_ANNOTATION_MARKERS.out.cell_labels,
         channel.value(file("${projectDir}/modules/reports/annotation_report.qmd")),
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R")),
