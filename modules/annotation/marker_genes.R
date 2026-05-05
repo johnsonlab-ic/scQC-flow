@@ -3,6 +3,10 @@
 source("annotation_utils.R")
 
 run_annotation_markers <- function() {
+  sanitize_cluster_id <- function(x) {
+    gsub("[^A-Za-z0-9._-]+", "_", as.character(x))
+  }
+
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) != 15) {
     stop(
@@ -10,7 +14,7 @@ run_annotation_markers <- function() {
         "Usage: marker_genes.R <integration_csv> <genome_gtf> <marker_csv>",
         "<sel_res> <min_cl_size> <min_cells>",
         "<out_markers> <out_logcpms> <out_panel> <out_marker_expr> <out_cell_labels>",
-        "<out_top_marker_expr> <out_pseudobulk> <n_cores> <h5_pattern>"
+        "<out_top_marker_expr_dir> <out_pseudobulk> <n_cores> <h5_pattern>"
       )
     )
   }
@@ -26,7 +30,7 @@ run_annotation_markers <- function() {
   out_panel <- args[9]
   out_marker_expr <- args[10]
   out_cell_labels <- args[11]
-  out_top_marker_expr <- args[12]
+  out_top_marker_expr_dir <- args[12]
   out_pseudobulk <- args[13]
   n_cores <- as.integer(args[14])
   h5_pattern <- args[15]
@@ -95,19 +99,26 @@ run_annotation_markers <- function() {
   marker_expr_dt <- expr_ls$panel
   top_marker_expr_dt <- expr_ls$top
 
+  dir.create(out_top_marker_expr_dir, recursive = TRUE, showWarnings = FALSE)
+  top_labels <- unique(as.character(top_marker_expr_dt$label))
+  for (lbl in top_labels) {
+    dt <- top_marker_expr_dt[as.character(label) == lbl, .(label, cell_id, symbol, expr)]
+    out_f <- file.path(out_top_marker_expr_dir, sprintf("top_marker_expr_%s.rds", sanitize_cluster_id(lbl)))
+    saveRDS(dt, out_f)
+  }
+
   fwrite(marker_dt, out_markers)
   fwrite(logcpms_dt, out_logcpms)
   fwrite(panel_dt, out_panel)
   saveRDS(marker_expr_dt, out_marker_expr)
   fwrite(cell_labels_dt, out_cell_labels)
-  saveRDS(top_marker_expr_dt, out_top_marker_expr)
 
   message("Wrote marker statistics: ", out_markers)
   message("Wrote logCPM summaries: ", out_logcpms)
   message("Wrote processed marker panel: ", out_panel)
   message("Wrote marker-expression cache: ", out_marker_expr)
   message("Wrote per-cell annotation labels: ", out_cell_labels)
-  message("Wrote top-marker expression cache: ", out_top_marker_expr)
+  message("Wrote top-marker expression cache dir: ", out_top_marker_expr_dir)
   message("=== ANNOTATION done ===")
 }
 

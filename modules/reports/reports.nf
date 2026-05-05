@@ -182,7 +182,7 @@ process ANNOTATION_REPORT {
     path logcpms_csv
     path marker_panel_csv
     path marker_expr_rds
-    path top_marker_expr_rds
+    path top_marker_expr_dir
     path cell_labels_csv
     path report_qmd
     path utils_r
