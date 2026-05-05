@@ -22,10 +22,6 @@ execute:
 source("annotation_utils.R")
 source("integration_plots.R")
 
-sanitize_cluster_id <- function(x) {
-  gsub("[^A-Za-z0-9._-]+", "_", as.character(x))
-}
-
 # Helper: load logCPMs for specific genes only (memory-efficient)
 load_logcpms_subset <- function(cpms_path, genes_of_interest, verbose = FALSE) {
   genes_of_interest <- unique(genes_of_interest[!is.na(genes_of_interest) & nzchar(genes_of_interest)])
@@ -225,21 +221,24 @@ if (nrow(top_heatmap_panel_dt) > 0) {
 ## Top marker genes by cluster at resolution `r sel_res`
 
 ```{r plot_top_markers, results = 'asis'}
-top_marker_expr_dir <- "annotation_top_marker_expression"
+top_marker_expr_dt <- if (file.exists("annotation_top_marker_expression.rds")) {
+  readRDS("annotation_top_marker_expression.rds")
+} else {
+  data.table()
+}
 
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in cl_ord) {
   cat(sprintf("### %s\n\n", sel_cl))
   has_markers  <- sel_cl %in% as.character(top_min_dt$cluster)
-  cl_file <- file.path(top_marker_expr_dir, sprintf("top_marker_expr_%s.rds", sanitize_cluster_id(sel_cl)))
-  has_umap_expr <- file.exists(cl_file)
+  has_umap_expr <- nrow(top_marker_expr_dt) > 0 &&
+    any(as.character(top_marker_expr_dt$label) == as.character(sel_cl))
   if (!has_markers) {
     cat("No marker genes passed the display filters for this cluster.\n\n")
   } else if (!has_umap_expr) {
     print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
     cat("\n\n")
   } else {
-    top_marker_expr_dt <- readRDS(cl_file)
     cat("::: {.panel-tabset}\n\n")
     cat("#### Expression dotplot\n\n")
     print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
@@ -252,12 +251,12 @@ for (sel_cl in cl_ord) {
     if (!is.null(g_umap)) print(g_umap)
     cat("\n\n")
     cat(":::\n\n")
-    rm(top_marker_expr_dt)
   }
   # Clean up after each cluster to avoid memory accumulation
-  gc(verbose = FALSE)
+  if (which(cl_ord == sel_cl) %% 5 == 0) gc(verbose = FALSE)
 }
 cat(':::\n\n')
+rm(top_marker_expr_dt); gc(verbose = FALSE)
 ```
 
 ## Provided marker genes by label

@@ -19,7 +19,7 @@ process RUN_ANNOTATION_MARKERS {
     path "annotation_marker_panel.csv.gz", emit: marker_panel
     path "annotation_marker_expression.rds", emit: marker_expr
     path "annotation_cell_labels.csv.gz", emit: cell_labels
-    path "annotation_top_marker_expression", emit: top_marker_expr
+    path "annotation_top_marker_expression.rds", emit: top_marker_expr
 
     script:
     """
@@ -38,7 +38,7 @@ process RUN_ANNOTATION_MARKERS {
         annotation_marker_panel.csv.gz \
         annotation_marker_expression.rds \
         annotation_cell_labels.csv.gz \
-        annotation_top_marker_expression \
+        annotation_top_marker_expression.rds \
         annotation_pseudobulk.rds \
         ${task.cpus} \
         'filt_counts_*.h5'
