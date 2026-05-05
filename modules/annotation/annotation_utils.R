@@ -865,7 +865,32 @@ plot_expression_umap_pair <- function(expr_dt, meta_dt,
   g_cluster + g_expr + plot_layout(widths = c(1, 1))
 }
 
-plot_top_marker_umap_facet <- function(sel_cl, top_mkrs_dt, top_expr_dt, int_umap_dt, ncol = 4) {
+downsample_feature_umap_cells <- function(plot_dt, expr_cols, max_cells = 30000L, keep_top_frac = 0.2) {
+  stopifnot(all(expr_cols %in% names(plot_dt)))
+
+  if (nrow(plot_dt) <= max_cells) {
+    return(plot_dt)
+  }
+
+  keep_top_n <- min(as.integer(ceiling(max_cells * keep_top_frac)), nrow(plot_dt), max_cells)
+  expr_mat <- as.matrix(plot_dt[, ..expr_cols])
+  max_expr <- do.call(pmax, c(split(expr_mat, col(expr_mat)), list(na.rm = TRUE)))
+  max_expr[!is.finite(max_expr)] <- 0
+
+  top_idx <- order(max_expr, decreasing = TRUE)[seq_len(keep_top_n)]
+  if (keep_top_n >= max_cells) {
+    keep_idx <- top_idx
+  } else {
+    rest_idx <- setdiff(seq_len(nrow(plot_dt)), top_idx)
+    rest_n <- min(length(rest_idx), max_cells - keep_top_n)
+    keep_idx <- c(top_idx, if (rest_n > 0) sample(rest_idx, rest_n) else integer())
+  }
+
+  plot_dt[sort(keep_idx)]
+}
+
+plot_top_marker_umap_facet <- function(sel_cl, top_mkrs_dt, top_expr_dt, int_umap_dt, ncol = 4,
+                                       max_cells = 30000L, raster_dpi = 150) {
   sel_mkrs <- top_mkrs_dt[cluster == sel_cl, .(gene_id, symbol)]
   if (nrow(sel_mkrs) == 0 || nrow(top_expr_dt) == 0) return(NULL)
 
@@ -881,7 +906,9 @@ plot_top_marker_umap_facet <- function(sel_cl, top_mkrs_dt, top_expr_dt, int_uma
   expr_wide <- dcast(sel_expr, cell_id ~ symbol, value.var = "expr", fill = 0)
   plot_dt <- merge(base_dt, expr_wide, by = "cell_id", all.x = TRUE)
   present_genes <- gene_levels[gene_levels %in% names(plot_dt)]
+  if (length(present_genes) == 0) return(NULL)
   for (g in present_genes) set(plot_dt, which(is.na(plot_dt[[g]])), g, 0)
+  plot_dt <- downsample_feature_umap_cells(plot_dt, present_genes, max_cells = max_cells)
 
   plot_dt_long <- melt(
     plot_dt,
@@ -892,8 +919,14 @@ plot_top_marker_umap_facet <- function(sel_cl, top_mkrs_dt, top_expr_dt, int_uma
   )
   plot_dt_long[, symbol := factor(as.character(symbol), levels = present_genes)]
 
+  point_layer <- if (requireNamespace("ggrastr", quietly = TRUE)) {
+    ggrastr::geom_point_rast(size = 0.15, stroke = 0, raster.dpi = raster_dpi)
+  } else {
+    geom_point(size = 0.15, stroke = 0)
+  }
+
   ggplot(plot_dt_long[order(expr)], aes(UMAP1, UMAP2, colour = expr)) +
-    geom_point(size = 0.15, stroke = 0) +
+    point_layer +
     scale_colour_viridis_c(option = "magma", guide = "none") +
     facet_wrap(~ symbol, ncol = ncol) +
     theme_void() +
