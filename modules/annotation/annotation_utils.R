@@ -5,6 +5,7 @@ suppressPackageStartupMessages({
   library(data.table)
   library(edgeR)
   library(ggplot2)
+  library(ggrastr)
   library(grid)
   library(Matrix)
   library(patchwork)
@@ -693,7 +694,7 @@ plot_umap_cluster <- function(umap_dt, clust_dt, name) {
 
   ggplot(plot_dt) +
     aes(x = UMAP1, y = UMAP2, colour = label_lu[as.character(cluster)]) +
-    geom_point(size = 0.1) +
+    geom_point_rast(size = 0.1, raster.dpi = 150) +
     scale_colour_manual(values = cl_cols,
       guide = guide_legend(override.aes = list(size = 3), nrow = n_rows_lgd)) +
     scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
@@ -838,7 +839,7 @@ plot_expression_umap_pair <- function(expr_dt, meta_dt,
 
   g_cluster <- ggplot(plot_dt[sample(.N, .N)]) +
     aes(x = UMAP1, y = UMAP2, colour = cluster_plot) +
-    geom_point(size = 0.1) +
+    geom_point_rast(size = 0.1, raster.dpi = 150) +
     geom_text(
       data = label_dt,
       aes(x = UMAP1, y = UMAP2, label = cluster_plot),
@@ -852,7 +853,7 @@ plot_expression_umap_pair <- function(expr_dt, meta_dt,
 
   g_expr <- ggplot(plot_dt[order(expr)]) +
     aes(x = UMAP1, y = UMAP2, colour = expr) +
-    geom_point(size = 0.1) +
+    geom_point_rast(size = 0.1, raster.dpi = 150) +
     scale_colour_viridis_c(
       option = "magma",
       breaks = pretty_breaks(),
@@ -919,14 +920,8 @@ plot_top_marker_umap_facet <- function(sel_cl, top_mkrs_dt, top_expr_dt, int_uma
   )
   plot_dt_long[, symbol := factor(as.character(symbol), levels = present_genes)]
 
-  point_layer <- if (requireNamespace("ggrastr", quietly = TRUE)) {
-    ggrastr::geom_point_rast(size = 0.15, stroke = 0, raster.dpi = raster_dpi)
-  } else {
-    geom_point(size = 0.15, stroke = 0)
-  }
-
   ggplot(plot_dt_long[order(expr)], aes(UMAP1, UMAP2, colour = expr)) +
-    point_layer +
+    geom_point_rast(size = 0.15, stroke = 0, raster.dpi = raster_dpi) +
     scale_colour_viridis_c(option = "magma", guide = "none") +
     facet_wrap(~ symbol, ncol = ncol) +
     theme_void() +
