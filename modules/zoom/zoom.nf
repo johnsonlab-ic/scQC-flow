@@ -8,7 +8,7 @@ process STAGE_ZOOM_RAW_H5 {
     tuple val(sampleId), path(h5_file)
 
     output:
-    tuple val(sampleId), path("barcode_matrix_${sampleId}.h5"), emit: h5
+    path "barcode_matrix_${sampleId}.h5", emit: h5
 
     script:
     """
