@@ -19,7 +19,6 @@ process RUN_ANNOTATION_MARKERS {
     path "annotation_marker_panel.csv.gz", emit: marker_panel
     path "annotation_marker_expression.rds", emit: marker_expr
     path "annotation_cell_labels.csv.gz", emit: cell_labels
-    path "annotation_top_marker_expression.rds", emit: top_marker_expr
 
     script:
     """
@@ -38,9 +37,43 @@ process RUN_ANNOTATION_MARKERS {
         annotation_marker_panel.csv.gz \
         annotation_marker_expression.rds \
         annotation_cell_labels.csv.gz \
-        annotation_top_marker_expression.rds \
         annotation_pseudobulk.rds \
         ${task.cpus} \
+        'filt_counts_*.h5'
+    """
+}
+
+process PREP_REPORT_INPUTS {
+    label     "process_high"
+    tag       "prep_report_inputs"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
+
+    input:
+    path h5_files
+    path integration_csv
+    path marker_stats_csv
+    path script
+    path utils_r
+
+    output:
+    path "annotation_top_marker_expression.rds", emit: top_marker_expr
+
+    script:
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+    export ANNOTATION_SEL_RES="${params.annotation_sel_res}"
+    export ANNOTATION_MIN_CPM_MKR="${params.annotation_min_cpm_mkr}"
+    export ANNOTATION_NOT_OK_RE="${params.annotation_not_ok_re}"
+    export ANNOTATION_TOP_N="${params.annotation_top_n}"
+    export ANNOTATION_FDR_CUT="${params.annotation_fdr_cut}"
+    export ANNOTATION_MAX_ZERO_P="${params.annotation_max_zero_p}"
+
+    Rscript ${script} \
+        ${integration_csv} \
+        ${marker_stats_csv} \
+        annotation_top_marker_expression.rds \
         'filt_counts_*.h5'
     """
 }

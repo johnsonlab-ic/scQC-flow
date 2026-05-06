@@ -66,7 +66,7 @@ cpms_path <- "annotation_logcpms.csv.gz"
 cpms_dt <- NULL
 panel_dt <- fread("annotation_marker_panel.csv.gz")
 marker_expr_rds <- "annotation_marker_expression.rds"
-h5_files <- Sys.glob("filt_counts_*.h5")
+top_marker_expr_rds <- "annotation_top_marker_expression.rds"
 cell_labels_f <- "annotation_cell_labels.csv.gz"
 
 cl_col <- paste0("RNA_snn_res.", sel_res)
@@ -221,23 +221,19 @@ if (nrow(top_heatmap_panel_dt) > 0) {
 ## Top marker genes by cluster at resolution `r sel_res`
 
 ```{r plot_top_markers, results = 'asis'}
+top_marker_expr_dt <- if (file.exists(top_marker_expr_rds)) readRDS(top_marker_expr_rds) else data.table()
+
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in cl_ord) {
   cat(sprintf("### %s\n\n", sel_cl))
   has_markers  <- sel_cl %in% as.character(top_min_dt$cluster)
-  top_sel_dt <- unique(top_min_dt[cluster == sel_cl, .(label = as.character(cluster), symbol, gene_id)])
-  has_umap_expr <- has_markers && nrow(top_sel_dt) > 0 && length(h5_files) > 0
+  has_umap_expr <- has_markers && nrow(top_marker_expr_dt) > 0
   if (!has_markers) {
     cat("No marker genes passed the display filters for this cluster.\n\n")
   } else if (!has_umap_expr) {
     print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
     cat("\n\n")
   } else {
-    top_marker_expr_dt <- load_h5_marker_expression_multi(
-      h5_files,
-      sel_dt_list = list(top = top_sel_dt),
-      int_dt = int_dt[, .(sample_id, cell_id, UMAP1, UMAP2)]
-    )$top
     cat("::: {.panel-tabset}\n\n")
     cat("#### Expression dotplot\n\n")
     print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
@@ -250,11 +246,11 @@ for (sel_cl in cl_ord) {
     if (!is.null(g_umap)) print(g_umap)
     cat("\n\n")
     cat(":::\n\n")
-    rm(top_marker_expr_dt)
   }
   # Clean up after each cluster to avoid memory accumulation
   gc(verbose = FALSE)
 }
+rm(top_marker_expr_dt)
 cat(':::\n\n')
 ```
 

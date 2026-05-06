@@ -19,6 +19,7 @@ include { HVG_REPORT        } from '../modules/reports/reports.nf'
 include { RUN_INTEGRATION   } from '../modules/integration/integration.nf'
 include { INTEGRATION_REPORT } from '../modules/reports/reports.nf'
 include { RUN_ANNOTATION_MARKERS } from '../modules/annotation/annotation.nf'
+include { PREP_REPORT_INPUTS } from '../modules/annotation/annotation.nf'
 include { ANNOTATION_REPORT } from '../modules/reports/reports.nf'
 include { PREPARE_ZOOM_SUBSET } from '../modules/zoom/zoom.nf'
 include { STAGE_ZOOM_RAW_H5 } from '../modules/zoom/zoom.nf'
@@ -402,13 +403,21 @@ workflow ANNOTATION {
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
     )
 
-    ANNOTATION_REPORT(
+    PREP_REPORT_INPUTS(
         h5_ch.map { _id, h5 -> h5 }.collect(),
+        integration_dt_ch,
+        RUN_ANNOTATION_MARKERS.out.markers,
+        channel.value(file("${projectDir}/modules/annotation/prep_report_inputs.R")),
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
+    )
+
+    ANNOTATION_REPORT(
         integration_dt_ch,
         RUN_ANNOTATION_MARKERS.out.markers,
         RUN_ANNOTATION_MARKERS.out.logcpms,
         RUN_ANNOTATION_MARKERS.out.marker_panel,
         RUN_ANNOTATION_MARKERS.out.marker_expr,
+        PREP_REPORT_INPUTS.out.top_marker_expr,
         RUN_ANNOTATION_MARKERS.out.cell_labels,
         channel.value(file("${projectDir}/modules/reports/annotation_report.qmd")),
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R")),
@@ -420,7 +429,7 @@ workflow ANNOTATION {
     logcpms = RUN_ANNOTATION_MARKERS.out.logcpms
     marker_panel = RUN_ANNOTATION_MARKERS.out.marker_panel
     marker_expr = RUN_ANNOTATION_MARKERS.out.marker_expr
-    top_marker_expr = RUN_ANNOTATION_MARKERS.out.top_marker_expr
+    top_marker_expr = PREP_REPORT_INPUTS.out.top_marker_expr
     cell_labels = RUN_ANNOTATION_MARKERS.out.cell_labels
     report = ANNOTATION_REPORT.out.html
 }

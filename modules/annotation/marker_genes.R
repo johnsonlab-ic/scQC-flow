@@ -4,13 +4,13 @@ source("annotation_utils.R")
 
 run_annotation_markers <- function() {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) != 15) {
+  if (length(args) != 14) {
     stop(
       paste(
         "Usage: marker_genes.R <integration_csv> <genome_gtf> <marker_csv>",
         "<sel_res> <min_cl_size> <min_cells>",
         "<out_markers> <out_logcpms> <out_panel> <out_marker_expr> <out_cell_labels>",
-        "<out_top_marker_expr> <out_pseudobulk> <n_cores> <h5_pattern>"
+        "<out_pseudobulk> <n_cores> <h5_pattern>"
       )
     )
   }
@@ -26,10 +26,9 @@ run_annotation_markers <- function() {
   out_panel <- args[9]
   out_marker_expr <- args[10]
   out_cell_labels <- args[11]
-  out_top_marker_expr <- args[12]
-  out_pseudobulk <- args[13]
-  n_cores <- as.integer(args[14])
-  h5_pattern <- args[15]
+  out_pseudobulk <- args[12]
+  n_cores <- as.integer(args[13])
+  h5_pattern <- args[14]
 
   if (is.na(n_cores) || n_cores < 1L) {
     n_cores <- 1L
@@ -86,28 +85,24 @@ run_annotation_markers <- function() {
   cpms_gene_ids <- unique(c(panel_dt$gene_id, top_mkrs_dt$gene_id))
   logcpms_dt <- make_logcpms_for_genes(prep_obj, pb_obj$row_dt, gene_ids = cpms_gene_ids)
 
-  top_sel_dt <- unique(top_mkrs_dt[, .(label = as.character(cluster), symbol, gene_id)])
   expr_ls <- load_h5_marker_expression_multi(
     h5_files,
-    sel_dt_list = list(panel = panel_dt, top = top_sel_dt),
+    sel_dt_list = list(panel = panel_dt),
     int_dt = umap_dt
   )
   marker_expr_dt <- expr_ls$panel
-  top_marker_expr_dt <- expr_ls$top
 
   fwrite(marker_dt, out_markers)
   fwrite(logcpms_dt, out_logcpms)
   fwrite(panel_dt, out_panel)
   saveRDS(marker_expr_dt, out_marker_expr)
   fwrite(cell_labels_dt, out_cell_labels)
-  saveRDS(top_marker_expr_dt, out_top_marker_expr)
 
   message("Wrote marker statistics: ", out_markers)
   message("Wrote logCPM summaries: ", out_logcpms)
   message("Wrote processed marker panel: ", out_panel)
   message("Wrote marker-expression cache: ", out_marker_expr)
   message("Wrote per-cell annotation labels: ", out_cell_labels)
-  message("Wrote top-marker expression cache: ", out_top_marker_expr)
   message("=== ANNOTATION done ===")
 }
 
