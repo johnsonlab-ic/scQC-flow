@@ -372,6 +372,6 @@ plot_qc_metrics_split_by_cells_empties(knee_fs, sample_var, n_cores = 1)
 
 <details>
 ```{r session_info}
-devtools::session_info()
+sessionInfo()
 ```
 </details>
