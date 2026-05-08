@@ -22,6 +22,7 @@ suppressPackageStartupMessages({
   library(magrittr)
   library(BiocParallel)
   library(strex)
+  library(DT)
 })
 ```
 
@@ -304,8 +305,23 @@ dims   <- plot_dims(nrow(knee_params))
 ## Called cells vs droplet limits
 
 ```{r called_cells_table}
-knitr::kable(called_cells, digits = 2,
-  caption = "DropletUtils 1.30 — per-sample droplet and called-cell summary")
+DT::datatable(
+  called_cells,
+  rownames = FALSE,
+  class = "compact stripe hover",
+  options = list(
+    pageLength = 10,
+    lengthMenu = list(c(10), c("10")),
+    dom = "tip",
+    searching = FALSE,
+    autoWidth = TRUE,
+    order = list(list(0, "asc"))
+  ),
+  caption = htmltools::tags$caption(
+    style = 'caption-side: bottom; text-align: left;',
+    "DropletUtils 1.30 - per-sample droplet and called-cell summary"
+  )
+)
 ```
 
 ## Barcode rank plots {.tabset}

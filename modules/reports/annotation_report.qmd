@@ -54,8 +54,18 @@ sel_res <- Sys.getenv("ANNOTATION_SEL_RES", "0.2")
 min_cpm_mkr <- as.numeric(Sys.getenv("ANNOTATION_MIN_CPM_MKR", "50"))
 not_ok_re <- Sys.getenv("ANNOTATION_NOT_OK_RE", "(lincRNA|lncRNA|pseudogene|antisense)")
 top_n <- as.integer(Sys.getenv("ANNOTATION_TOP_N", "10"))
+top_n_plot <- min(top_n, 5L)
 fdr_cut <- as.numeric(Sys.getenv("ANNOTATION_FDR_CUT", "0.01"))
 max_zero_p <- as.numeric(Sys.getenv("ANNOTATION_MAX_ZERO_P", "0.5"))
+
+mem_log_f <- "annotation_memory_usage.txt"
+writeLines("timestamp\tstage\tr_used_mb", con = mem_log_f)
+log_mem <- function(stage) {
+  gc_tab <- gc(verbose = FALSE)
+  used_mb <- sum(gc_tab[, 2])
+  cat(sprintf("%s\t%s\t%.2f\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), stage, used_mb),
+      file = mem_log_f, append = TRUE)
+}
 ```
 
 ```{r load_data}
@@ -72,20 +82,25 @@ cell_labels_f <- "annotation_cell_labels.csv.gz"
 cl_col <- paste0("RNA_snn_res.", sel_res)
 stopifnot("Selected annotation resolution not found in integration output" = cl_col %in% names(int_dt))
 
+# Keep only cells that were eligible for annotation (exclude doublets / doublet-enriched clusters)
+keep_ann_idx <- !is.na(int_dt[[cl_col]]) & int_dt$sample_id != ""
+if ("is_dbl" %in% names(int_dt)) {
+  keep_ann_idx <- keep_ann_idx & !as.logical(int_dt$is_dbl)
+}
+if ("in_dbl_cl" %in% names(int_dt)) {
+  keep_ann_idx <- keep_ann_idx & !as.logical(int_dt$in_dbl_cl)
+}
+
 # Save sample-level metadata columns before subsetting (used for composition barcharts)
 core_int_re <- "^(cell_id|UMAP1|UMAP2|embedding|dbl_|is_dbl|is_doublet|RNA_snn_res\\.|leiden_)"
 meta_var_cols <- setdiff(names(int_dt)[!grepl(core_int_re, names(int_dt))], "sample_id")
 sample_meta_dt <- if (length(meta_var_cols) > 0) {
-  unique(int_dt[get(cl_col) != "" | is.na(get(cl_col)), c("sample_id", meta_var_cols), with = FALSE], by = "sample_id")
+  unique(int_dt[keep_ann_idx, c("sample_id", meta_var_cols), with = FALSE], by = "sample_id")
 } else {
-  data.table(sample_id = unique(int_dt$sample_id))
+  data.table(sample_id = unique(int_dt[keep_ann_idx, sample_id]))
 }
 
-umap_vars <- unique(c("sample_id", meta_var_cols))
-umap_vars <- umap_vars[umap_vars %in% names(int_dt)]
-int_umap_for_meta <- int_dt[!is.na(UMAP1), c("cell_id", "UMAP1", "UMAP2", umap_vars), with = FALSE]
-
-int_dt <- int_dt[!is.na(get(cl_col)) & sample_id != "", .(
+int_dt <- int_dt[keep_ann_idx, .(
   sample_id,
   cell_id,
   UMAP1,
@@ -100,7 +115,7 @@ panel_dt[, label := factor(as.character(label), levels = panel_label_levels)]
 
 top_min_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
   logcpm.sel >= log(min_cpm_mkr + 1)
-] |> get_top_markers(fdr_cut = fdr_cut, n_top = top_n, max_zero_p = max_zero_p)
+] |> get_top_markers(fdr_cut = fdr_cut, n_top = top_n_plot, max_zero_p = max_zero_p)
 
 top_heatmap_panel_dt <- make_top_marker_heatmap_panel(top_min_dt, cl_order = cl_ord)
 
@@ -161,6 +176,7 @@ cell_exp_dt <- data.table()
 
 # Clean up after initial data preparation
 gc(verbose = FALSE)
+log_mem("post_load_data")
 ```
 
 ## Annotation setup
@@ -169,7 +185,7 @@ This report assigns labels from the integration clustering column `r cl_col`, th
 
 * **Selected cluster resolution used for annotation:** `r sel_res` (`r cl_col`)
 * **Clusters carried into annotation:** `r length(cl_ord)`
-* **Cells used for annotation:** `r format(nrow(int_dt), big.mark = ",")`
+* **Cells used for annotation (doublets and doublet-enriched clusters removed):** `r format(nrow(int_dt), big.mark = ",")`
 * **Provided marker genes matched in the data:** `r uniqueN(panel_dt$gene_id)`
 * **Marker-expression cache available for UMAPs:** `r if (file.exists(marker_expr_rds)) "yes" else "no"`
 
@@ -193,11 +209,12 @@ DT::datatable(
 ```{r plot_heatmap_provided_markers, fig.height = 9, fig.width = 10}
 suppressMessages(draw(
   plot_heatmap_of_selected_genes(mkrs_dt, panel_dt),
-  heatmap_legend_side = "bottom",
-  annotation_legend_side = "bottom",
+  heatmap_legend_side = "right",
+  annotation_legend_side = "right",
   merge_legend = TRUE
 ))
 rm(panel_dt); gc(verbose = FALSE)
+log_mem("post_heatmap_provided")
 ```
 
 ### Top markers by cluster
@@ -206,11 +223,12 @@ rm(panel_dt); gc(verbose = FALSE)
 if (nrow(top_heatmap_panel_dt) > 0) {
   suppressMessages(draw(
     plot_heatmap_of_selected_genes(mkrs_dt, top_heatmap_panel_dt),
-    heatmap_legend_side = "bottom",
-    annotation_legend_side = "bottom",
+    heatmap_legend_side = "right",
+    annotation_legend_side = "right",
     merge_legend = TRUE
   ))
   rm(top_heatmap_panel_dt); gc(verbose = FALSE)
+  log_mem("post_heatmap_top")
 } else {
   cat("No top markers passed the display filters for the heatmap.\n")
 }
@@ -220,37 +238,78 @@ if (nrow(top_heatmap_panel_dt) > 0) {
 
 ## Top marker genes by cluster at resolution `r sel_res`
 
-```{r plot_top_markers, results = 'asis'}
+Top marker displays are capped at `r top_n_plot` genes per cluster to improve readability.
+
+```{r plot_top_markers, fig.height = 7, fig.width = 14, results = 'asis'}
 top_marker_expr_dt <- if (file.exists(top_marker_expr_rds)) readRDS(top_marker_expr_rds) else data.table()
 
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in cl_ord) {
   cat(sprintf("### %s\n\n", sel_cl))
-  has_markers  <- sel_cl %in% as.character(top_min_dt$cluster)
-  has_umap_expr <- has_markers && nrow(top_marker_expr_dt) > 0
+  has_markers <- sel_cl %in% as.character(top_min_dt$cluster)
   if (!has_markers) {
     cat("No marker genes passed the display filters for this cluster.\n\n")
-  } else if (!has_umap_expr) {
-    print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
-    cat("\n\n")
-  } else {
-    cat("::: {.panel-tabset}\n\n")
-    cat("#### Expression dotplot\n\n")
-    print(plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord))
-    cat("\n\n")
-    cat("#### UMAP feature plots\n\n")
+    next
+  }
+
+  p_dot <- plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord)
+  g_umap <- NULL
+  if (nrow(top_marker_expr_dt) > 0) {
     g_umap <- plot_top_marker_umap_facet(
       sel_cl, top_min_dt, top_marker_expr_dt,
       int_dt[, .(cell_id, UMAP1, UMAP2)]
     )
-    if (!is.null(g_umap)) print(g_umap)
-    cat("\n\n")
-    cat(":::\n\n")
   }
-  # Clean up after each cluster to avoid memory accumulation
+
+  if (!is.null(g_umap)) {
+    print(p_dot + g_umap + patchwork::plot_layout(widths = c(1, 1.15)))
+  } else {
+    print(p_dot)
+  }
+  cat("\n\n")
   gc(verbose = FALSE)
 }
 rm(top_marker_expr_dt)
+log_mem("post_top_markers")
+cat(':::\n\n')
+```
+
+## Top 50 marker tables by cluster at resolution `r sel_res`
+
+The tables below list up to 50 positive markers per cluster after excluding genes that match `r not_ok_re` and requiring expression above the annotation CPM threshold. Each table shows 25 rows per page.
+
+```{r top_marker_tables, results = 'asis'}
+cat('::: {.panel-tabset}\n\n')
+for (sel_cl in cl_ord) {
+  cat(sprintf("### %s\n\n", sel_cl))
+  sel_tbl <- top50_dt[as.character(cluster) == as.character(sel_cl), .(
+    rank = marker_rank,
+    symbol,
+    gene_type,
+    logFC = round(logFC, 2),
+    FDR = signif(FDR, 3),
+    logcpm_sel = round(logcpm.sel, 2),
+    logcpm_other = round(logcpm.other, 2),
+    zero_prop = round(prop_zero, 3)
+  )]
+  if (nrow(sel_tbl) > 0) {
+    print(htmltools::tagList(DT::datatable(
+      sel_tbl,
+      rownames = FALSE,
+      class = 'compact stripe hover',
+      options = list(
+        pageLength = 25,
+        lengthMenu = list(c(10, 25), c('10', '25')),
+        dom = 'tip',
+        autoWidth = TRUE,
+        scrollX = TRUE
+      )
+    )))
+  } else {
+    cat('No marker genes passed the table filters for this cluster.\n\n')
+  }
+  cat('\n\n')
+}
 cat(':::\n\n')
 ```
 
@@ -307,6 +366,7 @@ cat_meta_cols <- meta_var_cols[sapply(meta_var_cols, function(col) {
   v <- sample_meta_dt[[col]]
   is.character(v) || is.factor(v)
 })]
+cat_meta_cols <- setdiff(cat_meta_cols, "_harmony_batch")
 
 label_levels <- levels(int_dt$label)
 label_cols <- setNames(
@@ -325,10 +385,12 @@ add_comp_bar_theme <- function(p, label_cols, label_levels) {
       panel.grid.minor    = element_blank(),
       axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
       strip.background = element_rect(fill = "white"),
-      legend.position  = "bottom",
-      legend.title.position = "left"
+      legend.position  = "right",
+      legend.title.position = "top",
+      legend.text = element_text(size = 7),
+      legend.key.size = unit(0.25, "cm")
     ) +
-    guides(fill = guide_legend(ncol = max(1, ceiling(length(label_levels) / 10)))) +
+    guides(fill = guide_legend(ncol = 1, byrow = TRUE)) +
     labs(x = "sample", y = "proportion", fill = "cell type")
 }
 
@@ -358,45 +420,6 @@ if (length(cat_meta_cols) > 0) {
   )
   print(g)
 }
-```
-
-## Top 50 marker tables by cluster at resolution `r sel_res`
-
-The tables below list up to 50 positive markers per cluster after excluding genes that match `r not_ok_re` and requiring expression above the annotation CPM threshold. Each table shows 25 rows per page.
-
-```{r top_marker_tables, results = 'asis'}
-cat('::: {.panel-tabset}\n\n')
-for (sel_cl in cl_ord) {
-  cat(sprintf("### %s\n\n", sel_cl))
-  sel_tbl <- top50_dt[as.character(cluster) == as.character(sel_cl), .(
-    rank = marker_rank,
-    symbol,
-    gene_type,
-    logFC = round(logFC, 2),
-    FDR = signif(FDR, 3),
-    logcpm_sel = round(logcpm.sel, 2),
-    logcpm_other = round(logcpm.other, 2),
-    zero_prop = round(prop_zero, 3)
-  )]
-  if (nrow(sel_tbl) > 0) {
-    print(htmltools::tagList(DT::datatable(
-      sel_tbl,
-      rownames = FALSE,
-      class = 'compact stripe hover',
-      options = list(
-        pageLength = 25,
-        lengthMenu = list(c(10, 25), c('10', '25')),
-        dom = 'tip',
-        autoWidth = TRUE,
-        scrollX = TRUE
-      )
-    )))
-  } else {
-    cat('No marker genes passed the table filters for this cluster.\n\n')
-  }
-  cat('\n\n')
-}
-cat(':::\n\n')
 ```
 
 ## Marker expression over UMAP
@@ -443,50 +466,9 @@ if (nrow(cell_exp_dt) > 0) {
 }
 ```
 
-## Metadata across UMAP space
-
-The plots below show how metadata variables are distributed across UMAP space using binned hexagonal plots. Each hexagon is coloured by the proportion of cells with each metadata value, allowing identification of spatial patterns and associations with cell types or clusters.
-
-```{r plot_metadata_umaps, fig.height = 7, fig.width = 14, results='asis'}
-if (length(umap_vars) > 0 && nrow(int_umap_for_meta) > 0) {
-  cat('::: {.panel-tabset}\n\n')
-  for (var_name in umap_vars) {
-    cat('###', var_name, '\n\n')
-    var_vals <- int_umap_for_meta[[var_name]]
-    var_vals <- var_vals[!is.na(var_vals)]
-    
-    if (length(var_vals) == 0) {
-      cat('No values available for this variable.\n\n')
-      next
-    }
-    
-    # For categorical variables, show each category in a separate plot
-    if (!is.numeric(var_vals) || uniqueN(var_vals) <= 12) {
-      unique_vals <- unique(as.character(var_vals))
-      unique_vals <- sort(unique_vals)
-      n_cols <- min(3, length(unique_vals))
-      
-      plot_list <- lapply(unique_vals, function(focus_val) {
-        plot_umap_metadata_binned(int_umap_for_meta, var_name, focus_value = focus_val)
-      })
-      
-      combined <- wrap_plots(plot_list, ncol = n_cols, guides = 'auto')
-      print(combined)
-    } else {
-      # For continuous variables, show overall density
-      print(plot_umap_metadata_binned(int_umap_for_meta, var_name, focus_value = NULL))
-    }
-    cat('\n\n')
-  }
-  cat(':::\n\n')
-  rm(int_umap_for_meta); gc(verbose = FALSE)
-} else {
-  cat('No metadata variables available for visualization.\n\n')
-}
-```
-
 ## Session info
 
 ```{r session_info}
+log_mem("end_of_report")
 sessionInfo()
 ```

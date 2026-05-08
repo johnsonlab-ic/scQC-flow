@@ -19,6 +19,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(patchwork)
   library(strex)
+  library(DT)
 })
 
 # Discover per-sample files written by DECONTX into the Nextflow work dir
@@ -64,17 +65,28 @@ chunks_ls  <- split(idx_ls, ceiling(idx_ls / chunk_size))
 ## Summary table
 
 ```{r summary_table}
-knitr::kable(
-  summary_dt[, .(
-    sample_id, n_cells, n_empties, expected_cells,
-    total_droplets_included,
-    mean_pct_contamination
-  )],
-  col.names = c(
-    "Sample", "Cells (post-decontX)", "Empties used",
-    "Expected cells", "Total droplets included", "Mean % contamination"
-  ),
-  digits = 2
+summary_tbl <- summary_dt[, .(
+  sample_id, n_cells, n_empties, expected_cells,
+  total_droplets_included,
+  mean_pct_contamination
+)]
+setnames(summary_tbl, c(
+  "Sample", "Cells (post-decontX)", "Empties used",
+  "Expected cells", "Total droplets included", "Mean % contamination"
+))
+
+DT::datatable(
+  summary_tbl,
+  rownames = FALSE,
+  class = "compact stripe hover",
+  options = list(
+    pageLength = 10,
+    lengthMenu = list(c(10), c("10")),
+    dom = "tip",
+    searching = FALSE,
+    autoWidth = TRUE,
+    order = list(list(0, "asc"))
+  )
 )
 ```
 

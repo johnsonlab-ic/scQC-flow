@@ -208,6 +208,7 @@ process ZOOM_REPORT {
 
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt), path(zoom_marker_stats), path(zoom_marker_logcpms)
+    path parent_integration_csv
     path report_qmd
     path integration_plots_r
     path annotation_utils_r
@@ -227,6 +228,7 @@ process ZOOM_REPORT {
     def metadataVars = (spec.metadata_vars ?: params.metadata_vars ?: '').toString().replace("'", "'\"'\"'")
     """
     export HOME="\$PWD"
+    export PARENT_INTEGRATION_CSV='${parent_integration_csv}'
     export ZOOM_NAME='${zoom_name}'
     export ZOOM_SOURCE='${zoomSource}'
     export ZOOM_VALUES='${zoomValues}'

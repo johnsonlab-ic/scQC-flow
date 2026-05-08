@@ -258,10 +258,12 @@ plot_cluster_composition_bars <- function(int_dt, cl_cols, split_var) {
       panel.grid.minor = element_blank(),
       axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
       strip.background = element_rect(fill = 'white'),
-      legend.position = 'bottom',
-      legend.title.position = 'left'
+      legend.position = 'right',
+      legend.title.position = 'top',
+      legend.text = element_text(size = 7),
+      legend.key.size = unit(0.25, 'cm')
     ) +
-    guides(fill = guide_legend(ncol = max(1, ceiling(length(split_levels) / 12)))) +
+    guides(fill = guide_legend(ncol = 1, byrow = TRUE)) +
     labs(x = 'cluster', y = 'proportion', fill = split_var)
 }
 
@@ -347,42 +349,85 @@ resolve_cluster_column <- function(int_dt, cl_col) {
 }
 
 # ---------------------------------------------------------------------------
-# UMAP split by metadata variable (binned, showing proportion of each category)
-# Similar to the doublet plot but generalized for any categorical variable
+# UMAP split by metadata variable using pixel bins (scprocess style):
+# for each metadata value, colour each pixel by the proportion of cells in
+# that pixel carrying the value.
 # ---------------------------------------------------------------------------
-plot_umap_metadata_binned <- function(int_dt, var_name, focus_value = NULL) {
+plot_clusters_annotated_by_densities <- function(int_dt, var_name, bins = 120) {
   stopifnot(all(c("UMAP1", "UMAP2", var_name) %in% names(int_dt)))
-  
+
   plot_dt <- copy(int_dt)[!is.na(get(var_name)), c("UMAP1", "UMAP2", var_name), with = FALSE]
-  plot_dt[, UMAP1 := rescale(UMAP1, to = c(0.05, 0.95))]
-  plot_dt[, UMAP2 := rescale(UMAP2, to = c(0.05, 0.95))]
-  
-  # If focus_value specified, compute proportion of that value in each bin
-  # Otherwise compute total count (density)
-  if (!is.null(focus_value)) {
-    plot_dt[, z_value := as.numeric(as.character(get(var_name)) == as.character(focus_value))]
-    stat_layer <- stat_summary_hex(aes(z = z_value), fun = 'mean', bins = 25)
-    fill_label <- sprintf('pct. of %s', focus_value)
-    fill_scale <- scale_fill_distiller(palette = 'RdYlBu', limits = c(0, 1),
-      breaks = pretty_breaks(), direction = -1)
-  } else {
-    plot_dt[, z_value := 1L]
-    stat_layer <- stat_summary_hex(aes(z = z_value), fun = 'sum', bins = 25)
-    fill_label <- 'cell count'
-    fill_scale <- scale_fill_distiller(palette = 'RdBu', trans = 'log10')
+  if (nrow(plot_dt) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = sprintf("No values available for %s", var_name)) +
+        theme_void()
+    )
   }
-  
-  ggplot(plot_dt) +
-    aes(x = UMAP1, y = UMAP2) +
-    stat_layer +
-    fill_scale +
-    labs(fill = fill_label) +
+
+  plot_dt[, `:=`(
+    UMAP1 = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2 = rescale(UMAP2, to = c(0.05, 0.95))
+  )]
+
+  vals <- sort(unique(as.character(plot_dt[[var_name]])))
+  vals <- vals[nzchar(vals)]
+  if (length(vals) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = sprintf("No non-empty values available for %s", var_name)) +
+        theme_void()
+    )
+  }
+
+  x_breaks <- seq(0, 1, length.out = bins + 1)
+  y_breaks <- seq(0, 1, length.out = bins + 1)
+
+  dens_ls <- lapply(vals, function(vv) {
+    vv_dt <- plot_dt[, .(UMAP1, UMAP2, is_focus = as.integer(as.character(get(var_name)) == vv))]
+    vv_dt[, `:=`(
+      x_bin = cut(UMAP1, breaks = x_breaks, include.lowest = TRUE, labels = FALSE),
+      y_bin = cut(UMAP2, breaks = y_breaks, include.lowest = TRUE, labels = FALSE)
+    )]
+    vv_dt <- vv_dt[!is.na(x_bin) & !is.na(y_bin)]
+    if (nrow(vv_dt) == 0) {
+      return(NULL)
+    }
+    vv_dt[, .(
+      prop = mean(is_focus),
+      x = x_breaks[x_bin] + diff(x_breaks)[1] / 2,
+      y = y_breaks[y_bin] + diff(y_breaks)[1] / 2
+    ), by = .(x_bin, y_bin)][, value := vv]
+  })
+
+  dens_dt <- rbindlist(Filter(Negate(is.null), dens_ls), use.names = TRUE, fill = TRUE)
+  if (nrow(dens_dt) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = sprintf("No bins available for %s", var_name)) +
+        theme_void()
+    )
+  }
+
+  dens_dt[, value := factor(value, levels = vals)]
+
+  ggplot(dens_dt, aes(x = x, y = y, fill = prop)) +
+    geom_raster() +
+    facet_wrap(~ value, ncol = min(3, length(vals))) +
+    scale_fill_distiller(palette = "RdYlBu", limits = c(0, 1), direction = -1,
+      breaks = pretty_breaks()) +
     scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
     scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    labs(fill = "proportion in bin") +
     theme_bw() +
-    theme(panel.grid = element_blank(), axis.ticks = element_blank(),
-      axis.text = element_blank(), aspect.ratio = 1,
-      legend.title.position = 'left', legend.position = 'bottom')
+    theme(
+      panel.grid = element_blank(),
+      axis.ticks = element_blank(),
+      axis.text = element_blank(),
+      aspect.ratio = 1,
+      legend.title.position = "left",
+      legend.position = "right"
+    )
 }
 
 # ---------------------------------------------------------------------------

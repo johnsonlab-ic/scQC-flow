@@ -502,6 +502,7 @@ workflow ZOOMS {
 
     ZOOM_REPORT(
         RUN_ZOOM_MARKERS.out.zoom_markers,
+        integration_dt_ch,
         channel.value(file("${projectDir}/modules/reports/zoom_report.qmd")),
         channel.value(file("${projectDir}/modules/integration/integration_plots.R")),
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
