@@ -11,6 +11,8 @@ include { ZOOMS             } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
 include { EXPORT_SCANPY     } from './modules/export/export_sc'
 include { EXPORT_SEURAT     } from './modules/export/export_sc'
+include { EXPORT_SCANPY_ZOOM } from './modules/export/export_sc'
+include { EXPORT_SEURAT_ZOOM } from './modules/export/export_sc'
 
 // =============================================================================
 // HELP
@@ -494,6 +496,27 @@ workflow {
                             annotation_cell_labels_ch
                         )
                         report_pages = report_pages.mix(ZOOMS.out.report)
+
+                        if (exportMode in ['anndata', 'both']) {
+                            EXPORT_SCANPY_ZOOM(
+                                ZOOMS.out.zoom_int,
+                                AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+                                annotation_cell_labels_ch,
+                                channel.value(file(params.genome_gtf)),
+                                channel.value(file("${projectDir}/modules/export/export_anndata.py"))
+                            )
+                        }
+
+                        if (exportMode in ['seurat', 'both']) {
+                            EXPORT_SEURAT_ZOOM(
+                                ZOOMS.out.zoom_int,
+                                AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+                                annotation_cell_labels_ch,
+                                channel.value(file(params.genome_gtf)),
+                                channel.value(file("${projectDir}/modules/export/export_seurat.R")),
+                                channel.value(file("${projectDir}/modules/export/export_utils.R"))
+                            )
+                        }
                     }
 
                     if (exportMode in ['anndata', 'both']) {

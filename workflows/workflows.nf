@@ -510,4 +510,5 @@ workflow ZOOMS {
 
     emit:
     report = ZOOM_REPORT.out.html
+    zoom_int = RUN_ZOOM_INTEGRATION.out.zoom_int
 }
