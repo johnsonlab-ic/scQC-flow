@@ -195,7 +195,8 @@ process RUN_ZOOM_MARKERS {
         ${markerMinCells} \
         zoom_marker_stats.csv.gz \
         zoom_marker_logcpms.csv.gz \
-        'filt_counts_*.h5'
+        'filt_counts_*.h5' \
+        ${task.cpus}
     """
 }
 
