@@ -320,14 +320,28 @@ def main():
                 all_paths.append(out_path)
 
             # Clean cells for this sample
-            clean_mask = (~sample_obs_all['is_dbl'].fillna(False).astype(bool)) & \
-                         (~sample_obs_all['in_dbl_cl'].fillna(False).astype(bool))
-            clean_obs = sample_obs_all.loc[clean_mask].copy().reset_index(drop=True)
+            # Only create clean subset if doublet columns are present
+            has_doublet_cols = ('is_dbl' in sample_obs_all.columns and 
+                                'in_dbl_cl' in sample_obs_all.columns)
+            
+            if has_doublet_cols:
+                clean_mask = (~sample_obs_all['is_dbl'].fillna(False).astype(bool)) & \
+                             (~sample_obs_all['in_dbl_cl'].fillna(False).astype(bool))
+                clean_obs = sample_obs_all.loc[clean_mask].copy().reset_index(drop=True)
 
-            if len(clean_obs) > 0:
-                clean_counts, _, ordered_clean = _build_count_matrix(args.h5_pattern, clean_obs)
-                clean_obs = clean_obs.set_index('cell_id').loc[ordered_clean].reset_index()
-                clean_adata = _make_adata(clean_counts, clean_obs, var_df, include_doublet_umap=False)
+                if len(clean_obs) > 0:
+                    clean_counts, _, ordered_clean = _build_count_matrix(args.h5_pattern, clean_obs)
+                    clean_obs = clean_obs.set_index('cell_id').loc[ordered_clean].reset_index()
+                    clean_adata = _make_adata(clean_counts, clean_obs, var_df, include_doublet_umap=False)
+
+                    out_path = os.path.join(out_dir, 'anndata', f'sample_{sample_id}_clean.h5ad')
+                    clean_adata.write_h5ad(out_path, compression='gzip')
+                    print(f'  Saved clean cells: {clean_adata.n_obs} cells')
+
+                    if write_combined:
+                        clean_paths.append(out_path)
+            else:
+                print(f'  Skipping clean subset: doublet columns not found in metadata')
 
                 out_path = os.path.join(out_dir, 'anndata', f'sample_{sample_id}_clean.h5ad')
                 clean_adata.write_h5ad(out_path, compression='gzip')

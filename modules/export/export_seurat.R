@@ -172,23 +172,30 @@ main <- function() {
     }
 
     # Clean cells for this sample
-    sample_obs_clean <- sample_obs_all[is_dbl == FALSE & in_dbl_cl == FALSE]
-    if (nrow(sample_obs_clean) > 0) {
-      keep_clean <- match(sample_obs_clean$cell_id, colnames(counts_all))
-      counts_clean <- counts_all[, keep_clean, drop = FALSE]
-      colnames(counts_clean) <- sample_obs_clean$cell_id
+    # Only create clean subset if doublet columns are present
+    has_doublet_cols <- all(c("is_dbl", "in_dbl_cl") %in% colnames(sample_obs_all))
+    
+    if (has_doublet_cols) {
+      sample_obs_clean <- sample_obs_all[is_dbl == FALSE & in_dbl_cl == FALSE]
+      if (nrow(sample_obs_clean) > 0) {
+        keep_clean <- match(sample_obs_clean$cell_id, colnames(counts_all))
+        counts_clean <- counts_all[, keep_clean, drop = FALSE]
+        colnames(counts_clean) <- sample_obs_clean$cell_id
 
-      seu_clean <- build_seurat_object(counts_clean, sample_obs_clean, var_dt, is_all_cells = FALSE)
-      clean_rds_path <- file.path(out_dir, "seurat", sprintf("sample_%s_clean.rds", sid))
-      saveRDS(seu_clean, clean_rds_path)
-      message(sprintf("  Saved clean cells: %d cells", ncol(seu_clean)))
+        seu_clean <- build_seurat_object(counts_clean, sample_obs_clean, var_dt, is_all_cells = FALSE)
+        clean_rds_path <- file.path(out_dir, "seurat", sprintf("sample_%s_clean.rds", sid))
+        saveRDS(seu_clean, clean_rds_path)
+        message(sprintf("  Saved clean cells: %d cells", ncol(seu_clean)))
 
-      if (write_combined) {
-        clean_rds_paths <- c(clean_rds_paths, clean_rds_path)
+        if (write_combined) {
+          clean_rds_paths <- c(clean_rds_paths, clean_rds_path)
+        }
+
+        rm(seu_clean, counts_clean, sample_obs_clean)
+        gc(verbose = FALSE)
       }
-
-      rm(seu_clean, counts_clean, sample_obs_clean)
-      gc(verbose = FALSE)
+    } else {
+      message(sprintf("  Skipping clean subset: doublet columns not found in metadata"))
     }
 
     rm(seu_all, counts_all, counts_obj_all, sample_obs_all, var_dt)

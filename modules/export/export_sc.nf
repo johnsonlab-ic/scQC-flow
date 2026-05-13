@@ -93,7 +93,7 @@ process EXPORT_SCANPY_ZOOM {
 
     output:
     path "anndata/sample_*_all.h5ad", emit: per_sample_all
-    path "anndata/sample_*_clean.h5ad", emit: per_sample_clean
+    path "anndata/sample_*_clean.h5ad", optional: true, emit: per_sample_clean
     path "anndata/combined_all.h5ad", optional: true, emit: combined_all
     path "anndata/combined_clean.h5ad", optional: true, emit: combined_clean
 
@@ -133,7 +133,7 @@ process EXPORT_SEURAT_ZOOM {
 
     output:
     path "seurat/sample_*_all.rds", emit: per_sample_all
-    path "seurat/sample_*_clean.rds", emit: per_sample_clean
+    path "seurat/sample_*_clean.rds", optional: true, emit: per_sample_clean
     path "seurat/combined_all.rds", optional: true, emit: combined_all
     path "seurat/combined_clean.rds", optional: true, emit: combined_clean
 
