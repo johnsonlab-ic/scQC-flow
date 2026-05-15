@@ -22,11 +22,14 @@ Nextflow DSL2 pipeline for single-cell/single-nucleus RNA-seq mapping, QC, and r
 
 ```mermaid
 flowchart TD
-  A[raw_data_dir sample folders] --> B[MAPPING]
+  A[raw_data_dir sample folders] --> M1[SIMPLEAF_INDEX]
+  A --> M2[SIMPLEAF_QUANT]
+  M1 --> M2
+  M2 --> M3[BARCODE_ESTIMATION<br/>cell calling + knee]
   A --> SM[SAMPLE_METADATA]
 
-  B --> BR[MAPPING_REPORT]
-  B --> AM{run_ambient}
+  M3 --> BR[MAPPING_REPORT]
+  M3 --> AM{run_ambient}
 
   AM -- true --> C[AMBIENT<br/>decontx or cellbender]
   C --> CR[AMBIENT_REPORT or CELLBENDER_REPORT]
@@ -47,7 +50,7 @@ flowchart TD
   AF -- true --> G[ANNOTATION]
   G --> GR[ANNOTATION_REPORT]
 
-  F --> ZF{zoom.enabled and zoom.items}
+  G --> ZF{zoom.enabled and zoom.items}
   ZF -- true --> Z[ZOOMS]
   Z --> ZR[ZOOM_REPORT]
 
@@ -64,7 +67,7 @@ flowchart TD
 ```
 
 Notes:
-- `MAPPING` is always executed.
+- Mapping runs in order: `SIMPLEAF_INDEX` -> `SIMPLEAF_QUANT` -> `BARCODE_ESTIMATION` (cell calling) -> mapping report.
 - `SAMPLE_METADATA` runs when `--metadata_csv` is provided.
 - `REPORT_SITE` always runs and collects report pages from whichever stages were enabled.
 
