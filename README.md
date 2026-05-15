@@ -18,6 +18,75 @@ Nextflow DSL2 pipeline for single-cell/single-nucleus RNA-seq mapping, QC, and r
 
 ---
 
+## Pipeline DAG (Current)
+
+```mermaid
+flowchart TD
+  A[raw_data_dir sample folders] --> B[MAPPING]
+  A --> SM[SAMPLE_METADATA]
+
+  B --> BR[MAPPING_REPORT]
+  B --> AM{run_ambient}
+
+  AM -- true --> C[AMBIENT<br/>decontx or cellbender]
+  C --> CR[AMBIENT_REPORT or CELLBENDER_REPORT]
+
+  C --> QF{run_qc}
+  QF -- true --> D[QC]
+  D --> DR[QC_REPORT]
+
+  D --> HF{run_hvg}
+  HF -- true --> E[HVG]
+  E --> ER[HVG_REPORT]
+
+  E --> IF{run_integration}
+  IF -- true --> F[INTEGRATION]
+  F --> FR[INTEGRATION_REPORT]
+
+  F --> AF{run_annotation}
+  AF -- true --> G[ANNOTATION]
+  G --> GR[ANNOTATION_REPORT]
+
+  F --> ZF{zoom.enabled and zoom.items}
+  ZF -- true --> Z[ZOOMS]
+  Z --> ZR[ZOOM_REPORT]
+
+  F --> XF{export != none}
+  XF -- true --> X[EXPORT_SCANPY/EXPORT_SEURAT<br/>plus zoom exports if zooms enabled]
+
+  BR --> RS[REPORT_SITE]
+  CR --> RS
+  DR --> RS
+  ER --> RS
+  FR --> RS
+  GR --> RS
+  ZR --> RS
+```
+
+Notes:
+- `MAPPING` is always executed.
+- `SAMPLE_METADATA` runs when `--metadata_csv` is provided.
+- `REPORT_SITE` always runs and collects report pages from whichever stages were enabled.
+
+---
+
+## Workflow and Module Map
+
+Top-level workflow dispatch is in `main.nf` and workflow definitions are in `workflows/workflows.nf`.
+
+| Workflow | Main modules/process groups |
+|----------|-----------------------------|
+| `MAPPING` | `SIMPLEAF_INDEX`, `SIMPLEAF_QUANT`, `BARCODE_ESTIMATION`, `MAPPING_REPORT` |
+| `AMBIENT` | `DECONTX` or `CELLBENDER`, `AMBIENT_REPORT` or `CELLBENDER_REPORT`, `AMBIENT_DE_PROC` |
+| `QC` | `DOUBLET_DETECTION`, `APPLY_QC`, `QC_REPORT` |
+| `HVG` | `HVG_SELECTION`, `HVG_REPORT` |
+| `INTEGRATION` | `RUN_INTEGRATION`, `INTEGRATION_REPORT` |
+| `ANNOTATION` | `RUN_ANNOTATION_MARKERS`, `PREP_REPORT_INPUTS`, `ANNOTATION_REPORT` |
+| `ZOOMS` | `PREPARE_ZOOM_SUBSET`, `ZOOM_AMBIENT_DE`, `ZOOM_HVG_SELECTION`, `RUN_ZOOM_INTEGRATION`, `RUN_ZOOM_MARKERS`, `ZOOM_REPORT` |
+| Site/export | `REPORT_SITE`, `EXPORT_SCANPY`, `EXPORT_SEURAT`, `EXPORT_SCANPY_ZOOM`, `EXPORT_SEURAT_ZOOM` |
+
+---
+
 ## Quick Start
 
 ### Requirements
@@ -126,8 +195,15 @@ All execution artifacts are collected in `${outputDir}/pipeline_info/`:
 | `--run_hvg` | `true` | Run HVG selection (requires `--run_qc`) |
 | `--run_integration` | `true` | Run Harmony integration (requires `--run_hvg` + `--metadata_csv`) |
 | `--run_annotation` | `false` | Run pseudobulk annotation (requires `--run_integration` + `--annotation_marker_csv`) |
-| `--run_zooms` | `false` | Run cluster zoom re-analysis (requires `--run_integration`) |
 | `--export` | `none` | Export format: `none`, `anndata`, `seurat`, or `both` |
+
+### Zoom Configuration
+`ZOOMS` is controlled via nested `params.zoom` config rather than a `--run_zooms` flag.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `zoom.enabled` | `false` | Enable zoom workflows |
+| `zoom.items` | `[]` | List of zoom specs (name, source, values/label, and optional overrides) |
 
 ### Metadata
 | Parameter | Default | Description |
