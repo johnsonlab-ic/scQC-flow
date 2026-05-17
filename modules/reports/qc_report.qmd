@@ -118,10 +118,32 @@ cat(':::' )
 
 ## How many cells and samples retained?
 
-Table summarizing the number of cells before and after QC filtering.
+Table summarizing the number of cells before and after QC filtering. The per-metric
+exclusion columns are counts of cells failing each criterion and may overlap,
+so they are not expected to sum to the total excluded count.
 
 ```{r summary_table}
-calc_qc_summary(qc_all_dt, kept_dt, cuts_dt, qc_lu) %>% knitr::kable()
+htmltools::tagList(
+  htmltools::tags$style(htmltools::HTML("\n+    .qc-summary-table { font-size: 0.85rem; }\n+    .qc-summary-table table.dataTable thead th { font-size: 0.85rem; }\n+    .qc-summary-table .dataTables_wrapper input[type='search'],\n+    .qc-summary-table .dataTables_wrapper input[type='text'] {\n+      font-size: 0.8rem;\n+      padding: 2px 4px;\n+      height: auto;\n+      width: 100% !important;\n+      max-width: 8em;\n+      box-sizing: border-box;\n+    }\n+  ")),
+  htmltools::div(
+    class = "qc-summary-table",
+  DT::datatable(
+    calc_qc_summary(qc_all_dt, kept_dt, cuts_dt, qc_lu),
+    rownames = FALSE,
+    filter = "top",
+    class = "compact stripe hover",
+    options = list(
+      pageLength = 20,
+      lengthMenu = list(c(20, 50, 100), c("20", "50", "100")),
+      searching = TRUE,
+      ordering = TRUE,
+      scrollX = TRUE,
+      autoWidth = TRUE,
+      dom = "frtip"
+    )
+  )
+  )
+)
 ```
 
 ## What were the reasons for excluding barcodes?

@@ -137,6 +137,15 @@ bar_vars <- umap_vars[vapply(umap_vars, function(var_name) {
   }
   !is.numeric(vals) || uniqueN(vals) <= 12
 }, logical(1))]
+metadata_dens_vars <- setdiff(bar_vars, "sample_id")
+metadata_dens_vars <- metadata_dens_vars[vapply(metadata_dens_vars, function(var_name) {
+  vals <- int_dt_pass2[[var_name]]
+  vals <- vals[!is.na(vals)]
+  data.table::uniqueN(vals) > 1
+}, logical(1))]
+if (length(metadata_dens_vars) > 0) {
+  sel_cl_int_dt <- copy(int_dt_pass2)[, c("cell_id", "UMAP1", "UMAP2", metadata_dens_vars), with = FALSE]
+}
 feature_vars <- Filter(function(spec) spec$source %in% names(int_dt_pass2), feature_sources)
 missing_feature_vars <- Filter(function(spec) !spec$source %in% names(int_dt_pass2), feature_sources)
 
@@ -164,7 +173,7 @@ Cells that passed quality control filtering were integrated `r int_txt`together 
 * **Cells:** `r format(n_cells, big.mark = ",")`
 `r if (has_doublets) sprintf("* **Singlets:** %s", format(n_singlets, big.mark = ","))`
 `r if (has_doublets) sprintf("* **Doublets:** %s (%.1f%%)", format(n_doublets, big.mark = ","), 100 * n_doublets / (n_doublets + n_singlets))`
-* **Samples:** `r int_dt[, uniqueN(sample_id)]`
+* **Samples:** `r data.table::uniqueN(int_dt$sample_id)`
 * **Metadata vars retained in integration output:** `r if (length(metadata_vars) > 0) paste(metadata_vars, collapse = ", ") else "none"`
 * **Leiden resolutions:** `r paste(leiden_res, collapse = ", ")`
 
@@ -238,7 +247,7 @@ Entropy measures how evenly distributed cells are across samples within each clu
 ```{r plot_entropy_selected_clusters, fig.height = 5, fig.width = 7, results='asis'}
 if (length(present_leiden) > 0) {
   n_clusts <- sapply(present_leiden, function(cl_col) {
-    int_dt_pass2[, uniqueN(get(cl_col))]
+    int_dt_pass2[, data.table::uniqueN(get(cl_col))]
   })
   res_ls_pl <- present_leiden[n_clusts > 1]
   if (length(res_ls_pl) > 0) {
@@ -304,6 +313,22 @@ if (length(umap_vars) > 0) {
 }
 ```
 
+## UMAP by binned metadata variables
+
+```{r umap_metadata_binned, fig.height = 5, fig.width = 7, results='asis'}
+if (length(metadata_dens_vars) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (var_name in metadata_dens_vars) {
+    cat("### ", var_name, "\n\n")
+    print(plot_clusters_annotated_by_densities(sel_cl_int_dt, var_name))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("No discrete metadata variables were retained in the integration output.\n\n")
+}
+```
+
 ## Barcharts
 
 Stacked bar charts below show the composition of each cluster after pass-2 integration. Each bar is normalised within a cluster, so the bar height always sums to 100%.
@@ -359,23 +384,6 @@ if (length(present_leiden) > 0) {
 }
 ```
 
-## Metadata across UMAP space
-
-These panels use pixel-bin density maps (scprocess-style). For each metadata value, each UMAP pixel is coloured by the within-pixel proportion of cells with that value. `sample_id` is intentionally excluded to avoid oversized tabsets.
-
-```{r plot_metadata_umaps, fig.height = 8, fig.width = 14, results='asis'}
-if (length(metadata_umap_vars) > 0) {
-  cat('::: {.panel-tabset}\n\n')
-  for (var_name in metadata_umap_vars) {
-    cat('###', var_name, '\n\n')
-    print(plot_clusters_annotated_by_densities(int_dt_pass2, var_name))
-    cat('\n\n')
-  }
-  cat(':::\n\n')
-} else {
-  cat('No metadata variables available for visualization after excluding sample_id.\n\n')
-}
-```
 
 ## Session info
 

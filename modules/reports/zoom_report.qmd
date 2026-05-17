@@ -60,8 +60,12 @@ plot_umap_qc_feature <- function(int_dt, var_name, label) {
 int_dt <- fread("zoom_integration_dt.csv.gz")
 qc_dt <- fread("zoom_qc_metrics.csv.gz")
 marker_dt <- fread("zoom_marker_stats.csv.gz")
+
 cpms_dt <- fread("zoom_marker_logcpms.csv.gz")
 selection_dt <- fread("zoom_selection.csv.gz")
+
+# Path to cached marker expression RDS for top marker UMAPs
+top_marker_expr_rds <- "zoom_marker_expression.rds"
 
 parent_csv_path <- Sys.getenv("PARENT_INTEGRATION_CSV", "")
 if (nzchar(parent_csv_path) && file.exists(parent_csv_path)) {
@@ -124,6 +128,30 @@ umap_vars <- unique(c("sample_id", metadata_vars))
 umap_vars <- umap_vars[umap_vars %in% names(int_dt_pass2)]
 metadata_umap_vars <- setdiff(umap_vars, "sample_id")
 feature_vars <- Filter(function(spec) spec$source %in% names(int_dt_pass2), feature_sources)
+sample_meta_dt <- if (length(metadata_vars) > 0) {
+  unique(int_dt_pass2[, c("sample_id", metadata_vars), with = FALSE], by = "sample_id")
+} else {
+  unique(int_dt_pass2[, .(sample_id)])
+}
+
+# Integration-style binned metadata variables
+bar_vars <- umap_vars[vapply(umap_vars, function(var_name) {
+  vals <- int_dt_pass2[[var_name]]
+  vals <- vals[!is.na(vals)]
+  if (length(vals) == 0) {
+    return(FALSE)
+  }
+  !is.numeric(vals) || uniqueN(vals) <= 12
+}, logical(1))]
+metadata_dens_vars <- setdiff(bar_vars, "sample_id")
+metadata_dens_vars <- metadata_dens_vars[vapply(metadata_dens_vars, function(var_name) {
+  vals <- int_dt_pass2[[var_name]]
+  vals <- vals[!is.na(vals)]
+  data.table::uniqueN(vals) > 1
+}, logical(1))]
+if (length(metadata_dens_vars) > 0) {
+  sel_cl_int_dt <- copy(int_dt_pass2)[, c("cell_id", "UMAP1", "UMAP2", metadata_dens_vars), with = FALSE]
+}
 
 marker_cl_col <- resolve_cluster_column(int_dt_pass2, paste0("RNA_snn_res.", marker_sel_res))
 marker_top_dt <- marker_dt[str_detect(gene_type, "(lincRNA|lncRNA|pseudogene|antisense)", negate = TRUE)][
@@ -140,14 +168,11 @@ Zoom `r zoom_name` re-runs HVG selection and integration on a selected subset of
 * **Samples retained:** `r uniqueN(int_dt_pass2$sample_id)`
 * **Marker resolution:** `r marker_sel_res`
 
-## Selected cells per sample
-
-```{r selection_overview, fig.height = 5, fig.width = 13}
+```{r selection_umap, fig.height = 4, fig.width = 4}
 sel_tbl <- selection_dt[, .(n_cells = .N), by = .(sample_id)][order(-n_cells)]
 
 if (!is.null(parent_umap_dt)) {
   # Build parent-space overview: all cells grey, selected cells coloured
-  selected_ids <- unique(selection_dt$cell_id)
   selected_vals <- unique(selection_dt[, .(cell_id, zoom_value)])
 
   overview_dt <- copy(parent_umap_dt)
@@ -173,9 +198,7 @@ if (!is.null(parent_umap_dt)) {
       axis.ticks = element_blank(),
       axis.text = element_blank(),
       aspect.ratio = 1,
-      legend.position = "right",
-      legend.title.position = "top",
-      legend.key.size = unit(0.25, "cm")
+      legend.position = "none"
     ) +
     labs(colour = "zoom value", title = "Selected cells over full-dataset UMAP")
 } else {
@@ -202,32 +225,65 @@ if (!is.null(parent_umap_dt)) {
       axis.ticks = element_blank(),
       axis.text = element_blank(),
       aspect.ratio = 1,
-      legend.position = "right",
-      legend.title.position = "top",
-      legend.key.size = unit(0.25, "cm")
+      legend.position = "none"
     ) +
     labs(colour = "zoom value", title = "Selected cells over zoom UMAP")
 }
 
-p2 <- ggplot(sel_tbl, aes(x = sample_id, y = n_cells)) +
-  geom_col(width = 0.8, fill = "#4C78A8", colour = "black", linewidth = 0.25) +
-  geom_text(aes(label = scales::comma(n_cells)), angle = 90, hjust = -0.1, size = 2.7) +
-  coord_cartesian(clip = "off") +
-  theme_bw() +
-  theme(
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor = element_blank(),
-    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
-    plot.margin = margin(5.5, 20, 5.5, 5.5)
-  ) +
-  labs(x = "sample", y = "selected cells", title = "Selected cells per sample")
+print(p1)
+```
 
-print(p1 + p2 + patchwork::plot_layout(widths = c(1.1, 1)))
+## Selected cells per sample
+
+
+```{r selection_bars, fig.height = 14, fig.width = 7}
+if ("condition" %in% names(sample_meta_dt)) {
+  sel_tbl <- merge(sel_tbl, unique(sample_meta_dt[, .(sample_id, condition)]), by = "sample_id", all.x = TRUE, sort = FALSE)
+  sel_tbl[, condition := factor(as.character(condition))]
+
+  p2 <- ggplot(sel_tbl, aes(x = sample_id, y = n_cells, fill = condition)) +
+    geom_col(width = 0.8, colour = "black", linewidth = 0.25) +
+    geom_text(aes(label = scales::comma(n_cells)), angle = 90, hjust = -0.1, size = 2.7) +
+    facet_wrap(~ condition, ncol = 1, scales = "free_x") +
+    coord_cartesian(clip = "off") +
+    scale_y_continuous(
+      limits = function(x) c(0, max(x, na.rm = TRUE) * 1.2),
+      expand = expansion(mult = c(0, 0.02))
+    ) +
+    theme_bw() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      plot.margin = margin(5.5, 20, 5.5, 5.5),
+      legend.position = "none"
+    ) +
+    labs(x = "sample", y = "selected cells", title = "Selected cells per sample")
+} else {
+  p2 <- ggplot(sel_tbl, aes(x = sample_id, y = n_cells)) +
+    geom_col(width = 0.8, fill = "#4C78A8", colour = "black", linewidth = 0.25) +
+    geom_text(aes(label = scales::comma(n_cells)), angle = 90, hjust = -0.1, size = 2.7) +
+    coord_cartesian(clip = "off") +
+    scale_y_continuous(
+      limits = function(x) c(0, max(x, na.rm = TRUE) * 1.2),
+      expand = expansion(mult = c(0, 0.02))
+    ) +
+    theme_bw() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      plot.margin = margin(5.5, 20, 5.5, 5.5)
+    ) +
+    labs(x = "sample", y = "selected cells", title = "Selected cells per sample")
+}
+
+print(p2)
 ```
 
 ## Clusters over UMAP
 
-```{r plot_clusters_integration, fig.height = 7, fig.width = 9, results='asis'}
+```{r plot_clusters_integration, fig.height = 5, fig.width = 7, results='asis'}
 if (length(present_leiden) > 0) {
   cat('::: {.panel-tabset}\n\n')
   for (cl_col in present_leiden) {
@@ -238,7 +294,7 @@ if (length(present_leiden) > 0) {
       umap_dt = int_dt_pass2[, .(cell_id, UMAP1, UMAP2)],
       clust_dt = int_dt_pass2[, .(cell_id, cluster = get(cl_col))],
       name = sprintf('res = %s', res_val)
-    )
+    )+theme(legend.position = "none")
     g_dens <- plot_umap_density(int_dt_pass2[, .(cell_id, UMAP1, UMAP2)])
     print(g_cl + g_dens)
     cat("\n\n")
@@ -275,19 +331,50 @@ if (length(feature_vars) > 0) {
 }
 ```
 
+
 ## Top marker genes by cluster
 
-```{r top_markers, fig.height = 9, fig.width = 10, results='asis'}
+```{r top_markers, fig.height = 5, fig.width = 7, results = 'asis', cache = FALSE}
+# Match annotation report: dotplot and UMAP facet per cluster
+top_marker_expr_dt <- if (file.exists(top_marker_expr_rds)) readRDS(top_marker_expr_rds) else data.table()
+
 cat('::: {.panel-tabset}\n\n')
 for (sel_cl in marker_cl_ord) {
-  cat('###', sel_cl, '\n\n')
-  if (sel_cl %in% marker_top_dt$cluster) {
-    print(plot_top_marker_genes(sel_cl, marker_top_dt, cpms_dt, cl_order = marker_cl_ord))
-  } else {
-    cat('No marker genes passed the display filters for this cluster.\n\n')
+  cat(sprintf("### %s\n\n", sel_cl))
+  has_markers <- sel_cl %in% as.character(marker_top_dt$cluster)
+  if (!has_markers) {
+    cat("No marker genes passed the display filters for this cluster.\n\n")
+    next
   }
-  cat('\n\n')
+
+  p_dot <- plot_top_marker_genes(sel_cl, marker_top_dt, cpms_dt, cl_order = marker_cl_ord) +
+    theme(
+      axis.text.x = element_text(size = 9),
+      axis.text.y = element_text(size = 9),
+      strip.text = element_text(size = 9),
+      plot.title = element_text(size = 12),legend.position="none"
+    )
+  g_umap <- NULL
+  if (nrow(top_marker_expr_dt) > 0) {
+    g_umap <- plot_top_marker_umap_facet(
+      sel_cl, marker_top_dt, top_marker_expr_dt,
+      int_dt_pass2[, .(cell_id, UMAP1, UMAP2)]
+    ) +
+      theme(
+        strip.text = element_text(size = 9, margin = margin(b = 4)),
+        plot.title = element_text(size = 11)
+      )
+  }
+
+  print(p_dot)
+
+  if (!is.null(g_umap)) {
+    print(g_umap)
+  }
+  cat("\n\n")
+  invisible(gc(verbose = FALSE))
 }
+rm(top_marker_expr_dt)
 cat(':::\n\n')
 ```
 
@@ -298,21 +385,20 @@ tbl <- cluster_counts_tbl(int_dt_pass2, marker_cl_col)
 knitr::kable(tbl, caption = sprintf('Cell counts at res %s', marker_sel_res))
 ```
 
-## Metadata across UMAP space
 
-These panels use pixel-bin density maps (scprocess-style). `sample_id` is intentionally excluded from this section to avoid oversized tabsets.
+## UMAP by binned metadata variables
 
-```{r plot_metadata_umaps, fig.height = 8, fig.width = 14, results='asis'}
-if (length(metadata_umap_vars) > 0) {
+```{r umap_metadata_binned, fig.height = 5, fig.width = 7, results='asis'}
+if (length(metadata_dens_vars) > 0) {
   cat('::: {.panel-tabset}\n\n')
-  for (var_name in metadata_umap_vars) {
-    cat('###', var_name, '\n\n')
-    print(plot_clusters_annotated_by_densities(int_dt_pass2, var_name))
-    cat('\n\n')
+  for (var_name in metadata_dens_vars) {
+    cat("### ", var_name, "\n\n")
+    print(plot_clusters_annotated_by_densities(sel_cl_int_dt, var_name))
+    cat("\n\n")
   }
   cat(':::\n\n')
 } else {
-  cat('No metadata variables available for visualization after excluding sample_id.\n\n')
+  cat("No discrete metadata variables were retained in the integration output.\n\n")
 }
 ```
 

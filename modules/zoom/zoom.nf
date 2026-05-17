@@ -176,7 +176,7 @@ process RUN_ZOOM_MARKERS {
     path utils_r
 
     output:
-    tuple val(zoom_name), val(spec_b64), path("zoom_qc_metrics.csv.gz"), path("zoom_selection.csv.gz"), path("zoom_integration_dt.csv.gz"), path("zoom_marker_stats.csv.gz"), path("zoom_marker_logcpms.csv.gz"), emit: zoom_markers
+    tuple val(zoom_name), val(spec_b64), path("zoom_qc_metrics.csv.gz"), path("zoom_selection.csv.gz"), path("zoom_integration_dt.csv.gz"), path("zoom_marker_stats.csv.gz"), path("zoom_marker_logcpms.csv.gz"), path("zoom_marker_expression.rds"), emit: zoom_markers
 
     script:
     def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
@@ -195,6 +195,7 @@ process RUN_ZOOM_MARKERS {
         ${markerMinCells} \
         zoom_marker_stats.csv.gz \
         zoom_marker_logcpms.csv.gz \
+        zoom_marker_expression.rds \
         'filt_counts_*.h5' \
         ${task.cpus}
     """
@@ -208,7 +209,7 @@ process ZOOM_REPORT {
     publishDir "${params.outputDir}/zoom", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt), path(zoom_marker_stats), path(zoom_marker_logcpms)
+    tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt), path(zoom_marker_stats), path(zoom_marker_logcpms), path(zoom_marker_expression)
     path parent_integration_csv
     path report_qmd
     path integration_plots_r

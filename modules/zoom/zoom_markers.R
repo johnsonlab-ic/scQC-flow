@@ -4,11 +4,11 @@ source("annotation_utils.R")
 
 run_zoom_markers <- function() {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) < 8) {
+  if (length(args) < 9) {
     stop(
       paste(
         "Usage: zoom_markers.R <integration_csv> <genome_gtf> <sel_res>",
-        "<min_cl_size> <min_cells> <out_markers> <out_logcpms> <h5_pattern>",
+        "<min_cl_size> <min_cells> <out_markers> <out_logcpms> <out_marker_expr> <h5_pattern>",
         "[n_cores]"
       )
     )
@@ -21,8 +21,9 @@ run_zoom_markers <- function() {
   min_cells <- as.integer(args[5])
   out_markers <- args[6]
   out_logcpms <- args[7]
-  h5_pattern <- args[8]
-  n_cores <- if (length(args) >= 9L) as.integer(args[9]) else 1L
+  out_marker_expr <- args[8]
+  h5_pattern <- args[9]
+  n_cores <- if (length(args) >= 10L) as.integer(args[10]) else 1L
   if (is.na(n_cores) || n_cores < 1L) n_cores <- 1L
 
   h5_files <- Sys.glob(h5_pattern)
@@ -39,6 +40,17 @@ run_zoom_markers <- function() {
   prep_obj <- prepare_cluster_matrices(pb_obj, min_cells = min_cells)
   marker_dt <- calc_find_markers_pseudobulk(prep_obj, pb_obj$row_dt)
 
+  cl_col <- paste0("RNA_snn_res.", sel_res)
+  int_dt <- fread(integration_f)
+  assert_that(cl_col %in% names(int_dt), msg = sprintf("Integration output is missing '%s'", cl_col))
+  umap_dt <- merge(
+    ann_dt[, .(sample_id, cell_id, cluster)],
+    int_dt[, .(cell_id, UMAP1, UMAP2)],
+    by = "cell_id",
+    all.x = FALSE,
+    sort = FALSE
+  )
+
   # Compute logCPMs only for the top markers that will be plotted in the report.
   # Use a generous threshold (FDR < 0.1, top 50 per cluster) to cover any
   # threshold tuning at report render time, avoiding full-gene computation.
@@ -48,11 +60,24 @@ run_zoom_markers <- function() {
           nrow(pb_obj$row_dt), " genes)")
   logcpms_dt <- make_logcpms_for_genes(prep_obj, pb_obj$row_dt, gene_ids = logcpm_gene_ids)
 
+  top_sel_dt <- unique(top_for_cpms[, .(label = as.character(cluster), symbol, gene_id)])
+  top_marker_expr_dt <- if (nrow(top_sel_dt) > 0) {
+    load_h5_marker_expression_multi(
+      h5_files,
+      sel_dt_list = list(top = top_sel_dt),
+      int_dt = umap_dt
+    )$top
+  } else {
+    data.table()
+  }
+
   fwrite(marker_dt, out_markers)
   fwrite(logcpms_dt, out_logcpms)
+  saveRDS(top_marker_expr_dt, out_marker_expr)
 
   message("Wrote marker statistics: ", out_markers)
   message("Wrote logCPM summaries: ", out_logcpms)
+  message("Wrote top-marker expression cache: ", out_marker_expr)
   message("=== ZOOM MARKERS done ===")
 }
 

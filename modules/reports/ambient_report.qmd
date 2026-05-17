@@ -9,7 +9,12 @@ format:
 execute:
   warning: false
   message: false
+  cache: false
 ---
+
+This report summarizes decontX ambient RNA correction for each sample, including
+the number of cells retained, the amount of background used for contamination
+estimation, and how read composition changes before and after decontamination.
 
 ```{r setup}
 suppressPackageStartupMessages({
@@ -83,7 +88,7 @@ DT::datatable(
     pageLength = 10,
     lengthMenu = list(c(10), c("10")),
     dom = "tip",
-    searching = FALSE,
+    searching = TRUE,
     autoWidth = TRUE,
     order = list(list(0, "asc"))
   )
@@ -218,27 +223,6 @@ for (ii in seq_along(chunks_ls)) {
     ok_bcs_ls[chunk_ids]
   ))
   cat("</div>\n\n")
-}
-cat(':::\n\n')
-```
-
-## Contamination distribution
-
-Per-cell contamination proportion estimated by decontX, shown as a histogram.
-Higher values indicate cells with more ambient contamination.
-
-```{r plot_contamination, results="asis"}
-cat('::: {.panel-tabset}\n\n')
-for (ss in s_lvls) {
-  cat("### ", ss, "\n\n")
-  dcx_dt <- dcx_ls[[ss]]
-  g <- ggplot(dcx_dt) +
-    aes(x = pct_contamination * 100) +
-    geom_histogram(bins = 50, fill = "steelblue", colour = NA) +
-    theme_classic() +
-    labs(x = "% contamination (decontX)", y = "cells", title = ss)
-  print(g)
-  cat("\n\n")
 }
 cat(':::\n\n')
 ```
