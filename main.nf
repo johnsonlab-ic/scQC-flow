@@ -196,7 +196,7 @@ workflow {
             if (!rawSpec.reference_label_col) {
                 error "Annotation method '${methodIdRaw}' requires 'reference_label_col'"
             }
-            normalizedSpec.reference_rds = file(rawSpec.reference_rds)
+            normalizedSpec.reference_rds = rawSpec.reference_rds.toString()
             normalizedSpec.reference_label_col = rawSpec.reference_label_col.toString()
             normalizedSpec.fine_tune = rawSpec.containsKey('fine_tune') ? rawSpec.fine_tune : false
             normalizedSpec.prune = rawSpec.containsKey('prune') ? rawSpec.prune : true
@@ -216,8 +216,8 @@ workflow {
             if (!file(rawSpec.class_csv).exists()) {
                 error "Annotation method '${methodIdRaw}' class_csv does not exist: ${rawSpec.class_csv}"
             }
-            normalizedSpec.model_rds = file(rawSpec.model_rds)
-            normalizedSpec.class_csv = file(rawSpec.class_csv)
+            normalizedSpec.model_rds = rawSpec.model_rds.toString()
+            normalizedSpec.class_csv = rawSpec.class_csv.toString()
             normalizedSpec.chunk_size = (rawSpec.chunk_size ?: 10000) as Integer
             normalizedSpec.scale_factor = (rawSpec.scale_factor ?: 10000) as BigDecimal
         }
