@@ -20,7 +20,12 @@ include { RUN_INTEGRATION   } from '../modules/integration/integration.nf'
 include { INTEGRATION_REPORT } from '../modules/reports/reports.nf'
 include { RUN_ANNOTATION_MARKERS } from '../modules/annotation/annotation.nf'
 include { PREP_REPORT_INPUTS } from '../modules/annotation/annotation.nf'
+include { FORMAT_ANNOTATION_EXPORT_METADATA } from '../modules/annotation/annotation.nf'
+include { PREPARE_ANNOTATION_QUERY } from '../modules/annotation/annotation.nf'
+include { RUN_SINGLER_REFERENCE_ANNOTATION } from '../modules/annotation/annotation.nf'
+include { RUN_XGBOOST_REFERENCE_ANNOTATION } from '../modules/annotation/annotation.nf'
 include { ANNOTATION_REPORT } from '../modules/reports/reports.nf'
+include { ANNOTATION_METHOD_REPORT } from '../modules/reports/reports.nf'
 include { PREPARE_ZOOM_SUBSET } from '../modules/zoom/zoom.nf'
 include { STAGE_ZOOM_RAW_H5 } from '../modules/zoom/zoom.nf'
 include { ZOOM_AMBIENT_DE } from '../modules/zoom/zoom.nf'
@@ -411,6 +416,11 @@ workflow ANNOTATION {
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))
     )
 
+    FORMAT_ANNOTATION_EXPORT_METADATA(
+        RUN_ANNOTATION_MARKERS.out.cell_labels,
+        channel.value(file("${projectDir}/modules/annotation/format_annotation_export_metadata.R"))
+    )
+
     ANNOTATION_REPORT(
         integration_dt_ch,
         RUN_ANNOTATION_MARKERS.out.markers,
@@ -431,7 +441,72 @@ workflow ANNOTATION {
     marker_expr = RUN_ANNOTATION_MARKERS.out.marker_expr
     top_marker_expr = PREP_REPORT_INPUTS.out.top_marker_expr
     cell_labels = RUN_ANNOTATION_MARKERS.out.cell_labels
+    export_metadata = FORMAT_ANNOTATION_EXPORT_METADATA.out.export_metadata
     report = ANNOTATION_REPORT.out.html
+}
+
+// =============================================================================
+// ANNOTATION_METHODS
+//
+// Shared prepared query SCE -> method/reference-specific annotation runs ->
+// one HTML report per configured annotation method.
+// =============================================================================
+
+workflow ANNOTATION_METHODS {
+
+    take:
+    h5_ch
+    integration_dt_ch
+    annotation_methods_ch
+
+    main:
+
+    PREPARE_ANNOTATION_QUERY(
+        h5_ch.map { _id, h5 -> h5 }.collect(),
+        integration_dt_ch,
+        channel.value(file(params.genome_gtf)),
+        channel.value(file("${projectDir}/modules/annotation/prepare_annotation_query.R")),
+        channel.value(file("${projectDir}/modules/export/export_utils.R"))
+    )
+
+    def singler_specs_ch = annotation_methods_ch
+        .filter { spec -> spec.engine == 'singler' }
+        .map { spec ->
+            def spec_json = groovy.json.JsonOutput.toJson(spec)
+            tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString())
+        }
+
+    def xgboost_specs_ch = annotation_methods_ch
+        .filter { spec -> spec.engine == 'xgboost' }
+        .map { spec ->
+            def spec_json = groovy.json.JsonOutput.toJson(spec)
+            tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString())
+        }
+
+    RUN_SINGLER_REFERENCE_ANNOTATION(
+        singler_specs_ch,
+        PREPARE_ANNOTATION_QUERY.out.query,
+        channel.value(file("${projectDir}/modules/annotation/run_singler_reference_annotation.R"))
+    )
+
+    RUN_XGBOOST_REFERENCE_ANNOTATION(
+        xgboost_specs_ch,
+        PREPARE_ANNOTATION_QUERY.out.query,
+        channel.value(file("${projectDir}/modules/annotation/run_xgboost_reference_annotation.R"))
+    )
+
+    def annotation_results_ch = RUN_SINGLER_REFERENCE_ANNOTATION.out.result.mix(
+        RUN_XGBOOST_REFERENCE_ANNOTATION.out.result
+    )
+
+    ANNOTATION_METHOD_REPORT(
+        annotation_results_ch,
+        channel.value(file("${projectDir}/modules/reports/annotation_method_report.qmd"))
+    )
+
+    emit:
+    export_metadata = annotation_results_ch.map { _id, _spec_b64, _cells_csv, _cluster_csv, export_csv -> export_csv }
+    report = ANNOTATION_METHOD_REPORT.out.html
 }
 
 // =============================================================================

@@ -7,6 +7,7 @@ include { QC                } from './workflows/workflows'
 include { HVG               } from './workflows/workflows'
 include { INTEGRATION       } from './workflows/workflows'
 include { ANNOTATION        } from './workflows/workflows'
+include { ANNOTATION_METHODS } from './workflows/workflows'
 include { ZOOMS             } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
 include { EXPORT_SCANPY     } from './modules/export/export_sc'
@@ -68,6 +69,9 @@ def helpMessage() {
                     or cell_type/marker_gene columns
         --annotation_sel_res      Single clustering resolution to carry from
                     integration into annotation (default: 0.2)
+        annotation_methods  Optional list of method/reference annotation runs
+                defined in config. Each item renders its own report and
+                exports namespaced metadata columns.
         --help              Show this message
 
     Profiles:
@@ -103,7 +107,7 @@ workflow {
     if (!params.raw_data_dir) {
         error "--raw_data_dir is required"
     }
-    def rawDataDirs = params.raw_data_dir.toString().split(',').collect { it.trim() }
+    def rawDataDirs = params.raw_data_dir.toString().split(',').collect { rawDir -> rawDir.trim() }
     rawDataDirs.each { dir ->
         if (!file(dir).exists()) {
             error "--raw_data_dir does not exist: ${dir}"
@@ -148,6 +152,85 @@ workflow {
     }
     if (params.run_annotation && !params.run_integration) {
         error "--run_annotation requires --run_integration"
+    }
+
+    def rawAnnotationMethods = params.annotation_methods ?: []
+    if (!(rawAnnotationMethods instanceof List)) {
+        error "params.annotation_methods must be a list of annotation method definitions"
+    }
+
+    def normalizedAnnotationMethods = rawAnnotationMethods.collect { rawSpec ->
+        if (!(rawSpec instanceof Map)) {
+            error "Each entry in params.annotation_methods must be a map"
+        }
+
+        def methodIdRaw = rawSpec.id?.toString()?.trim()
+        if (!methodIdRaw) {
+            error "Each annotation method entry must define a non-empty 'id'"
+        }
+        def methodId = methodIdRaw.replaceAll(/[^A-Za-z0-9_]+/, '_')
+        def engine = rawSpec.engine?.toString()?.trim()?.toLowerCase()
+        if (!(engine in ['singler', 'xgboost'])) {
+            error "Annotation method '${methodIdRaw}' has invalid engine '${engine}'. Use 'singler' or 'xgboost'."
+        }
+
+        def clusterCol = rawSpec.cluster_col?.toString()?.trim()
+        if (!clusterCol && rawSpec.cluster_res != null) {
+            clusterCol = "RNA_snn_res.${rawSpec.cluster_res.toString().trim()}"
+        }
+
+        def normalizedSpec = [
+            id: methodId,
+            engine: engine,
+            reference_name: (rawSpec.reference_name ?: methodId).toString(),
+            cluster_col: clusterCol ?: '',
+        ]
+
+        if (engine == 'singler') {
+            if (!rawSpec.reference_rds) {
+                error "Annotation method '${methodIdRaw}' requires 'reference_rds'"
+            }
+            if (!file(rawSpec.reference_rds).exists()) {
+                error "Annotation method '${methodIdRaw}' reference_rds does not exist: ${rawSpec.reference_rds}"
+            }
+            if (!rawSpec.reference_label_col) {
+                error "Annotation method '${methodIdRaw}' requires 'reference_label_col'"
+            }
+            normalizedSpec.reference_rds = file(rawSpec.reference_rds)
+            normalizedSpec.reference_label_col = rawSpec.reference_label_col.toString()
+            normalizedSpec.fine_tune = rawSpec.containsKey('fine_tune') ? rawSpec.fine_tune : false
+            normalizedSpec.prune = rawSpec.containsKey('prune') ? rawSpec.prune : true
+            normalizedSpec.bp_type = (rawSpec.bp_type ?: 'multicore').toString()
+        }
+
+        if (engine == 'xgboost') {
+            if (!rawSpec.model_rds) {
+                error "Annotation method '${methodIdRaw}' requires 'model_rds'"
+            }
+            if (!file(rawSpec.model_rds).exists()) {
+                error "Annotation method '${methodIdRaw}' model_rds does not exist: ${rawSpec.model_rds}"
+            }
+            if (!rawSpec.class_csv) {
+                error "Annotation method '${methodIdRaw}' requires 'class_csv'"
+            }
+            if (!file(rawSpec.class_csv).exists()) {
+                error "Annotation method '${methodIdRaw}' class_csv does not exist: ${rawSpec.class_csv}"
+            }
+            normalizedSpec.model_rds = file(rawSpec.model_rds)
+            normalizedSpec.class_csv = file(rawSpec.class_csv)
+            normalizedSpec.chunk_size = (rawSpec.chunk_size ?: 10000) as Integer
+            normalizedSpec.scale_factor = (rawSpec.scale_factor ?: 10000) as BigDecimal
+        }
+
+        normalizedSpec
+    }
+
+    def annotationMethodIds = normalizedAnnotationMethods.collect { spec -> spec.id }
+    if (annotationMethodIds.toSet().size() != annotationMethodIds.size()) {
+        error "Annotation method ids must be unique: ${annotationMethodIds}"
+    }
+    if (normalizedAnnotationMethods && !params.run_integration) {
+        error "params.annotation_methods requires --run_integration"
     }
 
     def exportMode = (params.export ?: 'none').toString().trim().toLowerCase()
@@ -279,6 +362,7 @@ workflow {
     run_hvg        : ${params.run_hvg}
     run_integration: ${params.run_integration}
     run_annotation : ${params.run_annotation}
+    annotation_methods: ${normalizedAnnotationMethods ? normalizedAnnotationMethods.collect { spec -> spec.id }.join(', ') : 'none'}
     export         : ${exportMode}
     zooms          : ${normalizedZoomSpecs ? normalizedZoomSpecs.collect { spec -> spec.name }.join(', ') : 'disabled'}
     metadata_csv   : ${params.metadata_csv ?: 'not provided'}
@@ -329,7 +413,7 @@ workflow {
                 qc: params.run_ambient && params.run_qc,
                 hvg: params.run_ambient && params.run_qc && params.run_hvg,
                 integration: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration,
-                annotation: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && params.run_annotation,
+                annotation: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && (params.run_annotation || normalizedAnnotationMethods),
                 export: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && exportMode != 'none',
                 zooms: normalizedZoomSpecs.size() > 0,
             ],
@@ -351,6 +435,7 @@ workflow {
                     run_hvg: params.run_hvg,
                     run_integration: params.run_integration,
                     run_annotation: params.run_annotation,
+                    annotation_methods: normalizedAnnotationMethods.collect { spec -> spec.id },
                     export: exportMode,
                 ],
                 cellbender: [
@@ -386,6 +471,7 @@ workflow {
                     annotation_top_n: params.annotation_top_n,
                     annotation_fdr_cut: params.annotation_fdr_cut,
                     annotation_max_zero_p: params.annotation_max_zero_p,
+                    annotation_methods: normalizedAnnotationMethods,
                 ],
                 export: [
                     mode: exportMode,
@@ -413,12 +499,14 @@ workflow {
     // Sample discovery: each subdir of raw_data_dir is one sample
     // ------------------------------------------------------------------
     samples_ch = channel
-        .fromPath(rawDataDirs.collect { "${it}/*" }, type: 'dir')
+        .fromPath(rawDataDirs.collect { rawDir -> "${rawDir}/*" }, type: 'dir')
         .map { dir -> tuple(dir.name, dir.name, dir.toString()) }
 
     def sample_metadata_ch
     def landing_integration_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     def annotation_cell_labels_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
+    def annotation_export_metadata_ch = channel.empty()
+    def hasAnnotationExportMetadata = false
     if (params.metadata_csv) {
         SAMPLE_METADATA(samples_ch.map { sampleId, _sampleName, _fastqPath -> sampleId }.collect())
         sample_metadata_ch = SAMPLE_METADATA.out.sample_metadata
@@ -482,8 +570,25 @@ workflow {
                             INTEGRATION.out.integration_dt
                         )
                         annotation_cell_labels_ch = ANNOTATION.out.cell_labels
+                        annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION.out.export_metadata)
+                        hasAnnotationExportMetadata = true
                         report_pages = report_pages.mix(ANNOTATION.out.report)
                     }
+
+                    if (normalizedAnnotationMethods) {
+                        ANNOTATION_METHODS(
+                            AMBIENT.out.h5_files,
+                            INTEGRATION.out.integration_dt,
+                            channel.fromList(normalizedAnnotationMethods)
+                        )
+                        annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION_METHODS.out.export_metadata)
+                        hasAnnotationExportMetadata = true
+                        report_pages = report_pages.mix(ANNOTATION_METHODS.out.report)
+                    }
+
+                    def annotation_export_input_ch = hasAnnotationExportMetadata
+                        ? annotation_export_metadata_ch.collect()
+                        : channel.value(file("${projectDir}/templates/NO_FILE"))
 
                     if (normalizedZoomSpecs) {
                         ZOOMS(
@@ -501,7 +606,7 @@ workflow {
                             EXPORT_SCANPY_ZOOM(
                                 ZOOMS.out.zoom_int,
                                 AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
-                                annotation_cell_labels_ch,
+                                annotation_export_input_ch,
                                 channel.value(file(params.genome_gtf)),
                                 channel.value(file("${projectDir}/modules/export/export_anndata.py"))
                             )
@@ -511,7 +616,7 @@ workflow {
                             EXPORT_SEURAT_ZOOM(
                                 ZOOMS.out.zoom_int,
                                 AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
-                                annotation_cell_labels_ch,
+                                annotation_export_input_ch,
                                 channel.value(file(params.genome_gtf)),
                                 channel.value(file("${projectDir}/modules/export/export_seurat.R")),
                                 channel.value(file("${projectDir}/modules/export/export_utils.R"))
@@ -524,7 +629,7 @@ workflow {
                             AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
                             QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
                             INTEGRATION.out.integration_dt,
-                            annotation_cell_labels_ch,
+                            annotation_export_input_ch,
                             channel.value(file(params.genome_gtf)),
                             channel.value(file("${projectDir}/modules/export/export_anndata.py"))
                         )
@@ -535,7 +640,7 @@ workflow {
                             AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
                             QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
                             INTEGRATION.out.integration_dt,
-                            annotation_cell_labels_ch,
+                            annotation_export_input_ch,
                             channel.value(file(params.genome_gtf)),
                             channel.value(file("${projectDir}/modules/export/export_seurat.R")),
                             channel.value(file("${projectDir}/modules/export/export_utils.R"))

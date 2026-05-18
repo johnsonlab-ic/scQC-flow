@@ -106,28 +106,28 @@ def _load_qc_metadata(qc_pattern):
     return qc_df
 
 
-def _load_annotation(annotation_csv):
-    if annotation_csv == 'NO_FILE':
+def _load_annotation(annotation_pattern):
+    ann_paths = sorted(glob.glob(annotation_pattern))
+    ann_paths = [path for path in ann_paths if os.path.basename(path) != 'NO_FILE']
+    if not ann_paths:
         return None
-    ann_df = pd.read_csv(annotation_csv)
-    rename_map = {
-        'cluster': 'annotation_cluster',
-        'label': 'annotation_label',
-        'label_score': 'annotation_label_score',
-        'n_markers': 'annotation_n_markers',
-    }
-    ann_df = ann_df.rename(columns=rename_map)
-    ann_cols = [
-        'cell_id',
-        'annotation_cluster',
-        'annotation_label',
-        'annotation_label_score',
-        'annotation_n_markers',
-    ]
-    return ann_df[ann_cols]
+
+    merged = None
+    for path in ann_paths:
+        ann_df = pd.read_csv(path)
+        if 'cell_id' not in ann_df.columns:
+            raise KeyError(f'Annotation metadata file is missing cell_id: {path}')
+        ann_df['cell_id'] = ann_df['cell_id'].astype(str)
+        ann_df = ann_df.drop_duplicates('cell_id').reset_index(drop=True)
+        if merged is None:
+            merged = ann_df
+        else:
+            merged = merged.merge(ann_df, on='cell_id', how='outer', suffixes=('', '__ann'))
+            merged = _combine_duplicate_columns(merged, '__ann')
+    return merged
 
 
-def _load_cell_metadata(integration_csv, qc_pattern, annotation_csv):
+def _load_cell_metadata(integration_csv, qc_pattern, annotation_pattern):
     int_df = pd.read_csv(integration_csv)
     int_df['cell_id'] = int_df['cell_id'].astype(str)
     int_df = int_df.drop_duplicates('cell_id').reset_index(drop=True)
@@ -136,7 +136,7 @@ def _load_cell_metadata(integration_csv, qc_pattern, annotation_csv):
     merged = int_df.merge(qc_df, on='cell_id', how='left', suffixes=('', '__qc'))
     merged = _combine_duplicate_columns(merged, '__qc')
 
-    ann_df = _load_annotation(annotation_csv)
+    ann_df = _load_annotation(annotation_pattern)
     if ann_df is not None:
         merged = merged.merge(ann_df, on='cell_id', how='left', suffixes=('', '__ann'))
         merged = _combine_duplicate_columns(merged, '__ann')
@@ -240,12 +240,20 @@ def _add_embeddings(adata, obs_df, include_doublet_umap):
 
 
 def _make_adata(counts_mat, obs_df, var_df, include_doublet_umap):
+    obs_embed = obs_df.copy()
+    obs_df = obs_df.drop(
+        columns=[
+            col for col in obs_df.columns
+            if re.fullmatch(r'(hmny_pca_|harmony_pca_)\d+', col)
+        ],
+        errors='ignore',
+    )
     obs_df = _sanitize_obs(obs_df)
     adata = ad.AnnData(X=counts_mat.T.tocsr(), obs=obs_df, var=var_df.copy())
     adata.layers['counts'] = adata.X.copy()
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
-    _add_embeddings(adata, obs_df, include_doublet_umap)
+    _add_embeddings(adata, obs_embed, include_doublet_umap)
     return adata
 
 
@@ -275,7 +283,7 @@ def main():
     parser.add_argument('--h5_pattern', required=True)
     parser.add_argument('--qc_pattern', required=True)
     parser.add_argument('--integration_csv', required=True)
-    parser.add_argument('--annotation_csv', required=True)
+    parser.add_argument('--annotation_pattern', required=True)
     parser.add_argument('--genome_gtf', required=True)
     parser.add_argument('--out_dir', required=True)
     parser.add_argument('--write_combined', default='true', help='Write combined objects (true/false)')
@@ -286,7 +294,7 @@ def main():
     os.makedirs(os.path.join(out_dir, 'anndata'), exist_ok=True)
 
     print('Loading metadata and annotations...')
-    obs_df = _load_cell_metadata(args.integration_csv, args.qc_pattern, args.annotation_csv)
+    obs_df = _load_cell_metadata(args.integration_csv, args.qc_pattern, args.annotation_pattern)
     gtf_df = _parse_gtf(args.genome_gtf)
 
     # Get unique samples

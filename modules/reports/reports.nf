@@ -204,6 +204,37 @@ process ANNOTATION_REPORT {
     """
 }
 
+process ANNOTATION_METHOD_REPORT {
+    label     "process_reports"
+    tag       "annotation_method_${method_id}"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
+
+    input:
+    tuple val(method_id), val(spec_b64), path(cells_csv), path(cluster_csv), path(export_csv)
+    path report_qmd
+
+    output:
+    path "annotation_report_${method_id}.html", emit: html
+
+    script:
+    def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
+    def engine = spec.engine.toString().replace("'", "'\"'\"'")
+    def referenceName = spec.reference_name.toString().replace("'", "'\"'\"'")
+    def referenceLabelCol = (spec.reference_label_col ?: '').toString().replace("'", "'\"'\"'")
+    """
+    export HOME="\$PWD"
+    export ANNOTATION_METHOD_ID='${method_id}'
+    export ANNOTATION_ENGINE='${engine}'
+    export ANNOTATION_REFERENCE_NAME='${referenceName}'
+    export ANNOTATION_REFERENCE_LABEL_COL='${referenceLabelCol}'
+    export ANNOTATION_CELLS_CSV='${cells_csv.name}'
+    export ANNOTATION_CLUSTER_CSV='${cluster_csv.name}'
+
+    quarto render ${report_qmd} --output annotation_report_${method_id}.html
+    """
+}
+
 process REPORT_SITE {
     label     "process_reports"
     tag       "report_site"

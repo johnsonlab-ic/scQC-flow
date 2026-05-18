@@ -77,3 +77,138 @@ process PREP_REPORT_INPUTS {
         'filt_counts_*.h5'
     """
 }
+
+process FORMAT_ANNOTATION_EXPORT_METADATA {
+    label     "process_low"
+    tag       "annotation_export_metadata"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
+
+    input:
+    path cell_labels_csv
+    path script
+
+    output:
+    path "annotation_export_marker_panel.csv.gz", emit: export_metadata
+
+    script:
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+
+    Rscript ${script} \
+        --input_csv ${cell_labels_csv} \
+        --prefix marker_panel \
+        --output_csv annotation_export_marker_panel.csv.gz
+    """
+}
+
+process PREPARE_ANNOTATION_QUERY {
+    label     "process_high"
+    tag       "prepare_annotation_query"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
+
+    input:
+    path h5_files
+    path integration_csv
+    path genome_gtf
+    path script
+    path utils_r
+
+    output:
+    path "annotation_query.rds", emit: query
+
+    script:
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+
+    Rscript ${script} \
+        --integration_csv ${integration_csv} \
+        --genome_gtf ${genome_gtf} \
+        --utils_r ${utils_r} \
+        --h5_pattern 'filt_counts_*.h5' \
+        --output_rds annotation_query.rds
+    """
+}
+
+process RUN_SINGLER_REFERENCE_ANNOTATION {
+    label     "process_high"
+    tag       "${method_id}"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
+
+    input:
+    tuple val(method_id), val(spec_b64)
+    path query_rds
+    path script
+
+    output:
+    tuple val(method_id), val(spec_b64), path("annotation_cells_${method_id}.csv.gz"), path("annotation_cluster_summary_${method_id}.csv.gz"), path("annotation_export_${method_id}.csv.gz"), emit: result
+
+    script:
+    def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
+    def labelCol = spec.reference_label_col.toString().replace("'", "'\"'\"'")
+    def referenceName = spec.reference_name.toString().replace("'", "'\"'\"'")
+    def fineTune = spec.containsKey('fine_tune') ? spec.fine_tune.toString() : 'false'
+    def prune = spec.containsKey('prune') ? spec.prune.toString() : 'true'
+    def bpType = (spec.bp_type ?: 'multicore').toString().replace("'", "'\"'\"'")
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+
+    Rscript ${script} \
+        --query_rds ${query_rds} \
+        --reference_rds ${spec.reference_rds} \
+        --reference_label_col '${labelCol}' \
+        --method_id '${method_id}' \
+        --reference_name '${referenceName}' \
+        --output_cells_csv annotation_cells_${method_id}.csv.gz \
+        --output_export_csv annotation_export_${method_id}.csv.gz \
+        --output_cluster_csv annotation_cluster_summary_${method_id}.csv.gz \
+        --ncores ${task.cpus} \
+        --bp_type '${bpType}' \
+        --fine_tune ${fineTune} \
+        --prune ${prune}
+    """
+}
+
+process RUN_XGBOOST_REFERENCE_ANNOTATION {
+    label     "process_high"
+    tag       "${method_id}"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
+
+    input:
+    tuple val(method_id), val(spec_b64)
+    path query_rds
+    path script
+
+    output:
+    tuple val(method_id), val(spec_b64), path("annotation_cells_${method_id}.csv.gz"), path("annotation_cluster_summary_${method_id}.csv.gz"), path("annotation_export_${method_id}.csv.gz"), emit: result
+
+    script:
+    def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
+    def clusterArg = spec.cluster_col ? "--cluster_col '${spec.cluster_col.toString().replace("'", "'\"'\"'")}'" : ''
+    def referenceName = spec.reference_name.toString().replace("'", "'\"'\"'")
+    def chunkSize = (spec.chunk_size ?: 10000) as Integer
+    def scaleFactor = (spec.scale_factor ?: 10000) as BigDecimal
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+
+    Rscript ${script} \
+        --query_rds ${query_rds} \
+        --model_rds ${spec.model_rds} \
+        --class_csv ${spec.class_csv} \
+        ${clusterArg} \
+        --method_id '${method_id}' \
+        --reference_name '${referenceName}' \
+        --output_cells_csv annotation_cells_${method_id}.csv.gz \
+        --output_export_csv annotation_export_${method_id}.csv.gz \
+        --output_cluster_csv annotation_cluster_summary_${method_id}.csv.gz \
+        --chunk_size ${chunkSize} \
+        --scale_factor ${scaleFactor}
+    """
+}

@@ -43,6 +43,9 @@ build_seurat_object <- function(counts_mat, obs_dt, var_dt, is_all_cells) {
   rownames(meta_dt) <- meta_dt$cell_id
   meta_dt$cell_id <- NULL
 
+  hmny_cols <- grep("^(hmny_pca_|harmony_pca_)[0-9]+$", names(meta_dt), value = TRUE)
+  bloat_cols <- grep("^(hmny_pca_|harmony_pca_)[0-9]+$", names(meta_dt), value = TRUE)
+
   seu <- CreateSeuratObject(
     counts = counts_mat,
     project = "scqcflow",
@@ -78,9 +81,8 @@ build_seurat_object <- function(counts_mat, obs_dt, var_dt, is_all_cells) {
     )
   }
 
-  hmny_cols <- grep("^hmny_pca_[0-9]+$", names(meta_dt), value = TRUE)
   if (length(hmny_cols) > 0 && !is_all_cells) {
-    ord <- order(as.integer(sub("^hmny_pca_", "", hmny_cols)))
+    ord <- order(as.integer(sub("^(hmny_pca_|harmony_pca_)", "", hmny_cols)))
     hmny_cols <- hmny_cols[ord]
     dim_names <- paste0("HARMONY_", seq_along(hmny_cols))
     seu <- add_reduction_if_present(seu, meta_dt, hmny_cols, "harmony", "HARMONY_", dim_names)
@@ -92,6 +94,10 @@ build_seurat_object <- function(counts_mat, obs_dt, var_dt, is_all_cells) {
     pca_cols <- pca_cols[ord]
     dim_names <- paste0("PC_", seq_along(pca_cols))
     seu <- add_reduction_if_present(seu, meta_dt, pca_cols, "pca", "PC_", dim_names)
+  }
+
+  if (length(bloat_cols) > 0) {
+    seu@meta.data <- seu@meta.data[, setdiff(colnames(seu@meta.data), bloat_cols), drop = FALSE]
   }
 
   seu
@@ -120,7 +126,7 @@ merge_saved_seurat_objects <- function(rds_paths) {
 
 main <- function() {
   args <- parse_args(commandArgs(trailingOnly = TRUE))
-  required <- c("h5_pattern", "qc_pattern", "integration_csv", "annotation_csv", "genome_gtf", "utils_r", "out_dir", "write_combined")
+  required <- c("h5_pattern", "qc_pattern", "integration_csv", "annotation_pattern", "genome_gtf", "utils_r", "out_dir", "write_combined")
   missing <- setdiff(required, names(args))
   if (length(missing) > 0) {
     stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")))
@@ -133,7 +139,7 @@ main <- function() {
   dir.create(file.path(out_dir, "seurat"), showWarnings = FALSE, recursive = TRUE)
 
   message("Loading metadata and annotations...")
-  obs_dt <- load_export_metadata(args$integration_csv, args$qc_pattern, args$annotation_csv)
+  obs_dt <- load_export_metadata(args$integration_csv, args$qc_pattern, args$annotation_pattern)
   gtf_dt <- parse_gtf_annotations_export(args$genome_gtf)
 
   # Get unique samples

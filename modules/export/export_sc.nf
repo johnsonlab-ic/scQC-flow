@@ -8,7 +8,7 @@ process EXPORT_SCANPY {
     path h5_files
     path qc_csvs
     path integration_csv
-    path annotation_labels_csv
+    path annotation_metadata_csvs
     path genome_gtf
     path script
 
@@ -19,7 +19,6 @@ process EXPORT_SCANPY {
     path "anndata/combined_clean.h5ad", optional: true, emit: combined_clean
 
     script:
-    def annotationArg = annotation_labels_csv.name == 'NO_FILE' ? 'NO_FILE' : annotation_labels_csv.name
     def writeCombined = params.export_write_combined ?: true
     """
     set -euo pipefail
@@ -31,7 +30,7 @@ process EXPORT_SCANPY {
         --h5_pattern 'filt_counts_*.h5' \
         --qc_pattern 'qc_metrics_*.csv.gz' \
         --integration_csv ${integration_csv} \
-        --annotation_csv ${annotationArg} \
+        --annotation_pattern 'annotation_export_*.csv.gz' \
         --genome_gtf ${genome_gtf} \
         --out_dir . \
         --write_combined ${writeCombined}
@@ -48,7 +47,7 @@ process EXPORT_SEURAT {
     path h5_files
     path qc_csvs
     path integration_csv
-    path annotation_labels_csv
+    path annotation_metadata_csvs
     path genome_gtf
     path script
     path utils_r
@@ -60,7 +59,6 @@ process EXPORT_SEURAT {
     path "seurat/combined_clean.rds", optional: true, emit: combined_clean
 
     script:
-    def annotationArg = annotation_labels_csv.name == 'NO_FILE' ? 'NO_FILE' : annotation_labels_csv.name
     def writeCombined = params.export_write_combined ?: true
     """
     set -euo pipefail
@@ -70,7 +68,7 @@ process EXPORT_SEURAT {
         --h5_pattern 'filt_counts_*.h5' \
         --qc_pattern 'qc_metrics_*.csv.gz' \
         --integration_csv ${integration_csv} \
-        --annotation_csv ${annotationArg} \
+        --annotation_pattern 'annotation_export_*.csv.gz' \
         --genome_gtf ${genome_gtf} \
         --utils_r ${utils_r} \
         --out_dir . \
@@ -87,7 +85,7 @@ process EXPORT_SCANPY_ZOOM {
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_csv)
     path h5_files
-    path annotation_labels_csv
+    path annotation_metadata_csvs
     path genome_gtf
     path script
 
@@ -98,7 +96,6 @@ process EXPORT_SCANPY_ZOOM {
     path "anndata/combined_clean.h5ad", optional: true, emit: combined_clean
 
     script:
-    def annotationArg = annotation_labels_csv.name == 'NO_FILE' ? 'NO_FILE' : annotation_labels_csv.name
     def writeCombined = params.export_write_combined ?: true
     """
     set -euo pipefail
@@ -110,7 +107,7 @@ process EXPORT_SCANPY_ZOOM {
         --h5_pattern 'filt_counts_*.h5' \
         --qc_pattern 'zoom_qc_metrics.csv.gz' \
         --integration_csv ${zoom_integration_csv} \
-        --annotation_csv ${annotationArg} \
+        --annotation_pattern 'annotation_export_*.csv.gz' \
         --genome_gtf ${genome_gtf} \
         --out_dir . \
         --write_combined ${writeCombined}
@@ -126,7 +123,7 @@ process EXPORT_SEURAT_ZOOM {
     input:
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_csv)
     path h5_files
-    path annotation_labels_csv
+    path annotation_metadata_csvs
     path genome_gtf
     path script
     path utils_r
@@ -138,7 +135,6 @@ process EXPORT_SEURAT_ZOOM {
     path "seurat/combined_clean.rds", optional: true, emit: combined_clean
 
     script:
-    def annotationArg = annotation_labels_csv.name == 'NO_FILE' ? 'NO_FILE' : annotation_labels_csv.name
     def writeCombined = params.export_write_combined ?: true
     """
     set -euo pipefail
@@ -148,7 +144,7 @@ process EXPORT_SEURAT_ZOOM {
         --h5_pattern 'filt_counts_*.h5' \
         --qc_pattern 'zoom_qc_metrics.csv.gz' \
         --integration_csv ${zoom_integration_csv} \
-        --annotation_csv ${annotationArg} \
+        --annotation_pattern 'annotation_export_*.csv.gz' \
         --genome_gtf ${genome_gtf} \
         --utils_r ${utils_r} \
         --out_dir . \

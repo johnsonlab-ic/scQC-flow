@@ -109,22 +109,31 @@ load_qc_metadata_export <- function(qc_pattern) {
   qc_dt
 }
 
-load_annotation_metadata_export <- function(annotation_csv) {
-  if (annotation_csv == "NO_FILE") {
+load_annotation_metadata_export <- function(annotation_pattern) {
+  ann_files <- Sys.glob(annotation_pattern)
+  ann_files <- ann_files[basename(ann_files) != "NO_FILE"]
+  if (length(ann_files) == 0) {
     return(NULL)
   }
-  ann_dt <- fread(annotation_csv)
-  ann_dt <- ann_dt[, .(
-    cell_id,
-    annotation_cluster = cluster,
-    annotation_label = label,
-    annotation_label_score = label_score,
-    annotation_n_markers = n_markers
-  )]
-  ann_dt
+
+  ann_list <- lapply(ann_files, function(path) {
+    ann_dt <- fread(path)
+    if (!"cell_id" %in% names(ann_dt)) {
+      stop(sprintf("Annotation metadata file is missing cell_id: %s", path))
+    }
+    ann_dt[, cell_id := as.character(cell_id)]
+    unique(ann_dt, by = "cell_id")
+  })
+
+  merged_dt <- Reduce(function(x, y) {
+    out_dt <- merge(x, y, by = "cell_id", all = TRUE, suffixes = c("", "__ann"), sort = FALSE)
+    combine_duplicate_columns_export(out_dt, "__ann")
+  }, ann_list)
+
+  merged_dt
 }
 
-load_export_metadata <- function(integration_csv, qc_pattern, annotation_csv) {
+load_export_metadata <- function(integration_csv, qc_pattern, annotation_pattern) {
   int_dt <- fread(integration_csv)
   int_dt[, cell_id := as.character(cell_id)]
   int_dt <- unique(int_dt, by = "cell_id")
@@ -133,7 +142,7 @@ load_export_metadata <- function(integration_csv, qc_pattern, annotation_csv) {
   merged_dt <- merge(int_dt, qc_dt, by = "cell_id", all.x = TRUE, suffixes = c("", "__qc"), sort = FALSE)
   merged_dt <- combine_duplicate_columns_export(merged_dt, "__qc")
 
-  ann_dt <- load_annotation_metadata_export(annotation_csv)
+  ann_dt <- load_annotation_metadata_export(annotation_pattern)
   if (!is.null(ann_dt)) {
     merged_dt <- merge(merged_dt, ann_dt, by = "cell_id", all.x = TRUE, suffixes = c("", "__ann"), sort = FALSE)
     merged_dt <- combine_duplicate_columns_export(merged_dt, "__ann")
