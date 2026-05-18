@@ -1,31 +1,28 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(optparse)
+  library(argparse)
   library(SingleCellExperiment)
   library(Matrix)
   library(data.table)
   library(xgboost)
 })
 
-option_list <- list(
-  make_option("--reference_rds", type = "character", help = "Labelled SingleCellExperiment reference"),
-  make_option("--label_col", type = "character", help = "Reference label column to predict"),
-  make_option("--out_model", type = "character", help = "Output XGBoost model RDS"),
-  make_option("--out_classes", type = "character", help = "Output class lookup CSV"),
-  make_option("--n_hvgs", type = "integer", default = 4000L, help = "Number of HVGs to select [default %default]"),
-  make_option("--seed", type = "integer", default = 1L, help = "Random seed [default %default]")
-)
+parser <- ArgumentParser(description = "Train an XGBoost model from a labelled SCE reference")
+parser$add_argument("--reference_rds", type = "character", required = TRUE,
+  help = "Labelled SingleCellExperiment reference")
+parser$add_argument("--label_col", type = "character", required = TRUE,
+  help = "Reference label column to predict")
+parser$add_argument("--out_model", type = "character", required = TRUE,
+  help = "Output XGBoost model RDS")
+parser$add_argument("--out_classes", type = "character", required = TRUE,
+  help = "Output class lookup CSV")
+parser$add_argument("--n_hvgs", type = "integer", default = 4000L,
+  help = "Number of HVGs to select")
+parser$add_argument("--seed", type = "integer", default = 1L,
+  help = "Random seed")
 
-parser <- OptionParser(option_list = option_list)
-opts <- parse_args(parser)
-
-required <- c("reference_rds", "label_col", "out_model", "out_classes")
-missing <- required[vapply(required, function(key) is.null(opts[[key]]) || !nzchar(opts[[key]]), logical(1))]
-if (length(missing) > 0) {
-  print_help(parser)
-  stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")), call. = FALSE)
-}
+opts <- parser$parse_args()
 
 set.seed(opts$seed)
 

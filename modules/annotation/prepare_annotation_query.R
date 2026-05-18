@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(optparse)
+  library(argparse)
   library(SingleCellExperiment)
   library(SummarizedExperiment)
   library(S4Vectors)
@@ -9,23 +9,19 @@ suppressPackageStartupMessages({
   library(data.table)
 })
 
-option_list <- list(
-  make_option("--integration_csv", type = "character", help = "Path to integration_dt.csv.gz"),
-  make_option("--genome_gtf", type = "character", help = "Path to genome GTF"),
-  make_option("--utils_r", type = "character", help = "Path to export_utils.R"),
-  make_option("--h5_pattern", type = "character", default = "filt_counts_*.h5", help = "Glob for filtered H5 files [default %default]"),
-  make_option("--output_rds", type = "character", help = "Output query SCE RDS path")
-)
+parser <- ArgumentParser(description = "Build a query SCE for annotation workflows")
+parser$add_argument("--integration_csv", type = "character", required = TRUE,
+  help = "Path to integration_dt.csv.gz")
+parser$add_argument("--genome_gtf", type = "character", required = TRUE,
+  help = "Path to genome GTF")
+parser$add_argument("--utils_r", type = "character", required = TRUE,
+  help = "Path to export_utils.R")
+parser$add_argument("--h5_pattern", type = "character", default = "filt_counts_*.h5",
+  help = "Glob for filtered H5 files")
+parser$add_argument("--output_rds", type = "character", required = TRUE,
+  help = "Output query SCE RDS path")
 
-parser <- OptionParser(option_list = option_list)
-opts <- parse_args(parser)
-
-required <- c("integration_csv", "genome_gtf", "utils_r", "output_rds")
-missing <- required[vapply(required, function(key) is.null(opts[[key]]) || !nzchar(opts[[key]]), logical(1))]
-if (length(missing) > 0) {
-  print_help(parser)
-  stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")), call. = FALSE)
-}
+opts <- parser$parse_args()
 
 source(opts$utils_r)
 

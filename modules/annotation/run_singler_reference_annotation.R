@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(optparse)
+  library(argparse)
   library(SingleR)
   library(BiocParallel)
   library(SingleCellExperiment)
@@ -10,33 +10,33 @@ suppressPackageStartupMessages({
   library(data.table)
 })
 
-option_list <- list(
-  make_option("--query_rds", type = "character", help = "Path to prepared query SCE RDS"),
-  make_option("--reference_rds", type = "character", help = "Path to SingleR reference RDS"),
-  make_option("--reference_label_col", type = "character", help = "Reference label column"),
-  make_option("--method_id", type = "character", help = "Method identifier"),
-  make_option("--reference_name", type = "character", help = "Reference display name"),
-  make_option("--output_cells_csv", type = "character", help = "Per-cell output CSV.GZ"),
-  make_option("--output_export_csv", type = "character", help = "Export metadata CSV.GZ"),
-  make_option("--output_cluster_csv", type = "character", help = "Cluster summary CSV.GZ"),
-  make_option("--ncores", type = "integer", default = 1L, help = "BiocParallel workers [default %default]"),
-  make_option("--bp_type", type = "character", default = "multicore", help = "BiocParallel backend (multicore|snow) [default %default]"),
-  make_option("--fine_tune", type = "character", default = "false", help = "Enable SingleR fine-tuning [default %default]"),
-  make_option("--prune", type = "character", default = "true", help = "Enable SingleR pruning [default %default]")
-)
+parser <- ArgumentParser(description = "Run per-cell SingleR annotation for one reference")
+parser$add_argument("--query_rds", type = "character", required = TRUE,
+  help = "Path to prepared query SCE RDS")
+parser$add_argument("--reference_rds", type = "character", required = TRUE,
+  help = "Path to SingleR reference RDS")
+parser$add_argument("--reference_label_col", type = "character", required = TRUE,
+  help = "Reference label column")
+parser$add_argument("--method_id", type = "character", required = TRUE,
+  help = "Method identifier")
+parser$add_argument("--reference_name", type = "character", required = TRUE,
+  help = "Reference display name")
+parser$add_argument("--output_cells_csv", type = "character", required = TRUE,
+  help = "Per-cell output CSV.GZ")
+parser$add_argument("--output_export_csv", type = "character", required = TRUE,
+  help = "Export metadata CSV.GZ")
+parser$add_argument("--output_cluster_csv", type = "character", required = TRUE,
+  help = "Cluster summary CSV.GZ")
+parser$add_argument("--ncores", type = "integer", default = 1L,
+  help = "BiocParallel workers")
+parser$add_argument("--bp_type", type = "character", default = "multicore",
+  help = "BiocParallel backend (multicore|snow)")
+parser$add_argument("--fine_tune", type = "character", default = "false",
+  help = "Enable SingleR fine-tuning")
+parser$add_argument("--prune", type = "character", default = "true",
+  help = "Enable SingleR pruning")
 
-parser <- OptionParser(option_list = option_list)
-opts <- parse_args(parser)
-
-required <- c(
-  "query_rds", "reference_rds", "reference_label_col", "method_id",
-  "reference_name", "output_cells_csv", "output_export_csv", "output_cluster_csv"
-)
-missing <- required[vapply(required, function(key) is.null(opts[[key]]) || !nzchar(opts[[key]]), logical(1))]
-if (length(missing) > 0) {
-  print_help(parser)
-  stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")), call. = FALSE)
-}
+opts <- parser$parse_args()
 
 as_flag <- function(x) {
   tolower(trimws(as.character(x))) %in% c("1", "true", "t", "yes", "y")

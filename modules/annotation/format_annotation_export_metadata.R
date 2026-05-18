@@ -1,25 +1,19 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(optparse)
+  library(argparse)
   library(data.table)
 })
 
-option_list <- list(
-  make_option("--input_csv", type = "character", help = "Input annotation cell-label CSV.GZ"),
-  make_option("--prefix", type = "character", help = "Export column prefix"),
-  make_option("--output_csv", type = "character", help = "Output export metadata CSV.GZ")
-)
+parser <- ArgumentParser(description = "Format annotation metadata for export")
+parser$add_argument("--input_csv", type = "character", required = TRUE,
+  help = "Input annotation cell-label CSV.GZ")
+parser$add_argument("--prefix", type = "character", required = TRUE,
+  help = "Export column prefix")
+parser$add_argument("--output_csv", type = "character", required = TRUE,
+  help = "Output export metadata CSV.GZ")
 
-parser <- OptionParser(option_list = option_list)
-opts <- parse_args(parser)
-
-required <- c("input_csv", "prefix", "output_csv")
-missing <- required[vapply(required, function(key) is.null(opts[[key]]) || !nzchar(opts[[key]]), logical(1))]
-if (length(missing) > 0) {
-  print_help(parser)
-  stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")), call. = FALSE)
-}
+opts <- parser$parse_args()
 
 prefix <- gsub("[^A-Za-z0-9_]", "_", opts$prefix)
 dt <- fread(opts$input_csv)

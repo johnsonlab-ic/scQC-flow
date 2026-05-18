@@ -1,39 +1,38 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(optparse)
+  library(argparse)
   library(xgboost)
   library(SingleCellExperiment)
   library(Matrix)
   library(data.table)
 })
 
-option_list <- list(
-  make_option("--query_rds", type = "character", help = "Path to prepared query SCE RDS"),
-  make_option("--model_rds", type = "character", help = "Path to pretrained xgboost RDS"),
-  make_option("--class_csv", type = "character", help = "Path to class lookup CSV"),
-  make_option("--cluster_col", type = "character", default = "", help = "Optional query cluster column [default disabled]"),
-  make_option("--method_id", type = "character", help = "Method identifier"),
-  make_option("--reference_name", type = "character", help = "Reference display name"),
-  make_option("--output_cells_csv", type = "character", help = "Per-cell output CSV.GZ"),
-  make_option("--output_export_csv", type = "character", help = "Export metadata CSV.GZ"),
-  make_option("--output_cluster_csv", type = "character", help = "Cluster summary CSV.GZ"),
-  make_option("--chunk_size", type = "integer", default = 10000L, help = "Prediction chunk size [default %default]"),
-  make_option("--scale_factor", type = "double", default = 1e4, help = "Library-size scaling factor [default %default]")
-)
+parser <- ArgumentParser(description = "Run XGBoost annotation for one pretrained reference")
+parser$add_argument("--query_rds", type = "character", required = TRUE,
+  help = "Path to prepared query SCE RDS")
+parser$add_argument("--model_rds", type = "character", required = TRUE,
+  help = "Path to pretrained xgboost RDS")
+parser$add_argument("--class_csv", type = "character", required = TRUE,
+  help = "Path to class lookup CSV")
+parser$add_argument("--cluster_col", type = "character", default = "",
+  help = "Optional query cluster column")
+parser$add_argument("--method_id", type = "character", required = TRUE,
+  help = "Method identifier")
+parser$add_argument("--reference_name", type = "character", required = TRUE,
+  help = "Reference display name")
+parser$add_argument("--output_cells_csv", type = "character", required = TRUE,
+  help = "Per-cell output CSV.GZ")
+parser$add_argument("--output_export_csv", type = "character", required = TRUE,
+  help = "Export metadata CSV.GZ")
+parser$add_argument("--output_cluster_csv", type = "character", required = TRUE,
+  help = "Cluster summary CSV.GZ")
+parser$add_argument("--chunk_size", type = "integer", default = 10000L,
+  help = "Prediction chunk size")
+parser$add_argument("--scale_factor", type = "double", default = 1e4,
+  help = "Library-size scaling factor")
 
-parser <- OptionParser(option_list = option_list)
-opts <- parse_args(parser)
-
-required <- c(
-  "query_rds", "model_rds", "class_csv", "method_id", "reference_name",
-  "output_cells_csv", "output_export_csv", "output_cluster_csv"
-)
-missing <- required[vapply(required, function(key) is.null(opts[[key]]) || !nzchar(opts[[key]]), logical(1))]
-if (length(missing) > 0) {
-  print_help(parser)
-  stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")), call. = FALSE)
-}
+opts <- parser$parse_args()
 
 sanitize_prefix <- function(x) {
   gsub("[^A-Za-z0-9_]", "_", x)

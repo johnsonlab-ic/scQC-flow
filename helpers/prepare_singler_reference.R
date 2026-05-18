@@ -1,30 +1,26 @@
 #!/usr/bin/env Rscript
 
 suppressPackageStartupMessages({
-  library(optparse)
+  library(argparse)
   library(SingleCellExperiment)
   library(SummarizedExperiment)
   library(scuttle)
   library(data.table)
 })
 
-option_list <- list(
-  make_option("--input_rds", type = "character", help = "Input SingleCellExperiment reference RDS"),
-  make_option("--output_rds", type = "character", help = "Output cleaned SingleCellExperiment reference RDS"),
-  make_option("--required_label_cols", type = "character", default = "", help = "Space-separated label columns that must be non-missing"),
-  make_option("--symbol_col", type = "character", default = "symbol", help = "rowData column to use for symbols [default %default]"),
-  make_option("--gene_id_col", type = "character", default = "gene_id", help = "rowData column to use for gene ids [default %default]")
-)
+parser <- ArgumentParser(description = "Prepare a SingleR reference SCE")
+parser$add_argument("--input_rds", type = "character", required = TRUE,
+  help = "Input SingleCellExperiment reference RDS")
+parser$add_argument("--output_rds", type = "character", required = TRUE,
+  help = "Output cleaned SingleCellExperiment reference RDS")
+parser$add_argument("--required_label_cols", type = "character", default = "",
+  help = "Space-separated label columns that must be non-missing")
+parser$add_argument("--symbol_col", type = "character", default = "symbol",
+  help = "rowData column to use for symbols")
+parser$add_argument("--gene_id_col", type = "character", default = "gene_id",
+  help = "rowData column to use for gene ids")
 
-parser <- OptionParser(option_list = option_list)
-opts <- parse_args(parser)
-
-required <- c("input_rds", "output_rds")
-missing <- required[vapply(required, function(key) is.null(opts[[key]]) || !nzchar(opts[[key]]), logical(1))]
-if (length(missing) > 0) {
-  print_help(parser)
-  stop(sprintf("Missing required arguments: %s", paste(missing, collapse = ", ")), call. = FALSE)
-}
+opts <- parser$parse_args()
 
 message("Loading input reference: ", opts$input_rds)
 sce <- readRDS(opts$input_rds)
