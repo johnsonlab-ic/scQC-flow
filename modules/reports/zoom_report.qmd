@@ -26,6 +26,7 @@ zoom_values <- zoom_values[nzchar(zoom_values)]
 
 marker_sel_res <- Sys.getenv("ZOOM_MARKER_SEL_RES", "0.5")
 marker_top_n <- as.integer(Sys.getenv("ZOOM_MARKER_TOP_N", "10"))
+marker_top_n_plot <- min(marker_top_n, 5L)
 marker_min_cpm <- as.numeric(Sys.getenv("ZOOM_MARKER_MIN_CPM", "50"))
 marker_fdr_cut <- as.numeric(Sys.getenv("ZOOM_MARKER_FDR_CUT", "0.01"))
 marker_max_zero_p <- as.numeric(Sys.getenv("ZOOM_MARKER_MAX_ZERO_P", "0.5"))
@@ -84,6 +85,10 @@ if (!"splice_frac" %in% names(qc_dt) && all(c("total_spliced", "total_unspliced"
   qc_dt[, splice_frac := plogis(logit_spliced)]
 }
 
+qc_names <- c("log_counts", "log_feats", "logit_mito", "logit_spliced")
+qc_lu <- c("no. of UMIs", "no. of genes", "mito pct.", "spliced pct.")
+names(qc_lu) <- qc_names
+
 qc_dt[, cell_id := paste(sample_id, cell_id, sep = "_")]
 
 feature_sources <- list(
@@ -94,7 +99,7 @@ feature_sources <- list(
 )
 
 present_leiden <- grep("^(RNA_snn_res\\.|leiden_)", names(int_dt), value = TRUE)
-present_leiden <- present_leiden[order(as.numeric(sub("^(RNA_snn_res\\.|leiden_)", "", present_leiden)), decreasing = TRUE)]
+present_leiden <- present_leiden[order(as.numeric(sub("^(RNA_snn_res\\.|leiden_)", "", present_leiden)), decreasing = FALSE)]
 int_dt_pass2 <- int_dt[!is.na(UMAP1)]
 
 feature_cols <- unique(unlist(lapply(feature_sources, `[[`, "source")))
@@ -156,7 +161,7 @@ if (length(metadata_dens_vars) > 0) {
 marker_cl_col <- resolve_cluster_column(int_dt_pass2, paste0("RNA_snn_res.", marker_sel_res))
 marker_top_dt <- marker_dt[str_detect(gene_type, "(lincRNA|lncRNA|pseudogene|antisense)", negate = TRUE)][
   logcpm.sel >= log(marker_min_cpm + 1)
-] |> get_top_markers(fdr_cut = marker_fdr_cut, n_top = marker_top_n, max_zero_p = marker_max_zero_p)
+] |> get_top_markers(fdr_cut = marker_fdr_cut, n_top = marker_top_n_plot, max_zero_p = marker_max_zero_p)
 marker_cl_ord <- order_cluster_labels(unique(marker_dt$cluster))
 ```
 
@@ -331,8 +336,58 @@ if (length(feature_vars) > 0) {
 }
 ```
 
+## Check QC metrics of clusters
 
-## Top marker genes by cluster
+Distributions of QC metrics (library size, number of features, mitochondrial proportion, and spliced proportion) are shown for each cluster across different resolution values.
+
+```{r plot_qc_distns, fig.height = 8, fig.width = 10, results='asis'}
+present_qc_names <- qc_names[qc_names %in% names(qc_dt)]
+if (length(present_leiden) > 0 && length(present_qc_names) > 0 && nrow(qc_dt) > 0) {
+  qc_melt <- melt(qc_dt[, c('cell_id', present_qc_names), with = FALSE], id.vars = 'cell_id',
+                  variable.name = 'qc_var', value.name = 'qc_val')
+  qc_melt[, qc_full := qc_lu[qc_var]]
+  qc_melt[, qc_var := factor(qc_var, levels = present_qc_names)]
+  qc_melt[, qc_full := fct_reorder(qc_full, as.integer(qc_var))]
+  qc_melt <- qc_melt[!is.na(qc_val)]
+
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    suppressWarnings(print(plot_cluster_qc_distns(
+      qc_melt,
+      clust_dt = int_dt_pass2[, .(cell_id, cluster = get(cl_col))],
+      name = as.numeric(res_val)
+    )))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("No QC metric distributions were available for cluster plots.\n\n")
+}
+```
+
+## Barcharts
+
+Stacked bar charts below show the composition of each cluster in the zoom integration. Each bar is normalised within a cluster, so the bar height always sums to 100%.
+
+```{r cluster_barcharts, fig.height = max(4, 2.3 * length(present_leiden)), fig.width = 12, results='asis'}
+if (length(present_leiden) > 0 && length(bar_vars) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (var_name in bar_vars) {
+    cat("### ", var_name, "\n\n")
+    print(plot_cluster_composition_bars(int_dt_pass2, present_leiden, var_name))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("No categorical sample or metadata variables were available for stacked cluster bar charts.\n\n")
+}
+```
+
+
+## Top marker genes by cluster at resolution `r marker_sel_res`
 
 ```{r top_markers, fig.height = 5, fig.width = 7, results = 'asis', cache = FALSE}
 # Match annotation report: dotplot and UMAP facet per cluster
