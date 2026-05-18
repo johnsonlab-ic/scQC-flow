@@ -104,7 +104,7 @@ process FORMAT_ANNOTATION_EXPORT_METADATA {
 }
 
 process PREPARE_ANNOTATION_QUERY {
-    label     "process_high"
+    label     "process_medium"
     tag       "prepare_annotation_query_${sample_id}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
