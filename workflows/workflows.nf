@@ -485,11 +485,11 @@ workflow ANNOTATION_METHODS {
 
     def singler_run_inputs_ch = singler_specs_ch
         .combine(PREPARE_ANNOTATION_QUERY.out.query)
-        .map { specTuple, queryTuple -> tuple(specTuple[0], specTuple[1], queryTuple[0], queryTuple[1]) }
+        .map { joined -> tuple(joined[0], joined[1], joined[2], joined[3]) }
 
     def xgboost_run_inputs_ch = xgboost_specs_ch
         .combine(PREPARE_ANNOTATION_QUERY.out.query)
-        .map { specTuple, queryTuple -> tuple(specTuple[0], specTuple[1], queryTuple[0], queryTuple[1]) }
+        .map { joined -> tuple(joined[0], joined[1], joined[2], joined[3]) }
 
     RUN_SINGLER_REFERENCE_ANNOTATION(
         singler_run_inputs_ch,
