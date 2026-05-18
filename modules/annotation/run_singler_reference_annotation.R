@@ -52,25 +52,115 @@ choose_bp <- function(ncores, bp_type = "multicore") {
   BiocParallel::SerialParam()
 }
 
-align_genes <- function(query_sce, ref_sce) {
-  common <- intersect(rownames(query_sce), rownames(ref_sce))
-  if (length(common) >= 200) {
-    return(list(query = query_sce[common, ], ref = ref_sce[common, ]))
+extract_terminal_ensg <- function(ids) {
+  ids <- as.character(ids)
+  has_ensg <- grepl("(^|[_-])(ENS(?:MUS)?G[^._-]+(?:\\.[0-9]+)?)$", ids)
+  out <- rep(NA_character_, length(ids))
+  out[has_ensg] <- sub("^.*[_-](ENS(?:MUS)?G[^._-]+(?:\\.[0-9]+)?)$", "\\1", ids[has_ensg])
+  out
+}
+
+extract_symbol_prefix <- function(ids) {
+  ids <- as.character(ids)
+  has_ensg <- grepl("^.+[_-](ENS(?:MUS)?G[^._-]+(?:\\.[0-9]+)?)$", ids)
+  out <- rep(NA_character_, length(ids))
+  out[has_ensg] <- sub("^(.+)[_-](ENS(?:MUS)?G[^._-]+(?:\\.[0-9]+)?)$", "\\1", ids[has_ensg])
+  out
+}
+
+build_gene_candidates <- function(sce) {
+  raw_ids <- as.character(rownames(sce))
+  raw_novers <- sub("\\..*$", "", raw_ids)
+
+  rd <- as.data.frame(SummarizedExperiment::rowData(sce), stringsAsFactors = FALSE)
+  gene_id <- if ("gene_id" %in% names(rd)) as.character(rd$gene_id) else raw_ids
+  symbol <- if ("symbol" %in% names(rd)) as.character(rd$symbol) else raw_ids
+
+  gene_id_novers <- sub("\\..*$", "", gene_id)
+  raw_tail_ensg <- extract_terminal_ensg(raw_ids)
+  raw_tail_ensg_novers <- sub("\\..*$", "", raw_tail_ensg)
+  raw_symbol_prefix <- extract_symbol_prefix(raw_ids)
+
+  list(
+    raw = raw_ids,
+    raw_uc = toupper(raw_ids),
+    raw_novers = raw_novers,
+    gene_id = gene_id,
+    gene_id_novers = gene_id_novers,
+    symbol = symbol,
+    symbol_uc = toupper(symbol),
+    raw_tail_ensg = raw_tail_ensg,
+    raw_tail_ensg_novers = raw_tail_ensg_novers,
+    raw_symbol_prefix = raw_symbol_prefix,
+    raw_symbol_prefix_uc = toupper(raw_symbol_prefix),
+    symbol_ensg = ifelse(
+      !is.na(symbol) & nzchar(symbol) & !is.na(gene_id_novers) & nzchar(gene_id_novers),
+      paste0(symbol, "-", gene_id_novers),
+      NA_character_
+    )
+  )
+}
+
+pair_overlap <- function(query_ids, ref_ids) {
+  valid_query <- !is.na(query_ids) & nzchar(query_ids)
+  valid_ref <- !is.na(ref_ids) & nzchar(ref_ids)
+  if (!any(valid_query) || !any(valid_ref)) {
+    return(integer())
   }
 
-  query_uc <- toupper(rownames(query_sce))
-  ref_uc <- toupper(rownames(ref_sce))
-  common_uc <- intersect(query_uc, ref_uc)
-  common_uc <- common_uc[!duplicated(common_uc)]
-  if (length(common_uc) < 200) {
+  query_counts <- table(query_ids[valid_query])
+  ref_counts <- table(ref_ids[valid_ref])
+  intersect(names(query_counts)[query_counts == 1L], names(ref_counts)[ref_counts == 1L])
+}
+
+align_genes <- function(query_sce, ref_sce) {
+  query_candidates <- build_gene_candidates(query_sce)
+  ref_candidates <- build_gene_candidates(ref_sce)
+
+  candidate_pairs <- list(
+    c("raw", "raw"),
+    c("raw_novers", "raw_novers"),
+    c("raw_uc", "raw_uc"),
+    c("raw_tail_ensg", "raw"),
+    c("raw_tail_ensg_novers", "raw_novers"),
+    c("raw_tail_ensg", "gene_id"),
+    c("raw_tail_ensg_novers", "gene_id_novers"),
+    c("raw_symbol_prefix", "symbol"),
+    c("raw_symbol_prefix_uc", "symbol_uc"),
+    c("symbol", "symbol"),
+    c("symbol_uc", "symbol_uc"),
+    c("symbol_ensg", "raw"),
+    c("symbol_ensg", "raw_novers")
+  )
+
+  overlap_dt <- rbindlist(lapply(candidate_pairs, function(pair) {
+    common <- pair_overlap(query_candidates[[pair[[1]]]], ref_candidates[[pair[[2]]]])
+    data.table(query_scheme = pair[[1]], ref_scheme = pair[[2]], overlap = length(common))
+  }))
+  best <- overlap_dt[which.max(overlap)]
+
+  if (nrow(best) == 0 || best$overlap[[1]] < 200) {
+    message("SingleR gene alignment overlap summary:")
+    print(overlap_dt[order(-overlap)])
     stop("Too few overlapping genes between query and SingleR reference", call. = FALSE)
   }
 
-  query_idx <- match(common_uc, query_uc)
-  ref_idx <- match(common_uc, ref_uc)
+  common <- pair_overlap(
+    query_candidates[[best$query_scheme[[1]]]],
+    ref_candidates[[best$ref_scheme[[1]]]]
+  )
+  query_idx <- match(common, query_candidates[[best$query_scheme[[1]]]])
+  ref_idx <- match(common, ref_candidates[[best$ref_scheme[[1]]]])
   query_aligned <- query_sce[query_idx, ]
   ref_aligned <- ref_sce[ref_idx, ]
-  rownames(query_aligned) <- rownames(ref_aligned)
+  rownames(query_aligned) <- common
+  rownames(ref_aligned) <- common
+  message(sprintf(
+    "Aligned SingleR genes using query scheme '%s' and reference scheme '%s' (%d genes)",
+    best$query_scheme[[1]],
+    best$ref_scheme[[1]],
+    length(common)
+  ))
   list(query = query_aligned, ref = ref_aligned)
 }
 
