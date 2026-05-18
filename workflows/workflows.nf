@@ -24,6 +24,7 @@ include { FORMAT_ANNOTATION_EXPORT_METADATA } from '../modules/annotation/annota
 include { PREPARE_ANNOTATION_QUERY } from '../modules/annotation/annotation.nf'
 include { RUN_SINGLER_REFERENCE_ANNOTATION } from '../modules/annotation/annotation.nf'
 include { RUN_XGBOOST_REFERENCE_ANNOTATION } from '../modules/annotation/annotation.nf'
+include { COMBINE_ANNOTATION_METHOD_OUTPUTS } from '../modules/annotation/annotation.nf'
 include { ANNOTATION_REPORT } from '../modules/reports/reports.nf'
 include { ANNOTATION_METHOD_REPORT } from '../modules/reports/reports.nf'
 include { PREPARE_ZOOM_SUBSET } from '../modules/zoom/zoom.nf'
@@ -448,8 +449,8 @@ workflow ANNOTATION {
 // =============================================================================
 // ANNOTATION_METHODS
 //
-// Shared prepared query SCE -> method/reference-specific annotation runs ->
-// one HTML report per configured annotation method.
+// Per-sample prepared query SCEs -> method/reference-specific annotation runs
+// -> combined method outputs -> one HTML report per configured annotation method.
 // =============================================================================
 
 workflow ANNOTATION_METHODS {
@@ -462,9 +463,8 @@ workflow ANNOTATION_METHODS {
     main:
 
     PREPARE_ANNOTATION_QUERY(
-        h5_ch.map { _id, h5 -> h5 }.collect(),
+        h5_ch,
         integration_dt_ch,
-        channel.value(file(params.genome_gtf)),
         channel.value(file("${projectDir}/modules/annotation/prepare_annotation_query.R")),
         channel.value(file("${projectDir}/modules/export/export_utils.R"))
     )
@@ -483,29 +483,46 @@ workflow ANNOTATION_METHODS {
             tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString())
         }
 
+    def singler_run_inputs_ch = singler_specs_ch
+        .combine(PREPARE_ANNOTATION_QUERY.out.query)
+        .map { specTuple, queryTuple -> tuple(specTuple[0], specTuple[1], queryTuple[0], queryTuple[1]) }
+
+    def xgboost_run_inputs_ch = xgboost_specs_ch
+        .combine(PREPARE_ANNOTATION_QUERY.out.query)
+        .map { specTuple, queryTuple -> tuple(specTuple[0], specTuple[1], queryTuple[0], queryTuple[1]) }
+
     RUN_SINGLER_REFERENCE_ANNOTATION(
-        singler_specs_ch,
-        PREPARE_ANNOTATION_QUERY.out.query,
+        singler_run_inputs_ch,
         channel.value(file("${projectDir}/modules/annotation/run_singler_reference_annotation.R"))
     )
 
     RUN_XGBOOST_REFERENCE_ANNOTATION(
-        xgboost_specs_ch,
-        PREPARE_ANNOTATION_QUERY.out.query,
+        xgboost_run_inputs_ch,
         channel.value(file("${projectDir}/modules/annotation/run_xgboost_reference_annotation.R"))
     )
 
-    def annotation_results_ch = RUN_SINGLER_REFERENCE_ANNOTATION.out.result.mix(
+    def annotation_sample_results_ch = RUN_SINGLER_REFERENCE_ANNOTATION.out.result.mix(
         RUN_XGBOOST_REFERENCE_ANNOTATION.out.result
     )
 
+    def annotation_method_inputs_ch = annotation_sample_results_ch
+        .map { method_id, spec_b64, _sample_id, cells_csv, _cluster_csv, export_csv ->
+            tuple(method_id, spec_b64, cells_csv, export_csv)
+        }
+        .groupTuple(by: [0, 1])
+
+    COMBINE_ANNOTATION_METHOD_OUTPUTS(
+        annotation_method_inputs_ch,
+        channel.value(file("${projectDir}/modules/annotation/combine_annotation_method_outputs.R"))
+    )
+
     ANNOTATION_METHOD_REPORT(
-        annotation_results_ch,
+        COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result,
         channel.value(file("${projectDir}/modules/reports/annotation_method_report.qmd"))
     )
 
     emit:
-    export_metadata = annotation_results_ch.map { _id, _spec_b64, _cells_csv, _cluster_csv, export_csv -> export_csv }
+    export_metadata = COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result.map { _id, _spec_b64, _cells_csv, _cluster_csv, export_csv -> export_csv }
     report = ANNOTATION_METHOD_REPORT.out.html
 }
 

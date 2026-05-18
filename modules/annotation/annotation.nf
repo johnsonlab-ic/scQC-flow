@@ -105,19 +105,18 @@ process FORMAT_ANNOTATION_EXPORT_METADATA {
 
 process PREPARE_ANNOTATION_QUERY {
     label     "process_high"
-    tag       "prepare_annotation_query"
+    tag       "prepare_annotation_query_${sample_id}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
-    path h5_files
+    tuple val(sample_id), path(h5_file)
     path integration_csv
-    path genome_gtf
     path script
     path utils_r
 
     output:
-    path "annotation_query.rds", emit: query
+    tuple val(sample_id), path("annotation_query_${sample_id}.rds"), emit: query
 
     script:
     """
@@ -125,27 +124,26 @@ process PREPARE_ANNOTATION_QUERY {
     export HOME="\$PWD"
 
     Rscript ${script} \
+        --sample_id '${sample_id}' \
         --integration_csv ${integration_csv} \
-        --genome_gtf ${genome_gtf} \
         --utils_r ${utils_r} \
-        --h5_pattern 'filt_counts_*.h5' \
-        --output_rds annotation_query.rds
+        --h5_file ${h5_file} \
+        --output_rds annotation_query_${sample_id}.rds
     """
 }
 
 process RUN_SINGLER_REFERENCE_ANNOTATION {
     label     "process_high"
-    tag       "${method_id}"
+    tag       "${method_id}_${sample_id}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
 
     input:
-    tuple val(method_id), val(spec_b64)
-    path query_rds
+    tuple val(method_id), val(spec_b64), val(sample_id), path(query_rds)
     path script
 
     output:
-    tuple val(method_id), val(spec_b64), path("annotation_cells_${method_id}.csv.gz"), path("annotation_cluster_summary_${method_id}.csv.gz"), path("annotation_export_${method_id}.csv.gz"), emit: result
+    tuple val(method_id), val(spec_b64), val(sample_id), path("annotation_cells_${method_id}_${sample_id}.csv.gz"), path("annotation_cluster_summary_${method_id}_${sample_id}.csv.gz"), path("annotation_export_${method_id}_${sample_id}.csv.gz"), emit: result
 
     script:
     def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
@@ -164,9 +162,9 @@ process RUN_SINGLER_REFERENCE_ANNOTATION {
         --reference_label_col '${labelCol}' \
         --method_id '${method_id}' \
         --reference_name '${referenceName}' \
-        --output_cells_csv annotation_cells_${method_id}.csv.gz \
-        --output_export_csv annotation_export_${method_id}.csv.gz \
-        --output_cluster_csv annotation_cluster_summary_${method_id}.csv.gz \
+        --output_cells_csv annotation_cells_${method_id}_${sample_id}.csv.gz \
+        --output_export_csv annotation_export_${method_id}_${sample_id}.csv.gz \
+        --output_cluster_csv annotation_cluster_summary_${method_id}_${sample_id}.csv.gz \
         --ncores ${task.cpus} \
         --bp_type '${bpType}' \
         --fine_tune ${fineTune} \
@@ -176,17 +174,16 @@ process RUN_SINGLER_REFERENCE_ANNOTATION {
 
 process RUN_XGBOOST_REFERENCE_ANNOTATION {
     label     "process_high"
-    tag       "${method_id}"
+    tag       "${method_id}_${sample_id}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
 
     input:
-    tuple val(method_id), val(spec_b64)
-    path query_rds
+    tuple val(method_id), val(spec_b64), val(sample_id), path(query_rds)
     path script
 
     output:
-    tuple val(method_id), val(spec_b64), path("annotation_cells_${method_id}.csv.gz"), path("annotation_cluster_summary_${method_id}.csv.gz"), path("annotation_export_${method_id}.csv.gz"), emit: result
+    tuple val(method_id), val(spec_b64), val(sample_id), path("annotation_cells_${method_id}_${sample_id}.csv.gz"), path("annotation_cluster_summary_${method_id}_${sample_id}.csv.gz"), path("annotation_export_${method_id}_${sample_id}.csv.gz"), emit: result
 
     script:
     def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
@@ -205,10 +202,38 @@ process RUN_XGBOOST_REFERENCE_ANNOTATION {
         ${clusterArg} \
         --method_id '${method_id}' \
         --reference_name '${referenceName}' \
-        --output_cells_csv annotation_cells_${method_id}.csv.gz \
-        --output_export_csv annotation_export_${method_id}.csv.gz \
-        --output_cluster_csv annotation_cluster_summary_${method_id}.csv.gz \
+        --output_cells_csv annotation_cells_${method_id}_${sample_id}.csv.gz \
+        --output_export_csv annotation_export_${method_id}_${sample_id}.csv.gz \
+        --output_cluster_csv annotation_cluster_summary_${method_id}_${sample_id}.csv.gz \
         --chunk_size ${chunkSize} \
         --scale_factor ${scaleFactor}
+    """
+}
+
+process COMBINE_ANNOTATION_METHOD_OUTPUTS {
+    label     "process_medium"
+    tag       "combine_${method_id}"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
+
+    input:
+    tuple val(method_id), val(spec_b64), path(cells_csvs), path(export_csvs)
+    path script
+
+    output:
+    tuple val(method_id), val(spec_b64), path("annotation_cells_${method_id}.csv.gz"), path("annotation_cluster_summary_${method_id}.csv.gz"), path("annotation_export_${method_id}.csv.gz"), emit: result
+
+    script:
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+
+    Rscript ${script} \
+        --method_id '${method_id}' \
+        --cells_pattern 'annotation_cells_*.csv.gz' \
+        --export_pattern 'annotation_export_*.csv.gz' \
+        --output_cells_csv annotation_cells_${method_id}.csv.gz \
+        --output_cluster_csv annotation_cluster_summary_${method_id}.csv.gz \
+        --output_export_csv annotation_export_${method_id}.csv.gz
     """
 }
