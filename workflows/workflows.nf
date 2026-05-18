@@ -473,23 +473,28 @@ workflow ANNOTATION_METHODS {
         .filter { spec -> spec.engine == 'singler' }
         .map { spec ->
             def spec_json = groovy.json.JsonOutput.toJson(spec)
-            tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString())
+            tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString(), file(spec.reference_rds.toString()))
         }
 
     def xgboost_specs_ch = annotation_methods_ch
         .filter { spec -> spec.engine == 'xgboost' }
         .map { spec ->
             def spec_json = groovy.json.JsonOutput.toJson(spec)
-            tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString())
+            tuple(
+                spec.id.toString(),
+                spec_json.bytes.encodeBase64().toString(),
+                file(spec.model_rds.toString()),
+                file(spec.class_csv.toString())
+            )
         }
 
     def singler_run_inputs_ch = singler_specs_ch
         .combine(PREPARE_ANNOTATION_QUERY.out.query)
-        .map { joined -> tuple(joined[0], joined[1], joined[2], joined[3]) }
+        .map { joined -> tuple(joined[0], joined[1], joined[3], joined[4], joined[2]) }
 
     def xgboost_run_inputs_ch = xgboost_specs_ch
         .combine(PREPARE_ANNOTATION_QUERY.out.query)
-        .map { joined -> tuple(joined[0], joined[1], joined[2], joined[3]) }
+        .map { joined -> tuple(joined[0], joined[1], joined[4], joined[5], joined[2], joined[3]) }
 
     RUN_SINGLER_REFERENCE_ANNOTATION(
         singler_run_inputs_ch,

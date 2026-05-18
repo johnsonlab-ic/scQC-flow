@@ -139,7 +139,7 @@ process RUN_SINGLER_REFERENCE_ANNOTATION {
     publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
 
     input:
-    tuple val(method_id), val(spec_b64), val(sample_id), path(query_rds)
+    tuple val(method_id), val(spec_b64), val(sample_id), path(query_rds), path(reference_rds)
     path script
 
     output:
@@ -158,7 +158,7 @@ process RUN_SINGLER_REFERENCE_ANNOTATION {
 
     Rscript ${script} \
         --query_rds ${query_rds} \
-        --reference_rds ${spec.reference_rds} \
+        --reference_rds ${reference_rds} \
         --reference_label_col '${labelCol}' \
         --method_id '${method_id}' \
         --reference_name '${referenceName}' \
@@ -179,7 +179,7 @@ process RUN_XGBOOST_REFERENCE_ANNOTATION {
     publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
 
     input:
-    tuple val(method_id), val(spec_b64), val(sample_id), path(query_rds)
+    tuple val(method_id), val(spec_b64), val(sample_id), path(query_rds), path(model_rds), path(class_csv)
     path script
 
     output:
@@ -197,8 +197,8 @@ process RUN_XGBOOST_REFERENCE_ANNOTATION {
 
     Rscript ${script} \
         --query_rds ${query_rds} \
-        --model_rds ${spec.model_rds} \
-        --class_csv ${spec.class_csv} \
+        --model_rds ${model_rds} \
+        --class_csv ${class_csv} \
         ${clusterArg} \
         --method_id '${method_id}' \
         --reference_name '${referenceName}' \
