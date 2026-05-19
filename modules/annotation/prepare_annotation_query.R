@@ -33,6 +33,44 @@ drop_export_bloat_cols <- function(dt) {
   dt
 }
 
+filter_annotation_cells <- function(dt) {
+  keep_idx <- rep(TRUE, nrow(dt))
+
+  if ("embedding" %in% names(dt)) {
+    embedding_vals <- as.character(dt$embedding)
+    keep_idx <- !is.na(embedding_vals) & nzchar(embedding_vals)
+  } else if (all(c("UMAP1", "UMAP2") %in% names(dt))) {
+    keep_idx <- !is.na(dt$UMAP1) & !is.na(dt$UMAP2)
+  } else {
+    cluster_cols <- grep("^RNA_snn_res\\.", names(dt), value = TRUE)
+    if (length(cluster_cols) > 0) {
+      keep_idx <- Reduce(`|`, lapply(cluster_cols, function(cluster_col) {
+        cluster_vals <- as.character(dt[[cluster_col]])
+        !is.na(cluster_vals) & nzchar(cluster_vals)
+      }))
+    } else if (all(c("is_dbl", "in_dbl_cl") %in% names(dt))) {
+      keep_idx <- (!as.logical(dt$is_dbl)) & (!as.logical(dt$in_dbl_cl))
+      keep_idx[is.na(keep_idx)] <- FALSE
+    }
+  }
+
+  n_keep <- sum(keep_idx)
+  if (n_keep == 0) {
+    stop("No clean pass-2 integration cells available for annotation", call. = FALSE)
+  }
+
+  n_drop <- sum(!keep_idx)
+  if (n_drop > 0) {
+    message(sprintf(
+      "Retaining %d clean integrated cells and dropping %d pass-1-only / filtered rows before annotation",
+      n_keep,
+      n_drop
+    ))
+  }
+
+  dt[keep_idx]
+}
+
 message("Loading integration metadata: ", opts$integration_csv)
 obs_dt <- fread(opts$integration_csv)
 obs_dt[, sample_id := as.character(sample_id)]
@@ -40,6 +78,7 @@ obs_dt[, cell_id := as.character(cell_id)]
 obs_dt <- obs_dt[sample_id == opts$sample_id]
 obs_dt <- unique(obs_dt, by = "cell_id")
 obs_dt <- drop_export_bloat_cols(obs_dt)
+obs_dt <- filter_annotation_cells(obs_dt)
 
 if (nrow(obs_dt) == 0) {
   stop(sprintf("No integration rows found for sample_id '%s'", opts$sample_id), call. = FALSE)
