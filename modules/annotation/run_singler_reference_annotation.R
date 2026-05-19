@@ -68,6 +68,37 @@ extract_symbol_prefix <- function(ids) {
   out
 }
 
+map_ensg_to_symbols <- function(ids_novers) {
+  ids_novers <- as.character(ids_novers)
+  ids_novers <- ids_novers[!is.na(ids_novers) & nzchar(ids_novers)]
+  ids_novers <- unique(ids_novers[grepl("^ENS(?:MUS)?G", ids_novers)])
+  if (length(ids_novers) == 0) {
+    return(character())
+  }
+
+  species_pkg <- if (any(grepl("^ENSMUSG", ids_novers))) {
+    "EnsDb.Mmusculus.v79"
+  } else {
+    "EnsDb.Hsapiens.v86"
+  }
+  if (!requireNamespace("ensembldb", quietly = TRUE) || !requireNamespace(species_pkg, quietly = TRUE)) {
+    return(character())
+  }
+
+  ensdb_obj <- getExportedValue(species_pkg, species_pkg)
+  map_dt <- data.table::as.data.table(
+    ensembldb::select(
+      ensdb_obj,
+      keys = ids_novers,
+      keytype = "GENEID",
+      columns = c("GENEID", "SYMBOL")
+    )
+  )
+  map_dt <- map_dt[!is.na(SYMBOL) & nzchar(SYMBOL)]
+  map_dt <- unique(map_dt, by = "GENEID")
+  setNames(map_dt$SYMBOL, map_dt$GENEID)
+}
+
 build_gene_candidates <- function(sce) {
   raw_ids <- as.character(rownames(sce))
   raw_novers <- sub("\\..*$", "", raw_ids)
@@ -80,6 +111,14 @@ build_gene_candidates <- function(sce) {
   raw_tail_ensg <- extract_terminal_ensg(raw_ids)
   raw_tail_ensg_novers <- sub("\\..*$", "", raw_tail_ensg)
   raw_symbol_prefix <- extract_symbol_prefix(raw_ids)
+  raw_ensg_symbols <- map_ensg_to_symbols(raw_novers)
+  gene_id_symbols <- map_ensg_to_symbols(gene_id_novers)
+  raw_symbols <- unname(raw_ensg_symbols[raw_novers])
+  gene_id_mapped_symbols <- unname(gene_id_symbols[gene_id_novers])
+
+  symbol_from_map <- symbol
+  missing_symbol <- is.na(symbol_from_map) | !nzchar(symbol_from_map) | grepl("^ENS(?:MUS)?G", symbol_from_map)
+  symbol_from_map[missing_symbol] <- gene_id_mapped_symbols[missing_symbol]
 
   list(
     raw = raw_ids,
@@ -87,15 +126,17 @@ build_gene_candidates <- function(sce) {
     raw_novers = raw_novers,
     gene_id = gene_id,
     gene_id_novers = gene_id_novers,
-    symbol = symbol,
-    symbol_uc = toupper(symbol),
+    symbol = symbol_from_map,
+    symbol_uc = toupper(symbol_from_map),
     raw_tail_ensg = raw_tail_ensg,
     raw_tail_ensg_novers = raw_tail_ensg_novers,
     raw_symbol_prefix = raw_symbol_prefix,
     raw_symbol_prefix_uc = toupper(raw_symbol_prefix),
+    raw_symbol_map = raw_symbols,
+    raw_symbol_map_uc = toupper(raw_symbols),
     symbol_ensg = ifelse(
-      !is.na(symbol) & nzchar(symbol) & !is.na(gene_id_novers) & nzchar(gene_id_novers),
-      paste0(symbol, "-", gene_id_novers),
+      !is.na(symbol_from_map) & nzchar(symbol_from_map) & !is.na(gene_id_novers) & nzchar(gene_id_novers),
+      paste0(symbol_from_map, "-", gene_id_novers),
       NA_character_
     )
   )
@@ -121,6 +162,8 @@ align_genes <- function(query_sce, ref_sce) {
     c("raw", "raw"),
     c("raw_novers", "raw_novers"),
     c("raw_uc", "raw_uc"),
+    c("raw_symbol_map", "symbol"),
+    c("raw_symbol_map_uc", "symbol_uc"),
     c("raw_tail_ensg", "raw"),
     c("raw_tail_ensg_novers", "raw_novers"),
     c("raw_tail_ensg", "gene_id"),
