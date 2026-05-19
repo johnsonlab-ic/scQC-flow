@@ -27,6 +27,7 @@ process PREPARE_ZOOM_SUBSET {
     path integration_csv
     path qc_metrics_csvs
     path annotation_cell_labels_csv
+    path annotation_method_cell_labels_csvs
     path script
 
     output:
@@ -41,6 +42,7 @@ process PREPARE_ZOOM_SUBSET {
     python3 ${script} \
         --integration_csv ${integration_csv} \
         --annotation_labels_csv ${annotation_arg} \
+        --annotation_method_pattern 'annotation_cells_*.csv.gz' \
         --qc_pattern 'qc_metrics_*.csv.gz' \
         --zoom_spec_b64 ${spec_b64} \
         --out_qc_csv zoom_qc_metrics.csv.gz \

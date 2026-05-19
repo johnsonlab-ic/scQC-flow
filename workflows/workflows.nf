@@ -527,6 +527,7 @@ workflow ANNOTATION_METHODS {
     )
 
     emit:
+    cell_labels = COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result.map { _id, _spec_b64, cells_csv, _cluster_csv, _export_csv -> cells_csv }
     export_metadata = COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result.map { _id, _spec_b64, _cells_csv, _cluster_csv, export_csv -> export_csv }
     report = ANNOTATION_METHOD_REPORT.out.html
 }
@@ -550,6 +551,7 @@ workflow ZOOMS {
     qc_metrics_ch
     integration_dt_ch
     annotation_cell_labels_ch
+    annotation_method_cell_labels_ch
 
     main:
 
@@ -563,6 +565,7 @@ workflow ZOOMS {
         integration_dt_ch,
         qc_metrics_ch.map { _id, csv -> csv }.collect(),
         annotation_cell_labels_ch,
+        annotation_method_cell_labels_ch,
         channel.value(file("${projectDir}/modules/zoom/prepare_zoom_subset.py"))
     )
 

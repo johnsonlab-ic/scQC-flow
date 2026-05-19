@@ -35,6 +35,26 @@ def _load_annotation_labels(annotation_labels_csv):
     return labels_df
 
 
+def _load_annotation_method_labels(annotation_method_id, annotation_method_pattern):
+    labels_path = f"annotation_cells_{annotation_method_id}.csv.gz"
+    matched_paths = sorted(glob.glob(annotation_method_pattern))
+    if labels_path not in matched_paths:
+        raise FileNotFoundError(
+            f"Annotation method labels for method '{annotation_method_id}' were not found; "
+            f"expected '{labels_path}' within pattern '{annotation_method_pattern}'"
+        )
+    labels_df = pd.read_csv(labels_path)
+    required = {"sample_id", "cell_id", "label"}
+    missing = required.difference(labels_df.columns)
+    if missing:
+        raise KeyError(
+            f"Annotation method labels file '{labels_path}' is missing columns: {sorted(missing)}"
+        )
+    labels_df["sample_id"] = labels_df["sample_id"].astype(str)
+    labels_df["cell_id"] = labels_df["cell_id"].astype(str)
+    return labels_df
+
+
 def _load_qc(qc_pattern):
     qc_files = sorted(glob.glob(qc_pattern))
     if not qc_files:
@@ -46,7 +66,7 @@ def _load_qc(qc_pattern):
     return qc_df
 
 
-def run_prepare_zoom_subset(integration_csv, annotation_labels_csv, qc_pattern,
+def run_prepare_zoom_subset(integration_csv, annotation_labels_csv, annotation_method_pattern, qc_pattern,
                             zoom_spec_b64, out_qc_csv, out_selection_csv):
     spec = _decode_spec(zoom_spec_b64)
     zoom_name = spec["name"]
@@ -57,6 +77,11 @@ def run_prepare_zoom_subset(integration_csv, annotation_labels_csv, qc_pattern,
     print(f"Source: {zoom_source}")
     if zoom_source == "annotation_label":
         zoom_label = str(spec.get("label", zoom_name))
+        print(f"Label: {zoom_label}")
+    elif zoom_source == "annotation_method_label":
+        zoom_label = str(spec.get("label", zoom_name))
+        annotation_method_id = str(spec["annotation_method_id"])
+        print(f"Annotation method: {annotation_method_id}")
         print(f"Label: {zoom_label}")
     else:
         zoom_values = [str(value) for value in spec["values"]]
@@ -80,6 +105,18 @@ def run_prepare_zoom_subset(integration_csv, annotation_labels_csv, qc_pattern,
     elif zoom_source == "annotation_label":
         zoom_label = str(spec.get("label", zoom_name))
         labels_df = _load_annotation_labels(annotation_labels_csv)
+        labels_df = labels_df.loc[labels_df["label"].astype(str) == zoom_label].copy()
+        selected_df = labels_df.loc[:, ["sample_id", "cell_id", "label"]].copy()
+        selected_df = selected_df.rename(columns={"label": "zoom_value"})
+        selected_df = selected_df.merge(
+            int_df.loc[:, ["sample_id", "cell_id"]].drop_duplicates(),
+            on=["sample_id", "cell_id"],
+            how="inner",
+        )
+    elif zoom_source == "annotation_method_label":
+        zoom_label = str(spec.get("label", zoom_name))
+        annotation_method_id = str(spec["annotation_method_id"])
+        labels_df = _load_annotation_method_labels(annotation_method_id, annotation_method_pattern)
         labels_df = labels_df.loc[labels_df["label"].astype(str) == zoom_label].copy()
         selected_df = labels_df.loc[:, ["sample_id", "cell_id", "label"]].copy()
         selected_df = selected_df.rename(columns={"label": "zoom_value"})
@@ -132,6 +169,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare subset QC inputs for zoom workflows")
     parser.add_argument("--integration_csv", required=True)
     parser.add_argument("--annotation_labels_csv", required=True)
+    parser.add_argument("--annotation_method_pattern", default="annotation_cells_*.csv.gz")
     parser.add_argument("--qc_pattern", default="qc_metrics_*.csv.gz")
     parser.add_argument("--zoom_spec_b64", required=True)
     parser.add_argument("--out_qc_csv", required=True)
@@ -142,6 +180,7 @@ if __name__ == "__main__":
         run_prepare_zoom_subset(
             integration_csv=args.integration_csv,
             annotation_labels_csv=args.annotation_labels_csv,
+            annotation_method_pattern=args.annotation_method_pattern,
             qc_pattern=args.qc_pattern,
             zoom_spec_b64=args.zoom_spec_b64,
             out_qc_csv=args.out_qc_csv,

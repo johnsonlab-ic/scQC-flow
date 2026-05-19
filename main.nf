@@ -58,7 +58,8 @@ def helpMessage() {
                 Also write combined export object(s) in addition to
                 per-sample outputs (default: true)
         zoom                Nested zoom configuration map in nextflow.config.
-                Each zoom can subset by integration cluster or annotation label,
+            Each zoom can subset by integration cluster, legacy annotation label,
+            or a label from a configured annotation method,
                 then rerun HVG selection, integration, and marker analysis.
         --metadata_csv      Path to metadata CSV (required when --run_integration)
         --metadata_id_col   Column in metadata CSV that maps to sample IDs (default: sample_id)
@@ -265,17 +266,28 @@ workflow {
             }
 
             def zoomSource = rawSpec.source?.toString()?.trim()
-            if (!(zoomSource in ['cluster', 'annotation_label'])) {
-                error "Zoom '${zoomName}' has invalid source '${zoomSource}'. Use 'cluster' or 'annotation_label'."
+            if (!(zoomSource in ['cluster', 'annotation_label', 'annotation_method_label'])) {
+                error "Zoom '${zoomName}' has invalid source '${zoomSource}'. Use 'cluster', 'annotation_label', or 'annotation_method_label'."
             }
 
             if (zoomSource == 'annotation_label' && !params.run_annotation) {
                 error "Zoom '${zoomName}' uses source='annotation_label' and therefore requires --run_annotation"
             }
 
+            def annotationMethodZoomId = null
+            if (zoomSource == 'annotation_method_label') {
+                annotationMethodZoomId = rawSpec.annotation_method_id?.toString()?.trim()
+                if (!annotationMethodZoomId) {
+                    error "Zoom '${zoomName}' uses source='annotation_method_label' and must define 'annotation_method_id'"
+                }
+                if (!(annotationMethodZoomId in annotationMethodIds)) {
+                    error "Zoom '${zoomName}' references annotation_method_id='${annotationMethodZoomId}', but that id is not present in params.annotation_methods"
+                }
+            }
+
             def zoomValues = []
             def zoomLabel = null
-            if (zoomSource == 'annotation_label') {
+            if (zoomSource in ['annotation_label', 'annotation_method_label']) {
                 zoomLabel = rawSpec.label?.toString()?.trim()
                 if (!zoomLabel && rawSpec.values != null) {
                     def legacyValuesRaw = rawSpec.values
@@ -333,6 +345,9 @@ workflow {
             } else {
                 normalizedSpec.values = [zoomLabel]
                 normalizedSpec.label = zoomLabel
+                if (zoomSource == 'annotation_method_label') {
+                    normalizedSpec.annotation_method_id = annotationMethodZoomId
+                }
             }
 
             normalizedZoomSpecs << normalizedSpec
@@ -505,6 +520,7 @@ workflow {
     def sample_metadata_ch
     def landing_integration_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     def annotation_cell_labels_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
+    def annotation_method_cell_labels_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     def annotation_export_metadata_ch = channel.empty()
     def hasAnnotationExportMetadata = false
     if (params.metadata_csv) {
@@ -581,6 +597,7 @@ workflow {
                             INTEGRATION.out.integration_dt,
                             channel.fromList(normalizedAnnotationMethods)
                         )
+                        annotation_method_cell_labels_ch = ANNOTATION_METHODS.out.cell_labels.collect()
                         annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION_METHODS.out.export_metadata)
                         hasAnnotationExportMetadata = true
                         report_pages = report_pages.mix(ANNOTATION_METHODS.out.report)
@@ -598,7 +615,8 @@ workflow {
                             AMBIENT.out.h5_files,
                             QC.out.qc_metrics,
                             INTEGRATION.out.integration_dt,
-                            annotation_cell_labels_ch
+                            annotation_cell_labels_ch,
+                            annotation_method_cell_labels_ch
                         )
                         report_pages = report_pages.mix(ZOOMS.out.report)
 
