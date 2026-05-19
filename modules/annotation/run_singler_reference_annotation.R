@@ -27,7 +27,7 @@ parser$add_argument("--output_export_csv", type = "character", required = TRUE,
   help = "Export metadata CSV.GZ")
 parser$add_argument("--output_cluster_csv", type = "character", required = TRUE,
   help = "Cluster summary CSV.GZ")
-parser$add_argument("--ncores", type = "integer", default = 1L,
+parser$add_argument("--ncores", type = "integer", default = 8L,
   help = "BiocParallel workers")
 parser$add_argument("--bp_type", type = "character", default = "multicore",
   help = "BiocParallel backend (multicore|snow)")
