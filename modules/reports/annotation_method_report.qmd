@@ -35,6 +35,13 @@ cluster_dt <- fread(cluster_csv)
 cells_dt[, label := as.character(label)]
 cells_dt[is.na(label) | !nzchar(label), label := "Unassigned"]
 
+if (nrow(cluster_dt) > 0) {
+  char_cols <- intersect(c("cluster_col", "cluster_resolution", "cluster", "top_label"), names(cluster_dt))
+  if (length(char_cols) > 0) {
+    cluster_dt[, (char_cols) := lapply(.SD, as.character), .SDcols = char_cols]
+  }
+}
+
 cluster_cols <- grep("^(RNA_snn_res\\.|leiden_)", names(cells_dt), value = TRUE)
 cluster_cols <- cluster_cols[order(as.numeric(sub("^(RNA_snn_res\\.|leiden_)", "", cluster_cols)))]
 
@@ -64,6 +71,15 @@ if (!all(c("cluster_col", "cluster_resolution", "cluster", "top_label", "cs") %i
     )]
     summary_dt[, .(cluster_col, cluster_resolution, cluster, n_cells, top_label, cs, mean_score)]
   }), use.names = TRUE, fill = TRUE)
+}
+
+if (nrow(cluster_dt) > 0) {
+  cluster_dt[, `:=`(
+    cluster_col = as.character(cluster_col),
+    cluster_resolution = as.character(cluster_resolution),
+    cluster = as.character(cluster),
+    top_label = as.character(top_label)
+  )]
 }
 ```
 
