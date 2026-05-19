@@ -88,10 +88,27 @@ EXISTING_SHELL_CLOSE_RE = re.compile(
 SITE_CSS_LINK_RE = re.compile(r'\s*<link rel="stylesheet" href="site.css">\s*', re.IGNORECASE)
 
 
+def pretty_method_name(method_name):
+    tokens = method_name.split("_")
+    pretty_tokens = []
+    for token in tokens:
+        lowered = token.lower()
+        if lowered == "xgboost":
+            pretty_tokens.append("XGBoost")
+        elif lowered == "singler":
+            pretty_tokens.append("SingleR")
+        else:
+            pretty_tokens.append(token.title())
+    return " ".join(pretty_tokens)
+
+
 def pretty_report_name(file_name):
     known = KNOWN_REPORTS.get(file_name)
     if known:
         return known["title"]
+    if file_name.startswith("annotation_report_") and file_name.endswith(".html"):
+        method_name = file_name[len("annotation_report_"):-len(".html")]
+        return f"Annotation: {pretty_method_name(method_name)}"
     if file_name.startswith("zoom_") and file_name.endswith("_report.html"):
         zoom_name = file_name[len("zoom_"):-len("_report.html")]
         return f"Zoom: {zoom_name.replace('_', ' ').title()}"
@@ -102,6 +119,8 @@ def report_stage(file_name):
     known = KNOWN_REPORTS.get(file_name)
     if known:
         return known["stage"]
+    if file_name.startswith("annotation_report_") and file_name.endswith(".html"):
+        return "annotation"
     if file_name.startswith("zoom_"):
         return "zoom"
     return "other"
@@ -111,6 +130,8 @@ def report_blurb(file_name):
     known = KNOWN_REPORTS.get(file_name)
     if known:
         return known["blurb"]
+    if file_name.startswith("annotation_report_") and file_name.endswith(".html"):
+        return "Per-method annotation diagnostics, prediction confidence summaries, and cluster-level label agreement views."
     if file_name.startswith("zoom_"):
         return "Subset rerun report for a configured zoom, including reintegration and top-marker summaries."
     return "Generated HTML report from this pipeline run."

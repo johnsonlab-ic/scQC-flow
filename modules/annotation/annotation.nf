@@ -107,7 +107,6 @@ process PREPARE_ANNOTATION_QUERY {
     label     "process_medium"
     tag       "prepare_annotation_query_${sample_id}"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
     tuple val(sample_id), path(h5_file)
