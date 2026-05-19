@@ -1,5 +1,5 @@
 {
-  "name": "Mini-landmark scRNA-seq Dev Container",
+  "name": "scQC-flow Dev Container",
   "image": "ghcr.io/johnsonlab-ic/landmark-sc_image:latest",
   "runArgs": ["--network=host"],
   "workspaceFolder": "/workspace",
