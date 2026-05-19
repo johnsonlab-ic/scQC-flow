@@ -351,6 +351,6 @@ PY
         --outdir site \
         --css "${site_css}" \
         --js "${site_js}" \
-        "${report_html_files[@]}"
+        "\${report_html_files[@]}"
     """
 }
