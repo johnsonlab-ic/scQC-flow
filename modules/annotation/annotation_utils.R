@@ -182,19 +182,7 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
   if (workers == 1L) {
     sample_refs <- lapply(tasks, build_one_sample)
   } else {
-    cl <- parallel::makePSOCKcluster(workers)
-    on.exit(parallel::stopCluster(cl), add = TRUE)
-    parallel::clusterEvalQ(cl, suppressPackageStartupMessages({
-      library(assertthat)
-      library(Matrix)
-      library(rhdf5)
-    }))
-    parallel::clusterExport(
-      cl,
-      varlist = c("cluster_ids", "result_dir", "read_sparse_h5_matrix", "sum_sua_counts", "build_one_sample"),
-      envir = environment()
-    )
-    sample_refs <- parallel::parLapply(cl, tasks, build_one_sample)
+    sample_refs <- parallel::mclapply(tasks, build_one_sample, mc.cores = workers)
   }
 
   sample_results <- lapply(sample_refs, function(ref) {
