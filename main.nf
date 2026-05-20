@@ -669,6 +669,9 @@ workflow {
         }
     }
 
+    def existingZoomReportsCh = channel.fromPath("${params.outputDir}/zoom/**/*.html", checkIfExists: false)
+    report_pages = report_pages.mix(existingZoomReportsCh)
+
     def traceFileCh = params.containsKey('trace_report_suffix')
         ? channel.value(file("${params.outputDir}/pipeline_info/execution_trace_${params.trace_report_suffix}.txt"))
         : channel.value(file("${projectDir}/templates/NO_FILE"))
