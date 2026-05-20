@@ -140,7 +140,10 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
   dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
   on.exit(unlink(result_dir, recursive = TRUE, force = TRUE), add = TRUE)
 
-  workers <- max(1L, min(as.integer(n_cores), length(sample_ids)))
+  # Loading and materializing many H5 count matrices concurrently is unstable
+  # at very high fan-out, even when the process has more CPUs available.
+  workers <- max(1L, min(as.integer(n_cores), length(sample_ids), 8L))
+  message("Pseudobulk workers used: ", workers)
   build_one_sample <- function(task) {
     counts_mat <- read_sparse_h5_matrix(task$h5_f) |> sum_sua_counts()
 
@@ -183,6 +186,18 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
     sample_refs <- lapply(tasks, build_one_sample)
   } else {
     sample_refs <- parallel::mclapply(tasks, build_one_sample, mc.cores = workers)
+  }
+
+  bad_idx <- which(!vapply(sample_refs, function(ref) {
+    is.list(ref) && !is.null(ref$result_f) && is.character(ref$result_f) && length(ref$result_f) == 1L
+  }, logical(1)))
+  if (length(bad_idx) > 0) {
+    stop(
+      sprintf(
+        "Pseudobulk worker(s) failed before writing results for sample(s): %s",
+        paste(vapply(tasks[bad_idx], function(task) task$sample_id, character(1)), collapse = ", ")
+      )
+    )
   }
 
   sample_results <- lapply(sample_refs, function(ref) {
