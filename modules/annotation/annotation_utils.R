@@ -459,6 +459,9 @@ plot_top_marker_genes <- function(sel_cl, top_mkrs_dt, logcpms_all, cl_order = N
   )]
 
   plot_dt <- merge(logcpms_all, sel_mkrs[, .(gene_id, symbol_lab)], by = "gene_id")
+  if (nrow(plot_dt) == 0) {
+    return(ggplot() + theme_void() + labs(title = sprintf("No plottable top markers for %s", sel_cl)))
+  }
   plot_dt[, is_sel := ifelse(cluster == sel_cl, "test cluster", "other")]
   if (is.null(cl_order)) {
     all_levels <- c(sel_cl, setdiff(order_cluster_labels(unique(plot_dt$cluster)), sel_cl))

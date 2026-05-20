@@ -185,6 +185,11 @@ process RUN_ZOOM_MARKERS {
     def markerSelRes = (spec.marker_sel_res ?: '0.2').toString().replace("'", "'\"'\"'")
     def markerMinClSize = (spec.marker_min_cl_size ?: 100) as Integer
     def markerMinCells = (spec.marker_min_cells ?: 10) as Integer
+    def markerTopN = (spec.marker_top_n ?: 10) as Integer
+    def markerMinCpm = (spec.marker_min_cpm ?: params.annotation_min_cpm_mkr) as Integer
+    def markerFdrCut = (spec.marker_fdr_cut ?: params.annotation_fdr_cut) as BigDecimal
+    def markerMaxZero = (spec.marker_max_zero_p ?: params.annotation_max_zero_p) as BigDecimal
+    def markerNotOkRe = (params.annotation_not_ok_re ?: '(lincRNA|lncRNA|pseudogene|antisense)').toString().replace("'", "'\"'\"'")
     """
     set -euo pipefail
     export HOME="\$PWD"
@@ -199,7 +204,12 @@ process RUN_ZOOM_MARKERS {
         zoom_marker_logcpms.csv.gz \
         zoom_marker_expression.rds \
         'filt_counts_*.h5' \
-        ${task.cpus}
+        ${task.cpus} \
+        ${markerTopN} \
+        ${markerMinCpm} \
+        ${markerFdrCut} \
+        ${markerMaxZero} \
+        '${markerNotOkRe}'
     """
 }
 
