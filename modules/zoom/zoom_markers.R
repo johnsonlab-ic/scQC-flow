@@ -70,7 +70,7 @@ run_zoom_markers <- function() {
   # the cached zoom marker tables.
   marker_cache_dt <- marker_dt
   if (nzchar(marker_not_ok_re)) {
-    marker_cache_dt <- marker_cache_dt[grepl(marker_not_ok_re, gene_type, ignore.case = TRUE, perl = TRUE, invert = TRUE)]
+    marker_cache_dt <- marker_cache_dt[!grepl(marker_not_ok_re, gene_type, ignore.case = TRUE, perl = TRUE)]
   }
   marker_cache_dt <- marker_cache_dt[logcpm.sel >= log(marker_min_cpm + 1)]
   top_for_cpms <- get_top_markers(
