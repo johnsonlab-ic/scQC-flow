@@ -140,7 +140,7 @@ build_pseudobulk_from_h5s <- function(h5_files, ann_dt, biotypes_dt, n_cores = 1
   dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
   on.exit(unlink(result_dir, recursive = TRUE, force = TRUE), add = TRUE)
 
-  workers <- max(1L, min(as.integer(n_cores), length(sample_ids), 4L))
+  workers <- max(1L, min(as.integer(n_cores), length(sample_ids)))
   build_one_sample <- function(task) {
     counts_mat <- read_sparse_h5_matrix(task$h5_f) |> sum_sua_counts()
 

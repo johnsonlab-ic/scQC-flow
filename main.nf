@@ -595,7 +595,7 @@ workflow {
                         ANNOTATION_METHODS(
                             AMBIENT.out.h5_files,
                             INTEGRATION.out.integration_dt,
-                            channel.fromList(normalizedAnnotationMethods)
+                            normalizedAnnotationMethods
                         )
                         annotation_method_cell_labels_ch = ANNOTATION_METHODS.out.cell_labels.collect()
                         annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION_METHODS.out.export_metadata)

@@ -458,7 +458,7 @@ workflow ANNOTATION_METHODS {
     take:
     h5_ch
     integration_dt_ch
-    annotation_methods_ch
+    annotation_methods
 
     main:
 
@@ -469,46 +469,53 @@ workflow ANNOTATION_METHODS {
         channel.value(file("${projectDir}/modules/export/export_utils.R"))
     )
 
-    def singler_specs_ch = annotation_methods_ch
-        .filter { spec -> spec.engine == 'singler' }
-        .map { spec ->
-            def spec_json = groovy.json.JsonOutput.toJson(spec)
-            tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString(), file(spec.reference_rds.toString()))
-        }
+    def singler_methods = annotation_methods.findAll { spec -> spec.engine == 'singler' }
+    def xgboost_methods = annotation_methods.findAll { spec -> spec.engine == 'xgboost' }
 
-    def xgboost_specs_ch = annotation_methods_ch
-        .filter { spec -> spec.engine == 'xgboost' }
-        .map { spec ->
-            def spec_json = groovy.json.JsonOutput.toJson(spec)
-            tuple(
-                spec.id.toString(),
-                spec_json.bytes.encodeBase64().toString(),
-                file(spec.model_rds.toString()),
-                file(spec.class_csv.toString())
-            )
-        }
+    def annotation_sample_results_ch = channel.empty()
 
-    def singler_run_inputs_ch = singler_specs_ch
-        .combine(PREPARE_ANNOTATION_QUERY.out.query)
-        .map { joined -> tuple(joined[0], joined[1], joined[3], joined[4], joined[2]) }
+    if (singler_methods) {
+        def singler_specs_ch = channel.fromList(singler_methods)
+            .map { spec ->
+                def spec_json = groovy.json.JsonOutput.toJson(spec)
+                tuple(spec.id.toString(), spec_json.bytes.encodeBase64().toString(), file(spec.reference_rds.toString()))
+            }
 
-    def xgboost_run_inputs_ch = xgboost_specs_ch
-        .combine(PREPARE_ANNOTATION_QUERY.out.query)
-        .map { joined -> tuple(joined[0], joined[1], joined[4], joined[5], joined[2], joined[3]) }
+        def singler_run_inputs_ch = singler_specs_ch
+            .combine(PREPARE_ANNOTATION_QUERY.out.query)
+            .map { joined -> tuple(joined[0], joined[1], joined[3], joined[4], joined[2]) }
 
-    RUN_SINGLER_REFERENCE_ANNOTATION(
-        singler_run_inputs_ch,
-        channel.value(file("${projectDir}/modules/annotation/run_singler_reference_annotation.R"))
-    )
+        RUN_SINGLER_REFERENCE_ANNOTATION(
+            singler_run_inputs_ch,
+            channel.value(file("${projectDir}/modules/annotation/run_singler_reference_annotation.R"))
+        )
 
-    RUN_XGBOOST_REFERENCE_ANNOTATION(
-        xgboost_run_inputs_ch,
-        channel.value(file("${projectDir}/modules/annotation/run_xgboost_reference_annotation.R"))
-    )
+        annotation_sample_results_ch = annotation_sample_results_ch.mix(RUN_SINGLER_REFERENCE_ANNOTATION.out.result)
+    }
 
-    def annotation_sample_results_ch = RUN_SINGLER_REFERENCE_ANNOTATION.out.result.mix(
-        RUN_XGBOOST_REFERENCE_ANNOTATION.out.result
-    )
+    if (xgboost_methods) {
+        def xgboost_specs_ch = channel.fromList(xgboost_methods)
+            .map { spec ->
+                def spec_json = groovy.json.JsonOutput.toJson(spec)
+                tuple(
+                    spec.id.toString(),
+                    spec_json.bytes.encodeBase64().toString(),
+                    file(spec.model_rds.toString()),
+                    file(spec.class_csv.toString())
+                )
+            }
+
+        def xgboost_run_inputs_ch = xgboost_specs_ch
+            .combine(PREPARE_ANNOTATION_QUERY.out.query)
+            .map { joined -> tuple(joined[0], joined[1], joined[4], joined[5], joined[2], joined[3]) }
+
+        RUN_XGBOOST_REFERENCE_ANNOTATION(
+            xgboost_run_inputs_ch,
+            channel.value(file("${projectDir}/modules/annotation/run_xgboost_reference_annotation.R"))
+        )
+
+        annotation_sample_results_ch = annotation_sample_results_ch.mix(RUN_XGBOOST_REFERENCE_ANNOTATION.out.result)
+    }
 
     def annotation_method_inputs_ch = annotation_sample_results_ch
         .map { method_id, spec_b64, _sample_id, cells_csv, _cluster_csv, export_csv ->
