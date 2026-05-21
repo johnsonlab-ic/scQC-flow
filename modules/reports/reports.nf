@@ -344,7 +344,7 @@ PY
 
     quarto render "${landing_qmd}" --output index.html
 
-    mapfile -t report_html_files < <(find . -type f -name '*.html' ! -path './site/*' -printf '%P\n' | sort)
+    mapfile -t report_html_files < <(find -L . -type f -name '*.html' ! -path './site/*' -printf '%P\n' | sort)
 
     python3 "${builder_script}" \
         --payload landing_page_payload.json \
