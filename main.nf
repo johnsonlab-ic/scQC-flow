@@ -14,6 +14,8 @@ include { EXPORT_SCANPY     } from './modules/export/export_sc'
 include { EXPORT_SEURAT     } from './modules/export/export_sc'
 include { EXPORT_SCANPY_ZOOM } from './modules/export/export_sc'
 include { EXPORT_SEURAT_ZOOM } from './modules/export/export_sc'
+include { EXPORT_CELL_METADATA } from './modules/export/export_sc'
+include { EXPORT_CELL_METADATA_ZOOM } from './modules/export/export_sc'
 
 // =============================================================================
 // HELP
@@ -620,6 +622,15 @@ workflow {
                         )
                         report_pages = report_pages.mix(ZOOMS.out.report)
 
+                        if (exportMode != 'none') {
+                            EXPORT_CELL_METADATA_ZOOM(
+                                ZOOMS.out.zoom_int,
+                                annotation_export_input_ch,
+                                channel.value(file("${projectDir}/modules/export/export_cell_metadata.R")),
+                                channel.value(file("${projectDir}/modules/export/export_utils.R"))
+                            )
+                        }
+
                         if (exportMode in ['anndata', 'both']) {
                             EXPORT_SCANPY_ZOOM(
                                 ZOOMS.out.zoom_int,
@@ -650,6 +661,16 @@ workflow {
                             annotation_export_input_ch,
                             channel.value(file(params.genome_gtf)),
                             channel.value(file("${projectDir}/modules/export/export_anndata.py"))
+                        )
+                    }
+
+                    if (exportMode != 'none') {
+                        EXPORT_CELL_METADATA(
+                            QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+                            INTEGRATION.out.integration_dt,
+                            annotation_export_input_ch,
+                            channel.value(file("${projectDir}/modules/export/export_cell_metadata.R")),
+                            channel.value(file("${projectDir}/modules/export/export_utils.R"))
                         )
                     }
 
