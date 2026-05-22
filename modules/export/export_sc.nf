@@ -36,7 +36,7 @@ process EXPORT_SCANPY {
         --write_combined ${writeCombined}
     """
 }
-
+    
 process EXPORT_CELL_METADATA {
     label     "process_low"
     tag       "export_cell_metadata"
