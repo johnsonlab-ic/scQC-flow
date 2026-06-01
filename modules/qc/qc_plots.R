@@ -349,11 +349,8 @@ plot_upset_of_exclusions <- function(qc_tmp, qc_names, qc_lu, cuts_dt) {
     .[, dummy := 1] %>%
     dcast(cell_id ~ set, value.var = "dummy", fill = 0)
 
-  row_ord  <- upset_dt[, -c("cell_id")] %>% as.matrix %>% colSums %>%
-    sort(decreasing = TRUE) %>% names
-  row_cols <- rep("#FB8072", length(row_ord)) %>% setNames(row_ord)
-  row_cols["passed_qc"] <- "#7BAFDE"
-
   upset(upset_dt, sets = colnames(upset_dt)[-1], order.by = "freq",
-        mb.ratio = c(0.7, 0.3), sets.bar.color = row_cols)
+        mb.ratio = c(0.7, 0.3), sets.bar.color = "#FB8072",
+        queries = list(list(query = elements, params = list("passed_qc", 1),
+                            color = "#7BAFDE", active = TRUE)))
 }
