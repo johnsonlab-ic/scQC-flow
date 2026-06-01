@@ -350,7 +350,5 @@ plot_upset_of_exclusions <- function(qc_tmp, qc_names, qc_lu, cuts_dt) {
     dcast(cell_id ~ set, value.var = "dummy", fill = 0)
 
   upset(upset_dt, sets = colnames(upset_dt)[-1], order.by = "freq",
-        mb.ratio = c(0.7, 0.3), sets.bar.color = "#FB8072",
-        queries = list(list(query = elements, params = list("passed_qc", 1),
-                            color = "#7BAFDE", active = TRUE)))
+        mb.ratio = c(0.7, 0.3), sets.bar.color = "#FB8072")
 }
