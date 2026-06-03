@@ -290,7 +290,7 @@ def _normalize_hvg_mat(hvg_mat, cells_df, exclude_mito, scale_f=10000):
 # Single integration pass
 # ---------------------------------------------------------------------------
 
-def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed):
+def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed, use_paga=False):
     """Run one integration pass: scale -> PCA -> Harmony -> Leiden -> UMAP.
 
     Returns a DataFrame with cell_id, embedding coords, UMAP, clusters.
@@ -344,9 +344,18 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed):
         with _timed_step(f'    Leiden clustering at resolution={res}'):
             _run_leiden(adata, res, random_state=cluster_seed)
 
+    # PAGA-initialized UMAP (optional)
+    init_pos = 'spectral'
+    if use_paga:
+        paga_cl = f"RNA_snn_res.{min(res_ls, key=float)}"
+        with _timed_step(f'  Running PAGA on groups={paga_cl}'):
+            sc.tl.paga(adata, groups=paga_cl)
+            sc.pl.paga(adata, plot=False)
+        init_pos = 'paga'
+
     # UMAP
     with _timed_step('  Running UMAP'):
-        sc.tl.umap(adata, maxiter=750, random_state=cluster_seed)
+        sc.tl.umap(adata, maxiter=750, random_state=cluster_seed, init_pos=init_pos)
 
     # Extract results
     with _timed_step('  Recording cluster assignments'):
@@ -476,7 +485,7 @@ def _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data):
 
 def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
                     n_dims, cluster_seed, dbl_res, dbl_cl_prop, theta, res_ls,
-                    out_csv):
+                    out_csv, use_paga=False):
     """Two-pass integration identical to scprocess."""
 
     _log('=== INTEGRATION (two-pass) ===')
@@ -532,6 +541,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         res_ls=[str(dbl_res)],
         theta=0,
         cluster_seed=cluster_seed,
+        use_paga=use_paga,
     )
 
     del adata_dbl
@@ -594,6 +604,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         res_ls=res_ls,
         theta=theta,
         cluster_seed=cluster_seed,
+        use_paga=use_paga,
     )
 
     del adata
@@ -632,7 +643,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
 
 
 def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
-                         n_dims, cluster_seed, theta, res_ls, out_csv):
+                         n_dims, cluster_seed, theta, res_ls, out_csv, use_paga=False):
     """Single-pass singlet-only integration for zoom workflows."""
 
     _log('=== ZOOM INTEGRATION (singlet-only) ===')
@@ -685,6 +696,7 @@ def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
         res_ls=res_ls,
         theta=theta,
         cluster_seed=cluster_seed,
+        use_paga=use_paga,
     )
 
     meta_cols = ['sample_id'] + [col for col in metadata_vars if col != 'sample_id']
@@ -738,6 +750,8 @@ if __name__ == '__main__':
                         help='Space-separated Leiden resolutions for clean pass')
     parser.add_argument('--singlet_only',    action='store_true',
                         help='Run single-pass singlet-only integration (used by zoom workflows)')
+    parser.add_argument('--use_paga',        action='store_true',
+                        help='Use PAGA graph as UMAP initialisation (recommended for >500k cells)')
     parser.add_argument('--out_csv',         type=str, default='integration_dt.csv.gz')
     args = parser.parse_args()
 
@@ -761,6 +775,7 @@ if __name__ == '__main__':
             theta           = args.theta,
             res_ls          = res_ls,
             out_csv         = args.out_csv,
+            use_paga        = args.use_paga,
         )
     else:
         run_integration(
@@ -776,4 +791,5 @@ if __name__ == '__main__':
             theta           = args.theta,
             res_ls          = res_ls,
             out_csv         = args.out_csv,
+            use_paga        = args.use_paga,
         )

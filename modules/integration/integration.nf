@@ -19,6 +19,7 @@ process RUN_INTEGRATION {
     def meta_vars    = params.metadata_vars ? "--metadata_vars '${params.metadata_vars}'" : ""
     def dbl_h5_arg   = dbl_hvg_counts.name != 'NO_FILE' ? "--dbl_hvg_h5 '${dbl_hvg_counts}'" : ""
     def excl_mito    = params.exclude_mito ? "--exclude_mito" : ""
+    def paga_flag    = params.integration_use_paga ? "--use_paga" : ""
     """
     set -euo pipefail
     export MPLCONFIGDIR="\$PWD/.mplconfig"
@@ -34,6 +35,7 @@ process RUN_INTEGRATION {
         ${dbl_h5_arg} \
         ${meta_vars} \
         ${excl_mito} \
+        ${paga_flag} \
         --n_dims          ${params.integration_n_dims} \
         --cluster_seed    ${params.integration_cluster_seed} \
         --dbl_res         ${params.integration_dbl_res} \
