@@ -72,12 +72,13 @@ suppressPackageStartupMessages({
 run_apply_qc <- function() {
 
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) != 14) {
+  if (length(args) != 16) {
     stop("Usage: apply_qc.R <sampleId> <h5_file> <genome_gtf> <dbl_csv> ",
          "<metadata_csv> ",
          "<hard_min_counts> <hard_min_feats> <hard_max_mito> ",
          "<min_counts> <min_feats> <max_mito> <min_mito> ",
-         "<max_splice> <min_splice>")
+         "<max_splice> <min_splice> ",
+         "<mad_filter> <mad_nmads>")
   }
 
   current_sample_id <- args[1]
@@ -94,6 +95,8 @@ run_apply_qc <- function() {
   min_mito        <- as.numeric(args[12])
   max_splice      <- as.numeric(args[13])
   min_splice      <- as.numeric(args[14])
+  mad_filter      <- tolower(args[15]) == "true"
+  mad_nmads       <- as.numeric(args[16])
 
   message("=== APPLY_QC: ", current_sample_id, " ===")
   message("Hard thresholds: min_counts=", hard_min_counts,
@@ -102,6 +105,7 @@ run_apply_qc <- function() {
           " feats=[", min_feats, ",Inf]",
           " mito=[", min_mito, ",", max_mito, "]",
           " splice=[", min_splice, ",", max_splice, "]")
+  message("MAD filter: ", mad_filter, if (mad_filter) paste0(" (nmads=", mad_nmads, ")") else "")
 
   # -------------------------------------------------------------------------
   # 1. Load filtered H5
@@ -208,7 +212,7 @@ run_apply_qc <- function() {
     logit_mito <  qlogis(hard_max_mito)
   ]
 
-  qc_dt[, keep :=
+  qc_dt[, keep_flat :=
     keep_hard &
     log_counts    >= log10(min_counts + 1) &
     log_feats     >= log10(min_feats + 1) &
@@ -218,12 +222,72 @@ run_apply_qc <- function() {
     logit_spliced <  qlogis(max_splice)
   ]
 
-  n_kept <- sum(qc_dt$keep)
-  message("Cells passing QC: ", n_kept, " / ", n_total,
+  n_flat <- sum(qc_dt$keep_flat)
+  message("Cells passing flat thresholds: ", n_flat, " / ", n_total,
+          " (", round(100 * n_flat / n_total, 1), "%)")
+
+  # -------------------------------------------------------------------------
+  # 7b. MAD adaptive filtering — applied to flat-passing cells only
+  # -------------------------------------------------------------------------
+  .mad_bounds <- function(x, nmads) {
+    m <- median(x, na.rm = TRUE)
+    d <- mad(x, na.rm = TRUE)
+    c(lo = m - nmads * d, hi = m + nmads * d)
+  }
+
+  if (mad_filter) {
+    flat_pass <- qc_dt[keep_flat == TRUE]
+
+    b_counts <- .mad_bounds(flat_pass$log_counts,    mad_nmads)
+    b_feats  <- .mad_bounds(flat_pass$log_feats,     mad_nmads)
+    b_mito   <- .mad_bounds(flat_pass$logit_mito,    mad_nmads)
+    b_splice <- .mad_bounds(flat_pass$logit_spliced, mad_nmads)
+
+    qc_dt[, mad_lo_log_counts    := b_counts["lo"]]
+    qc_dt[, mad_hi_log_counts    := b_counts["hi"]]
+    qc_dt[, mad_lo_log_feats     := b_feats["lo"]]
+    qc_dt[, mad_hi_log_feats     := b_feats["hi"]]
+    qc_dt[, mad_lo_logit_mito    := b_mito["lo"]]
+    qc_dt[, mad_hi_logit_mito    := b_mito["hi"]]
+    qc_dt[, mad_lo_logit_spliced := b_splice["lo"]]
+    qc_dt[, mad_hi_logit_spliced := b_splice["hi"]]
+
+    qc_dt[, keep :=
+      keep_flat &
+      log_counts    >= b_counts["lo"] & log_counts    <= b_counts["hi"] &
+      log_feats     >= b_feats["lo"]  & log_feats     <= b_feats["hi"] &
+      logit_mito    >= b_mito["lo"]   & logit_mito    <= b_mito["hi"] &
+      logit_spliced >= b_splice["lo"] & logit_spliced <= b_splice["hi"]
+    ]
+
+    n_mad_rm_counts <- sum(flat_pass$log_counts    < b_counts["lo"] | flat_pass$log_counts    > b_counts["hi"])
+    n_mad_rm_feats  <- sum(flat_pass$log_feats     < b_feats["lo"]  | flat_pass$log_feats     > b_feats["hi"])
+    n_mad_rm_mito   <- sum(flat_pass$logit_mito    < b_mito["lo"]   | flat_pass$logit_mito    > b_mito["hi"])
+    n_mad_rm_splice <- sum(flat_pass$logit_spliced < b_splice["lo"] | flat_pass$logit_spliced > b_splice["hi"])
+
+    n_kept <- sum(qc_dt$keep)
+    message("Cells passing MAD filter: ", n_kept, " / ", n_flat,
+            " (removed ", n_flat - n_kept, ")")
+    message("  MAD removals: counts=", n_mad_rm_counts, " feats=", n_mad_rm_feats,
+            " mito=", n_mad_rm_mito, " splice=", n_mad_rm_splice)
+  } else {
+    qc_dt[, keep := keep_flat]
+    qc_dt[, c("mad_lo_log_counts", "mad_hi_log_counts",
+               "mad_lo_log_feats",  "mad_hi_log_feats",
+               "mad_lo_logit_mito", "mad_hi_logit_mito",
+               "mad_lo_logit_spliced", "mad_hi_logit_spliced") := NA_real_]
+    n_kept          <- n_flat
+    n_mad_rm_counts <- NA_integer_
+    n_mad_rm_feats  <- NA_integer_
+    n_mad_rm_mito   <- NA_integer_
+    n_mad_rm_splice <- NA_integer_
+  }
+
+  message("Cells passing final QC: ", n_kept, " / ", n_total,
           " (", round(100 * n_kept / n_total, 1), "%)")
 
   # -------------------------------------------------------------------------
-    # 8. Write outputs
+  # 8. Write outputs
   # -------------------------------------------------------------------------
   qc_out <- sprintf("qc_metrics_%s.csv.gz", current_sample_id)
   fwrite(qc_dt, qc_out)
@@ -235,9 +299,17 @@ run_apply_qc <- function() {
     n_singlets      = sum(qc_dt$is_singlet),
     n_doublets      = sum(!qc_dt$is_singlet),
     n_pass_hard     = sum(qc_dt$keep_hard),
+    n_pass_flat     = n_flat,
     n_pass_qc       = n_kept,
     n_excluded      = n_total - n_kept,
     pct_excluded    = round(100 * (1 - n_kept / n_total), 1),
+    mad_filter      = mad_filter,
+    mad_nmads       = if (mad_filter) mad_nmads else NA_real_,
+    n_mad_removed   = if (mad_filter) n_flat - n_kept else NA_integer_,
+    n_mad_rm_counts = n_mad_rm_counts,
+    n_mad_rm_feats  = n_mad_rm_feats,
+    n_mad_rm_mito   = n_mad_rm_mito,
+    n_mad_rm_splice = n_mad_rm_splice,
     median_counts   = round(median(qc_dt[keep == TRUE, sum]), 0),
     median_feats    = round(median(qc_dt[keep == TRUE, detected]), 0),
     median_mito_pct = round(median(qc_dt[keep == TRUE, mito_pct]) * 100, 2)

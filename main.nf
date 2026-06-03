@@ -502,7 +502,9 @@ workflow {
                     qc_max_mito: params.qc_max_mito,
                     qc_min_mito: params.qc_min_mito,
                     qc_max_splice: params.qc_max_splice,
-                    qc_min_splice: params.qc_min_splice,
+                    qc_min_splice:  params.qc_min_splice,
+                    qc_mad_filter:  params.qc_mad_filter,
+                    qc_mad_nmads:   params.qc_mad_nmads,
                 ],
                 zoom: [
                     enabled: zoomConfig.enabled ?: false,

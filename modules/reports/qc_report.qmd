@@ -35,6 +35,10 @@ max_mito    <- as.numeric(Sys.getenv("MAX_MITO",    "0.1"))
 min_mito    <- as.numeric(Sys.getenv("MIN_MITO",    "0.0001"))
 max_splice  <- as.numeric(Sys.getenv("MAX_SPLICE",  "0.75"))
 min_splice  <- as.numeric(Sys.getenv("MIN_SPLICE",  "0.0001"))
+
+# MAD adaptive filter
+mad_filter <- tolower(Sys.getenv("QC_MAD_FILTER", "false")) == "true"
+mad_nmads  <- as.numeric(Sys.getenv("QC_MAD_NMADS", "3.0"))
 ```
 
 ```{r load_data}
@@ -53,7 +57,10 @@ qc_dt <- qc_dt[log_counts >= log10(hard_min_counts) &
                 log_feats  >= log10(hard_min_feats) &
                 logit_mito <  qlogis(hard_max_mito)]
 
-# Cells passing full QC (all thresholds, singlets only)
+# Cells passing flat thresholds only (intermediate — used for MAD plot baseline)
+kept_flat_dt <- qc_all_dt[keep_flat == TRUE]
+
+# Cells passing all thresholds including MAD (= keep_flat when mad_filter is false)
 kept_dt <- qc_all_dt[keep == TRUE]
 
 # Sample ordering from the full input
@@ -92,11 +99,44 @@ suppressWarnings(
 )
 ```
 
-### After QC
+### After flat thresholds
 
-```{r plot_post_qc, fig.height=marg_h, fig.width=8}
+```{r plot_post_flat, fig.height=marg_h, fig.width=8}
+suppressWarnings(
+  plot_qc_ranges_marginals(kept_flat_dt, b_lvls, qc_names, qc_lu, cuts_dt)
+)
+```
+
+```{r tab_after_mad, echo=FALSE, results='asis'}
+if (mad_filter) cat("### After MAD filter\n\n")
+```
+
+```{r plot_post_mad, eval=mad_filter, fig.height=marg_h, fig.width=8}
 suppressWarnings(
   plot_qc_ranges_marginals(kept_dt, b_lvls, qc_names, qc_lu, cuts_dt)
+)
+```
+
+## MAD adaptive filter thresholds
+
+```{r mad_section_header, echo=FALSE, results='asis'}
+if (mad_filter) {
+  cat(sprintf(
+    "Per-sample adaptive thresholds computed from the flat-passing cells.
+     Bounds are **median ± %g × MAD** on the transformed metric scale (log₁₀ for
+     counts/genes, logit for mito and spliced). Each sample's bounds are shown as
+     coloured tick marks on its violin. Cells outside these bounds were removed.\n\n",
+    mad_nmads))
+} else {
+  cat("MAD adaptive filtering was not enabled for this run (`--qc_mad_filter false`).
+      Enable it with `--qc_mad_filter true --qc_mad_nmads 3.0` to apply a
+      per-sample second-pass filter after the flat thresholds.\n\n")
+}
+```
+
+```{r plot_mad_thresholds, eval=mad_filter, fig.height=marg_h, fig.width=8}
+suppressWarnings(
+  plot_mad_thresholds(qc_all_dt, b_lvls, qc_lu, mad_nmads)
 )
 ```
 
@@ -128,7 +168,7 @@ htmltools::tagList(
   htmltools::div(
     class = "qc-summary-table",
   DT::datatable(
-    calc_qc_summary(qc_all_dt, kept_dt, cuts_dt, qc_lu),
+    calc_qc_summary(qc_all_dt, kept_dt, cuts_dt, qc_lu, mad_filter = mad_filter),
     rownames = FALSE,
     filter = "top",
     class = "compact stripe hover",

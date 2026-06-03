@@ -106,6 +106,8 @@ process QC_REPORT {
     export MIN_MITO="${params.qc_min_mito}"
     export MAX_SPLICE="${params.qc_max_splice}"
     export MIN_SPLICE="${params.qc_min_splice}"
+    export QC_MAD_FILTER="${params.qc_mad_filter}"
+    export QC_MAD_NMADS="${params.qc_mad_nmads}"
     quarto render "${report_qmd}" --output qc_report.html
     """
 }

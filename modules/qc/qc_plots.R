@@ -248,9 +248,114 @@ plot_qc_metric_scatter <- function(dt, qc_names, qc_lu, cuts_one, name) {
 }
 
 # ---------------------------------------------------------------------------
+# Per-sample MAD threshold violin plot
+# ---------------------------------------------------------------------------
+plot_mad_thresholds <- function(qc_input, b_lvls, qc_lu, nmads) {
+  qc_names_mad <- c("log_counts", "log_feats", "logit_mito", "logit_spliced")
+
+  flat_dt <- qc_input[keep_flat == TRUE]
+  flat_dt[, batch_var := factor(batch_var, levels = rev(b_lvls))]
+
+  bound_cols <- c("batch_var",
+    paste0("mad_lo_", qc_names_mad),
+    paste0("mad_hi_", qc_names_mad))
+  bounds_wide <- unique(flat_dt[, bound_cols, with = FALSE])
+  bounds_wide[, batch_pos := as.integer(factor(batch_var, levels = rev(b_lvls)))]
+
+  bounds_lo <- melt(bounds_wide,
+    id.vars = c("batch_var", "batch_pos"),
+    measure.vars = paste0("mad_lo_", qc_names_mad),
+    variable.name = "metric", value.name = "bound_val")
+  bounds_lo[, qc_var     := sub("^mad_lo_", "", metric)]
+  bounds_lo[, bound_type := "lower"]
+
+  bounds_hi <- melt(bounds_wide,
+    id.vars = c("batch_var", "batch_pos"),
+    measure.vars = paste0("mad_hi_", qc_names_mad),
+    variable.name = "metric", value.name = "bound_val")
+  bounds_hi[, qc_var     := sub("^mad_hi_", "", metric)]
+  bounds_hi[, bound_type := "upper"]
+
+  bounds_long <- rbind(
+    bounds_lo[, .(batch_var, batch_pos, qc_var, bound_val, bound_type)],
+    bounds_hi[, .(batch_var, batch_pos, qc_var, bound_val, bound_type)]
+  )
+  bounds_long[, qc_full := qc_lu[qc_var]]
+  bounds_long[, qc_var  := factor(qc_var, levels = qc_names_mad)]
+  bounds_long[, qc_full := fct_reorder(qc_full, as.integer(qc_var))]
+
+  flat_melt <- melt(flat_dt,
+    measure.vars = qc_names_mad, variable.name = "qc_var", value.name = "qc_val")
+  flat_melt[, qc_full   := qc_lu[as.character(qc_var)]]
+  flat_melt[, qc_var    := factor(qc_var, levels = qc_names_mad)]
+  flat_melt[, qc_full   := fct_reorder(qc_full, as.integer(qc_var))]
+  flat_melt[, batch_pos := as.integer(batch_var)]
+
+  ggplot() +
+    geom_violin(data = flat_melt[!is.na(qc_val)],
+      aes(x = batch_pos, y = qc_val, group = batch_pos),
+      colour = NA, fill = "grey40",
+      kernel = "rectangular", adjust = 0.1, scale = "width", width = 0.8) +
+    geom_segment(data = bounds_long,
+      aes(x = batch_pos - 0.35, xend = batch_pos + 0.35,
+          y = bound_val, yend = bound_val,
+          colour = bound_type),
+      linewidth = 1.0) +
+    scale_colour_manual(
+      values = c(lower = "#D73027", upper = "#FC8D59"),
+      labels = c(lower = sprintf("lower (median − %g×MAD)", nmads),
+                 upper = sprintf("upper (median + %g×MAD)", nmads))) +
+    scale_x_continuous(
+      breaks = seq_len(length(b_lvls)),
+      labels = rev(b_lvls)) +
+    facet_grid(. ~ qc_full, scales = "free_y") +
+    facetted_pos_scales(y = list(
+      qc_full == "no. of UMIs"  ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
+      qc_full == "no. of genes" ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
+      qc_full == "mito. pct."   ~ scale_y_continuous(breaks = mito_brks, labels = mito_labs),
+      qc_full == "spliced pct." ~ scale_y_continuous(breaks = splice_brks, labels = splice_labs)
+    )) +
+    coord_flip() +
+    theme_classic() +
+    theme(
+      axis.text.y     = element_text(size = 7),
+      axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      legend.position = "bottom"
+    ) +
+    labs(x = NULL, y = NULL, colour = NULL) +
+    guides(colour = guide_legend(override.aes = list(linewidth = 2)))
+}
+
+# ---------------------------------------------------------------------------
+# Per-metric MAD removal breakdown (for summary table)
+# ---------------------------------------------------------------------------
+calc_mad_exclusions <- function(qc_dt) {
+  flat_dt <- qc_dt[keep_flat == TRUE]
+
+  flat_dt[, `:=`(
+    mad_fail_counts = log_counts    < mad_lo_log_counts    | log_counts    > mad_hi_log_counts,
+    mad_fail_feats  = log_feats     < mad_lo_log_feats     | log_feats     > mad_hi_log_feats,
+    mad_fail_mito   = logit_mito    < mad_lo_logit_mito    | logit_mito    > mad_hi_logit_mito,
+    mad_fail_splice = logit_spliced < mad_lo_logit_spliced | logit_spliced > mad_hi_logit_spliced
+  )]
+
+  out <- flat_dt[, .(
+    `N after flat`    = .N,
+    `N removed by MAD`= sum(keep_flat & !keep),
+    `% MAD (UMIs)`    = round(100 * mean(mad_fail_counts,  na.rm = TRUE), 1),
+    `% MAD (genes)`   = round(100 * mean(mad_fail_feats,   na.rm = TRUE), 1),
+    `% MAD (mito)`    = round(100 * mean(mad_fail_mito,    na.rm = TRUE), 1),
+    `% MAD (splice)`  = round(100 * mean(mad_fail_splice,  na.rm = TRUE), 1)
+  ), by = batch_var]
+
+  setnames(out, "batch_var", "sample_id")
+  return(out)
+}
+
+# ---------------------------------------------------------------------------
 # QC summary table (mirrors scprocess calc_qc_summary)
 # ---------------------------------------------------------------------------
-calc_qc_summary <- function(qc_dt, kept_dt, cuts_dt, qc_lu) {
+calc_qc_summary <- function(qc_dt, kept_dt, cuts_dt, qc_lu, mad_filter = FALSE) {
   tbl_tmp <- merge(
     qc_dt[, .(n_pre_QC = .N), by = .(batch_var)],
     kept_dt[, .(n_post_QC = .N), by = .(batch_var)],
@@ -271,6 +376,11 @@ calc_qc_summary <- function(qc_dt, kept_dt, cuts_dt, qc_lu) {
     merge(exclude_dt, by = "batch_var") %>%
     setnames("batch_var", "sample_id") %>%
     .[order(-`pct. excluded`, -`N post-QC`)]
+
+  if (mad_filter) {
+    mad_cols   <- calc_mad_exclusions(qc_dt)
+    tbl_pretty <- merge(tbl_pretty, mad_cols, by = "sample_id", all.x = TRUE)
+  }
 
   return(tbl_pretty)
 }

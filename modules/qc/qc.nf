@@ -78,6 +78,8 @@ process APPLY_QC {
         "${params.qc_max_mito}" \
         "${params.qc_min_mito}" \
         "${params.qc_max_splice}" \
-        "${params.qc_min_splice}"
+        "${params.qc_min_splice}" \
+        "${params.qc_mad_filter}" \
+        "${params.qc_mad_nmads}"
     """
 }
