@@ -308,7 +308,7 @@ plot_mad_thresholds <- function(qc_input, b_lvls, qc_lu, nmads) {
     scale_x_continuous(
       breaks = seq_len(length(b_lvls)),
       labels = rev(b_lvls)) +
-    facet_grid(. ~ qc_full, scales = "free_y") +
+    facet_grid(. ~ qc_full, scales = "free") +
     facetted_pos_scales(y = list(
       qc_full == "no. of UMIs"  ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
       qc_full == "no. of genes" ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
