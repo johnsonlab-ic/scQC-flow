@@ -20,6 +20,7 @@ process RUN_INTEGRATION {
     def dbl_h5_arg   = dbl_hvg_counts.name != 'NO_FILE' ? "--dbl_hvg_h5 '${dbl_hvg_counts}'" : ""
     def excl_mito    = params.exclude_mito ? "--exclude_mito" : ""
     def paga_flag    = params.integration_use_paga ? "--use_paga" : ""
+    def chunk_arg    = params.integration_chunk_size > 0 ? "--chunk_size ${params.integration_chunk_size}" : ""
     """
     set -euo pipefail
     export MPLCONFIGDIR="\$PWD/.mplconfig"
@@ -42,6 +43,8 @@ process RUN_INTEGRATION {
         --dbl_cl_prop     ${params.integration_dbl_cl_prop} \
         --theta           ${params.integration_theta} \
         --leiden_res      '${params.integration_leiden_res}' \
+        --n_neighbors     ${params.integration_n_neighbors} \
+        ${chunk_arg} \
         --qc_pattern      'qc_metrics_*.csv.gz' \
         --out_csv         integration_dt.csv.gz
     """

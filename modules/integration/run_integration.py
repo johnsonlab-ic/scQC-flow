@@ -290,7 +290,8 @@ def _normalize_hvg_mat(hvg_mat, cells_df, exclude_mito, scale_f=10000):
 # Single integration pass
 # ---------------------------------------------------------------------------
 
-def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed, use_paga=False):
+def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed,
+                        use_paga=False, chunk_size=0, n_neighbors=15):
     """Run one integration pass: scale -> PCA -> Harmony -> Leiden -> UMAP.
 
     Returns a DataFrame with cell_id, embedding coords, UMAP, clusters.
@@ -303,19 +304,22 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed, u
         this_embedding = 'harmony'
     _log(
         f"Integration pass setup: batch_var='{batch_var}', levels={n_batches}, "
-        f"n_dims={n_dims}, theta={theta}, resolutions={res_ls}, seed={cluster_seed}"
+        f"n_dims={n_dims}, theta={theta}, resolutions={res_ls}, seed={cluster_seed}, "
+        f"n_neighbors={n_neighbors}, chunk_size={chunk_size if chunk_size > 0 else 'disabled'}"
     )
 
     np.random.seed(cluster_seed)
     random.seed(cluster_seed)
 
-    # Scale
-    with _timed_step('  Scaling expression matrix'):
-        sc.pp.scale(adata, max_value=10)
-
-    # PCA
-    with _timed_step('  Running PCA'):
-        sc.tl.pca(adata, n_comps=n_dims)
+    # Scale + PCA — chunked mode avoids materialising the full dense matrix
+    if chunk_size > 0:
+        with _timed_step(f'  Running chunked PCA (chunk_size={chunk_size}, no explicit scale)'):
+            sc.tl.pca(adata, n_comps=n_dims, chunked=True, chunk_size=chunk_size)
+    else:
+        with _timed_step('  Scaling expression matrix'):
+            sc.pp.scale(adata, max_value=10)
+        with _timed_step('  Running PCA'):
+            sc.tl.pca(adata, n_comps=n_dims)
 
     sel_embed = 'X_pca'
     if this_embedding == 'harmony' and float(theta) != 0.0:
@@ -334,7 +338,7 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed, u
     if np.isnan(adata.obsm[sel_embed]).any():
         raise ValueError("NaN values in embedding — check input data")
     with _timed_step('  Building neighbor graph'):
-        sc.pp.neighbors(adata, n_pcs=n_dims, use_rep=sel_embed)
+        sc.pp.neighbors(adata, n_pcs=n_dims, use_rep=sel_embed, n_neighbors=n_neighbors)
 
     # Leiden clustering
     _log('  Finding clusters')
@@ -485,7 +489,7 @@ def _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data):
 
 def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
                     n_dims, cluster_seed, dbl_res, dbl_cl_prop, theta, res_ls,
-                    out_csv, use_paga=False):
+                    out_csv, use_paga=False, chunk_size=0, n_neighbors=15):
     """Two-pass integration identical to scprocess."""
 
     _log('=== INTEGRATION (two-pass) ===')
@@ -542,6 +546,8 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         theta=0,
         cluster_seed=cluster_seed,
         use_paga=use_paga,
+        chunk_size=chunk_size,
+        n_neighbors=n_neighbors,
     )
 
     del adata_dbl
@@ -605,6 +611,8 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         theta=theta,
         cluster_seed=cluster_seed,
         use_paga=use_paga,
+        chunk_size=chunk_size,
+        n_neighbors=n_neighbors,
     )
 
     del adata
@@ -643,7 +651,8 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
 
 
 def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
-                         n_dims, cluster_seed, theta, res_ls, out_csv, use_paga=False):
+                         n_dims, cluster_seed, theta, res_ls, out_csv, use_paga=False,
+                         chunk_size=0, n_neighbors=15):
     """Single-pass singlet-only integration for zoom workflows."""
 
     _log('=== ZOOM INTEGRATION (singlet-only) ===')
@@ -697,6 +706,8 @@ def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
         theta=theta,
         cluster_seed=cluster_seed,
         use_paga=use_paga,
+        chunk_size=chunk_size,
+        n_neighbors=n_neighbors,
     )
 
     meta_cols = ['sample_id'] + [col for col in metadata_vars if col != 'sample_id']
@@ -752,6 +763,10 @@ if __name__ == '__main__':
                         help='Run single-pass singlet-only integration (used by zoom workflows)')
     parser.add_argument('--use_paga',        action='store_true',
                         help='Use PAGA graph as UMAP initialisation (recommended for >500k cells)')
+    parser.add_argument('--chunk_size',      type=int, default=0,
+                        help='Chunk size for incremental PCA; skips sc.pp.scale (0 = standard scale+PCA)')
+    parser.add_argument('--n_neighbors',     type=int, default=15,
+                        help='Number of neighbors for kNN graph (default 15; reduce to 10 for very large datasets)')
     parser.add_argument('--out_csv',         type=str, default='integration_dt.csv.gz')
     args = parser.parse_args()
 
@@ -776,6 +791,8 @@ if __name__ == '__main__':
             res_ls          = res_ls,
             out_csv         = args.out_csv,
             use_paga        = args.use_paga,
+            chunk_size      = args.chunk_size,
+            n_neighbors     = args.n_neighbors,
         )
     else:
         run_integration(
@@ -792,4 +809,6 @@ if __name__ == '__main__':
             res_ls          = res_ls,
             out_csv         = args.out_csv,
             use_paga        = args.use_paga,
+            chunk_size      = args.chunk_size,
+            n_neighbors     = args.n_neighbors,
         )
