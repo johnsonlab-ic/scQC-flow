@@ -17,6 +17,7 @@ the number of cells retained, the amount of background used for contamination
 estimation, and how read composition changes before and after decontamination.
 
 ```{r setup}
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 150)
 suppressPackageStartupMessages({
   library(data.table)
   library(magrittr)

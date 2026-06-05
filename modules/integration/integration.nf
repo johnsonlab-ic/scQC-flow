@@ -14,6 +14,7 @@ process RUN_INTEGRATION {
 
     output:
     path "integration_dt.csv.gz", emit: integration_dt
+    path "dbl_sweep.csv.gz",      emit: dbl_sweep
 
     script:
     def meta_vars    = params.metadata_vars ? "--metadata_vars '${params.metadata_vars}'" : ""
@@ -46,6 +47,7 @@ process RUN_INTEGRATION {
         --n_neighbors     ${params.integration_n_neighbors} \
         ${chunk_arg} \
         --qc_pattern      'qc_metrics_*.csv.gz' \
-        --out_csv         integration_dt.csv.gz
+        --out_csv         integration_dt.csv.gz \
+        --dbl_sweep_csv   dbl_sweep.csv.gz
     """
 }

@@ -15,6 +15,7 @@ execute:
 ---
 
 ```{r setup}
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 150)
 source("integration_plots.R")
 
 leiden_res_str    <- Sys.getenv("LEIDEN_RES",    "0.2 0.5 1.0")
@@ -26,7 +27,7 @@ requested_metadata_vars <- trimws(strsplit(metadata_vars_str, "\\s+")[[1]])
 requested_metadata_vars <- requested_metadata_vars[nzchar(requested_metadata_vars)]
 
 batch_var   <- "sample_id"
-dbl_cl_prop <- 0.5
+dbl_cl_prop <- as.numeric(Sys.getenv("DBL_CL_PROP", "0.5"))
 message("New report!")
 qc_feature_palette <- c("#fff7ec", "#fdd49e", "#fdbb84", "#ef6548", "#990000")
 
@@ -211,6 +212,41 @@ if (has_doublets && n_doublets > 0 && has_dbl_cluster_col) {
   plot_doublet_clusters(int_dt, dbl_cl_prop, cl_col = present_leiden[length(present_leiden)])
 } else {
   cat("No doublet annotations available for cluster analysis.\n")
+}
+```
+
+## Doublet proportion sweep
+
+Pass-1 Leiden clustering is repeated at multiple resolutions. The plot below shows the distribution of doublet proportions across all clusters at each resolution, with the removal threshold marked in red. Clusters that are stably elevated above the threshold across resolutions are more likely to represent genuine doublet-enriched populations.
+
+```{r load_dbl_sweep}
+sweep_f <- "dbl_sweep.csv.gz"
+has_sweep <- file.exists(sweep_f)
+if (has_sweep) {
+  sweep_dt <- fread(sweep_f)
+  sweep_dt[, resolution := factor(resolution)]
+}
+```
+
+```{r plot_dbl_sweep, fig.height = 5, fig.width = 9}
+if (has_sweep && exists("sweep_dt") && nrow(sweep_dt) > 0) {
+  ggplot(sweep_dt, aes(x = resolution, y = dbl_prop)) +
+    geom_hline(yintercept = dbl_cl_prop, colour = "red", linetype = "dashed", linewidth = 0.7) +
+    geom_violin(fill = "steelblue", alpha = 0.45, scale = "width", colour = NA) +
+    geom_jitter(aes(size = n_cells), width = 0.18, alpha = 0.55, colour = "steelblue4") +
+    scale_size_continuous(name = "cluster size", range = c(1, 5),
+                          labels = scales::comma) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                       limits = c(0, NA)) +
+    labs(
+      x = "Leiden resolution (pass 1)",
+      y = "Doublet proportion per cluster",
+      caption = sprintf("Red dashed line = removal threshold (%.0f%%)", dbl_cl_prop * 100)
+    ) +
+    theme_bw() +
+    theme(panel.grid.minor = element_blank())
+} else {
+  cat("Doublet proportion sweep data not available.\n")
 }
 ```
 

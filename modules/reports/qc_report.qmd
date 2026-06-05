@@ -15,6 +15,7 @@ execute:
 ---
 
 ```{r setup}
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 150)
 source("qc_plots.R")
 setDTthreads(1)
 

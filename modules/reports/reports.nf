@@ -16,6 +16,7 @@ process MAPPING_REPORT {
 
     output:
     path "mapping_report.html", emit: html
+    path "plots/**",             optional: true
 
     script:
     """
@@ -68,6 +69,7 @@ process AMBIENT_REPORT {
 
     output:
     path "ambient_report.html", emit: html
+    path "plots/**",             optional: true
 
     script:
     """
@@ -93,6 +95,7 @@ process QC_REPORT {
 
     output:
     path "qc_report.html", emit: html
+    path "plots/**",        optional: true
 
     script:
     """
@@ -131,6 +134,7 @@ process HVG_REPORT {
 
     output:
     path "hvg_report.html", emit: html
+    path "plots/**",         optional: true
 
     script:
     """
@@ -152,18 +156,21 @@ process INTEGRATION_REPORT {
 
     input:
     path integration_csv   // integration_dt.csv.gz — UMAP + cluster assignments
+    path dbl_sweep_csv     // dbl_sweep.csv.gz — doublet proportion sweep
     path qc_metrics_csvs   // collected qc_metrics_*.csv.gz files for cluster QC summaries
     path report_qmd        // integration_report.qmd
     path plots_r           // integration_plots.R — plotting helpers sourced by the report
 
     output:
     path "integration_report.html", emit: html
+    path "plots/**",                 optional: true
 
     script:
     """
     export HOME="\$PWD"
     export METADATA_VARS="${params.metadata_vars}"
     export LEIDEN_RES="${params.integration_leiden_res}"
+    export DBL_CL_PROP="${params.integration_dbl_cl_prop}"
     quarto render "${report_qmd}" --output integration_report.html
     """
 }

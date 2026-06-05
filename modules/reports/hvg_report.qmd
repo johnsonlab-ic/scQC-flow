@@ -15,6 +15,7 @@ execute:
 ---
 
 ```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 150)
 suppressPackageStartupMessages({
   library(data.table)
   library(ggplot2)

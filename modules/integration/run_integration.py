@@ -461,6 +461,30 @@ def _calc_dbl_data(int_dbl, cells_df, dbl_res, dbl_cl_prop):
     return dbl_data
 
 
+def _calc_dbl_sweep(int_dbl, cells_df, sweep_res):
+    """Compute per-cluster dbl_prop at each pass-1 resolution for diagnostic output."""
+    dbl_ids = set(cells_df.loc[cells_df['is_dbl_int'] == True, 'cell_id'].tolist())
+    rows = []
+    for res in sweep_res:
+        col = f"RNA_snn_res.{res}"
+        if col not in int_dbl.columns:
+            continue
+        tmp = int_dbl[['cell_id', col]].copy()
+        tmp['is_dbl'] = tmp['cell_id'].isin(dbl_ids)
+        cluster_counts = tmp.groupby(col)['cell_id'].count()
+        cluster_dbl = tmp[tmp['is_dbl']].groupby(col)['cell_id'].count()
+        for cl in cluster_counts.index:
+            n_dbl = int(cluster_dbl.get(cl, 0))
+            rows.append({
+                'resolution': float(res),
+                'cluster': str(cl),
+                'n_cells': int(cluster_counts[cl]),
+                'n_dbl': n_dbl,
+                'dbl_prop': n_dbl / int(cluster_counts[cl]),
+            })
+    return pd.DataFrame(rows)
+
+
 # ---------------------------------------------------------------------------
 # Filter out doublets
 # ---------------------------------------------------------------------------
@@ -489,7 +513,8 @@ def _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data):
 
 def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
                     n_dims, cluster_seed, dbl_res, dbl_cl_prop, theta, res_ls,
-                    out_csv, use_paga=False, chunk_size=0, n_neighbors=15):
+                    out_csv, dbl_sweep_csv='dbl_sweep.csv.gz', use_paga=False,
+                    chunk_size=0, n_neighbors=15):
     """Two-pass integration identical to scprocess."""
 
     _log('=== INTEGRATION (two-pass) ===')
@@ -538,11 +563,13 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     _log(f'  AnnData (with doublets): {adata_dbl.shape[0]:,} cells x {adata_dbl.shape[1]:,} genes')
 
     # Pass 1 uses sample_id as batch var and theta=0
+    # Run Leiden at sweep resolutions (plus dbl_res) for diagnostic output
+    sweep_res = sorted(set([2.0, 4.0, 6.0, 8.0, 10.0] + [float(dbl_res)]))
     int_dbl = _do_one_integration(
         adata_dbl,
         batch_var='sample_id',
         n_dims=n_dims,
-        res_ls=[str(dbl_res)],
+        res_ls=[str(r) for r in sweep_res],
         theta=0,
         cluster_seed=cluster_seed,
         use_paga=use_paga,
@@ -565,6 +592,11 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     _log(f'  Doublets: {n_is_dbl:,}')
     _log(f'  Cells in doublet-enriched clusters: {n_in_dbl_cl:,}')
     _log(f'  Total cells to remove before pass 2: {n_removed:,}')
+
+    with _timed_step('Saving doublet proportion sweep'):
+        sweep_df = _calc_dbl_sweep(int_dbl, cells_df, sweep_res)
+        sweep_df.to_csv(dbl_sweep_csv, index=False, compression='gzip')
+        _log(f'  Saved sweep ({len(sweep_df)} rows) → {dbl_sweep_csv}')
 
     del int_dbl
     gc.collect()
@@ -768,6 +800,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_neighbors',     type=int, default=15,
                         help='Number of neighbors for kNN graph (default 15; reduce to 10 for very large datasets)')
     parser.add_argument('--out_csv',         type=str, default='integration_dt.csv.gz')
+    parser.add_argument('--dbl_sweep_csv',   type=str, default='dbl_sweep.csv.gz')
     args = parser.parse_args()
 
     # Parse list arguments
@@ -808,6 +841,7 @@ if __name__ == '__main__':
             theta           = args.theta,
             res_ls          = res_ls,
             out_csv         = args.out_csv,
+            dbl_sweep_csv   = args.dbl_sweep_csv,
             use_paga        = args.use_paga,
             chunk_size      = args.chunk_size,
             n_neighbors     = args.n_neighbors,

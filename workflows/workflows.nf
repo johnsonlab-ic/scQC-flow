@@ -370,6 +370,7 @@ workflow INTEGRATION {
 
     INTEGRATION_REPORT(
         RUN_INTEGRATION.out.integration_dt,
+        RUN_INTEGRATION.out.dbl_sweep,
         qc_metrics_ch.map { _id, csv -> csv }.collect(),
         channel.value(file("${projectDir}/modules/reports/integration_report.qmd")),
         channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
