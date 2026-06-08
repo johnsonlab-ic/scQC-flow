@@ -8,7 +8,7 @@ process MAPPING_REPORT {
     label     "process_reports"
     tag       "mapping_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/mapping", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/mapping", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path knee_data_csvs   // collected knee_plot_data_*.csv files — v1 (DropletUtils 1.30)
@@ -33,7 +33,7 @@ process CELLBENDER_REPORT {
     label     "process_reports"
     tag       "cellbender_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path summary_csvs   // cb_summary_*.csv
@@ -58,7 +58,7 @@ process AMBIENT_REPORT {
     label     "process_reports"
     tag       "ambient_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path qc_metrics_csvs   // barcodes_qc_metrics_*.csv.gz  — pre/post S/U/A per barcode
@@ -86,7 +86,7 @@ process QC_REPORT {
     label     "process_reports"
     tag       "qc_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/qc", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/qc", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path qc_metrics_csvs   // collected qc_metrics_*.csv.gz files
@@ -123,7 +123,7 @@ process HVG_REPORT {
     label     "process_reports"
     tag       "hvg_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/hvg", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/hvg", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path hvg_stats_csv     // hvg_stats.csv.gz — per-gene HVG stats
@@ -152,7 +152,7 @@ process INTEGRATION_REPORT {
     label     "process_reports"
     tag       "integration_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/integration", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/integration", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path integration_csv   // integration_dt.csv.gz — UMAP + cluster assignments
@@ -183,7 +183,7 @@ process ANNOTATION_REPORT {
     label     "process_reports"
     tag       "annotation_report"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true
 
     input:
     path integration_csv
@@ -248,7 +248,7 @@ process REPORT_SITE {
     label     "process_reports"
     tag       "report_site"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-  publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true, saveAs: { filename -> filename.replaceFirst('^site/', '') }
+    publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true, saveAs: { filename -> filename.replaceFirst('^site/', '') }
 
     input:
     path report_htmls
