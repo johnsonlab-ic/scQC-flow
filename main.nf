@@ -529,7 +529,7 @@ workflow {
     def hasAnnotationExportMetadata = false
     if (params.metadata_csv) {
         SAMPLE_METADATA(samples_ch.map { sampleId, _sampleName, _fastqPath -> sampleId }.collect())
-        sample_metadata_ch = SAMPLE_METADATA.out.sample_metadata
+        sample_metadata_ch = SAMPLE_METADATA.out
     } else {
         sample_metadata_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     }

@@ -239,7 +239,7 @@ workflow SAMPLE_METADATA {
     )
 
     emit:
-    sample_metadata = PREPARE_SAMPLE_METADATA.out.sample_metadata
+    PREPARE_SAMPLE_METADATA.out.sample_metadata
 }
 
 // =============================================================================
