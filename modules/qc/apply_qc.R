@@ -175,9 +175,10 @@ run_apply_qc <- function() {
   # 5. Read doublet results and merge
   # -------------------------------------------------------------------------
   dbl_dt    <- fread(dbl_csv)
-  dbl_merge <- dbl_dt[, .(cell_id, scdbl_class)]
+  dbl_merge <- dbl_dt[, .(cell_id, scdbl_class, scdbl_score = score)]
   qc_dt     <- merge(qc_dt, dbl_merge, by = "cell_id", all.x = TRUE)
   qc_dt[is.na(scdbl_class), scdbl_class := "singlet"]
+  qc_dt[is.na(scdbl_score), scdbl_score := 0]
   qc_dt[, is_singlet := scdbl_class == "singlet"]
 
   # -------------------------------------------------------------------------
