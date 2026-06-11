@@ -250,148 +250,143 @@ if (has_sweep && exists("sweep_dt") && nrow(sweep_dt) > 0) {
 }
 ```
 
-## Residual doublet assessment
+## Doublet proportion per cluster
 
-After cluster-level doublet removal (pass 1), cells that were classified as doublets by `scDblFinder` but belonged to clusters below the removal threshold remain in the pass-2 embedding. These residual doublets are identified here using the per-cell `scDblFinder` score.
+`dbl_prop` is the pass-1 cluster doublet fraction carried by each cell. For each pass-2 cluster the mean `dbl_prop` of its constituent cells is shown. Clusters flagged as outliers satisfy **both** conditions: IQR outlier (> Q3 + 1.5 × IQR) and mean `dbl_prop` > 15%. The combined criterion prevents spurious flags at higher resolutions where natural spread is wider.
 
-**Method:** All cells passing pass-1 cluster removal are scored by `scDblFinder` on a continuous scale (0 = singlet-like, 1 = doublet-like). Cells with `scdbl_class == "doublet"` are flagged as residual doublets regardless of their cluster-level `dbl_prop`. The score distribution, UMAP overlay, and per-cluster proportion are shown below to assess whether residual doublets are spatially concentrated (e.g. forming inter-cluster bridges) or diffusely scattered.
+```{r plot_dbl_lollipop, fig.height = 10, fig.width = 10, results='asis'}
+if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
+  int_dt_pass2[, dbl_prop := as.numeric(dbl_prop)]
 
-```{r residual_doublet_setup}
-has_scdbl_score <- "scdbl_score" %in% names(qc_dt) && nrow(qc_dt) > 0
-has_scdbl_class <- "scdbl_class" %in% names(qc_dt) && nrow(qc_dt) > 0
+  make_dbl_lollipop <- function(cl_col) {
+    dt  <- int_dt_pass2[get(cl_col) != "" & !is.na(get(cl_col)),
+                        .(cluster = get(cl_col), dbl_prop)]
+    cl  <- dt[, .(mean_dbl = mean(dbl_prop, na.rm = TRUE), n = .N), by = cluster]
+    q1  <- quantile(cl$mean_dbl, 0.25, na.rm = TRUE)
+    q3  <- quantile(cl$mean_dbl, 0.75, na.rm = TRUE)
+    iqr <- q3 - q1
+    cl[, outlier    := mean_dbl > (q3 + 1.5 * iqr) & mean_dbl > 0.15]
+    cl[, cluster_ord := reorder(cluster, mean_dbl)]
 
-if (has_scdbl_score || has_scdbl_class) {
-  score_col <- if (has_scdbl_score) "scdbl_score" else NULL
-  class_col <- if (has_scdbl_class) "scdbl_class" else NULL
-
-  keep_cols <- c("cell_id", score_col, class_col)
-  dbl_score_dt <- unique(qc_dt[, keep_cols, with = FALSE], by = "cell_id")
-  pass2_score_dt <- merge(
-    int_dt_pass2[, .(cell_id, UMAP1, UMAP2, is_dbl)],
-    dbl_score_dt,
-    by = "cell_id", all.x = TRUE
-  )
-  if (!has_scdbl_class) {
-    pass2_score_dt[, scdbl_class := ifelse(is_dbl, "doublet", "singlet")]
-  }
-  n_residual <- sum(pass2_score_dt$scdbl_class == "doublet", na.rm = TRUE)
-  pct_residual <- 100 * n_residual / nrow(pass2_score_dt)
-}
-```
-
-`r if (exists("n_residual")) sprintf("**Residual doublets in pass-2 embedding:** %s (%.1f%% of pass-2 cells)", format(n_residual, big.mark = ","), pct_residual)`
-
-```{r plot_residual_score_dist, fig.height = 4, fig.width = 7}
-if (has_scdbl_score && exists("pass2_score_dt") && !all(is.na(pass2_score_dt$scdbl_score))) {
-  ggplot(pass2_score_dt[!is.na(scdbl_class)],
-         aes(x = scdbl_score, fill = scdbl_class, colour = scdbl_class)) +
-    geom_density(alpha = 0.45, linewidth = 0.5) +
-    geom_vline(xintercept = 0.5, linetype = "dashed", colour = "grey30", linewidth = 0.6) +
-    scale_fill_manual(values = c(singlet = "#4DAF4A", doublet = "#E41A1C"),
-                      name = "scDblFinder call") +
-    scale_colour_manual(values = c(singlet = "#4DAF4A", doublet = "#E41A1C"),
-                        name = "scDblFinder call") +
-    labs(x = "scDblFinder score", y = "Density",
-         caption = "Dashed line = classification threshold (0.5). Pass-2 cells only.") +
-    theme_bw() +
-    theme(panel.grid.minor = element_blank())
-} else if (has_scdbl_class && exists("pass2_score_dt")) {
-  tbl <- pass2_score_dt[, .N, by = scdbl_class]
-  tbl[, pct := round(100 * N / sum(N), 1)]
-  knitr::kable(tbl, col.names = c("scDblFinder class", "N cells", "% of pass-2"),
-               caption = "scDblFinder classification among pass-2 cells (score not available)")
-} else {
-  cat("scDblFinder score not available in QC metrics.\n")
-}
-```
-
-```{r plot_residual_doublets_umap, fig.height = 5, fig.width = 11}
-if (exists("pass2_score_dt") && nrow(pass2_score_dt) > 0) {
-  umap_base <- copy(pass2_score_dt)
-  umap_base[, UMAP1 := rescale(UMAP1, to = c(0.05, 0.95))]
-  umap_base[, UMAP2 := rescale(UMAP2, to = c(0.05, 0.95))]
-
-  if (has_scdbl_score && !all(is.na(umap_base$scdbl_score))) {
-    # Left: continuous score
-    g_score <- ggplot(umap_base[sample(.N, .N)],
-                      aes(x = UMAP1, y = UMAP2, colour = scdbl_score)) +
-      geom_point(size = 0.1) +
-      scale_colour_gradientn(
-        colours = c("#4DAF4A", "#FFFFCC", "#E41A1C"),
-        limits  = c(0, 1), name = "score") +
-      scale_x_continuous(limits = c(0, 1)) +
-      scale_y_continuous(limits = c(0, 1)) +
-      theme_bw() +
-      theme(panel.grid = element_blank(), aspect.ratio = 1,
-            axis.ticks = element_blank(), axis.text = element_blank(),
-            legend.position = "bottom", legend.title.position = "left") +
-      labs(title = "scDblFinder score")
-  } else {
-    g_score <- NULL
+    ggplot(cl, aes(x = mean_dbl, y = cluster_ord)) +
+      geom_vline(xintercept = dbl_cl_prop, linetype = "dashed",
+                 colour = "grey50", linewidth = 0.5) +
+      geom_segment(aes(x = 0, xend = mean_dbl,
+                       y = cluster_ord, yend = cluster_ord,
+                       colour = outlier), linewidth = 0.4) +
+      geom_point(aes(colour = outlier, size = n)) +
+      geom_label_repel(
+        data          = cl[outlier == TRUE],
+        aes(x = mean_dbl, y = cluster_ord,
+            label = sprintf("%s  %.0f%%", cluster, mean_dbl * 100)),
+        inherit.aes   = FALSE,
+        size          = 2.5, label.size = 0.2,
+        label.padding = unit(0.15, "lines"),
+        nudge_x       = 0.04, direction = "y", segment.size = 0.3
+      ) +
+      scale_colour_manual(values = c("FALSE" = "steelblue", "TRUE" = "#d0021b"),
+                          guide = "none") +
+      scale_size_continuous(name = "n cells", range = c(1, 4),
+                            labels = comma) +
+      scale_x_continuous(labels = percent_format(accuracy = 1),
+                         limits = c(0, NA),
+                         expand = expansion(mult = c(0, 0.25))) +
+      labs(x = "Mean pass-1 doublet proportion", y = NULL,
+           caption = sprintf(
+             "Red = IQR outlier AND > 15%%. Dashed = fixed %.0f%% removal threshold.",
+             dbl_cl_prop * 100)) +
+      theme_bw(base_size = 10) +
+      theme(panel.grid.minor   = element_blank(),
+            panel.grid.major.x = element_blank(),
+            axis.text.y        = element_text(size = 7))
   }
 
-  # Right: binary flag — residual doublets highlighted
-  umap_flag <- copy(umap_base)
-  umap_flag[, label := ifelse(scdbl_class == "doublet", "residual doublet", "singlet")]
-  umap_flag <- umap_flag[sample(.N, .N)]
-  umap_flag[, label := factor(label, levels = c("singlet", "residual doublet"))]
-
-  g_flag <- ggplot(umap_flag, aes(x = UMAP1, y = UMAP2, colour = label)) +
-    geom_point(size = 0.1) +
-    scale_colour_manual(
-      values = c("singlet" = "grey85", "residual doublet" = "#E41A1C"),
-      name = NULL) +
-    scale_x_continuous(limits = c(0, 1)) +
-    scale_y_continuous(limits = c(0, 1)) +
-    theme_bw() +
-    theme(panel.grid = element_blank(), aspect.ratio = 1,
-          axis.ticks = element_blank(), axis.text = element_blank(),
-          legend.position = "bottom") +
-    labs(title = "Residual doublets (pass-2)") +
-    guides(colour = guide_legend(override.aes = list(size = 2)))
-
-  if (!is.null(g_score)) {
-    g_score + g_flag
-  } else {
-    print(g_flag)
-  }
-}
-```
-
-```{r plot_residual_per_cluster, fig.height = 5, fig.width = 9, results='asis'}
-if (exists("pass2_score_dt") && length(present_leiden) > 0) {
-  cl_score_dt <- merge(
-    int_dt_pass2[, c("cell_id", present_leiden), with = FALSE],
-    pass2_score_dt[, .(cell_id, scdbl_class)],
-    by = "cell_id", all.x = TRUE
-  )
   cat('::: {.panel-tabset}\n\n')
   for (cl_col in present_leiden) {
     res_val <- sub('^RNA_snn_res\\.', '', cl_col)
     res_val <- sub('^leiden_', '', res_val)
     cat("### ", res_val, "\n\n")
-    prop_dt <- cl_score_dt[, .(
-      n_total    = .N,
-      n_residual = sum(scdbl_class == "doublet", na.rm = TRUE)
-    ), by = .(cluster = get(cl_col))]
-    prop_dt[, pct_residual := 100 * n_residual / n_total]
-    prop_dt[, cluster := factor(cluster, levels = sort(unique(cluster)))]
-
-    g <- ggplot(prop_dt, aes(x = cluster, y = pct_residual)) +
-      geom_col(fill = "#E41A1C", alpha = 0.7) +
-      geom_hline(yintercept = dbl_cl_prop * 100, linetype = "dashed",
-                 colour = "grey30", linewidth = 0.6) +
-      scale_y_continuous(labels = scales::percent_format(scale = 1),
-                         expand = expansion(mult = c(0, 0.05))) +
-      labs(x = "Cluster", y = "Residual doublets (%)",
-           caption = sprintf("Dashed line = pass-1 removal threshold (%.0f%%)", dbl_cl_prop * 100)) +
-      theme_bw() +
-      theme(panel.grid.minor = element_blank(),
-            axis.text.x = element_text(angle = 45, hjust = 1))
-    print(g)
+    print(make_dbl_lollipop(cl_col))
     cat("\n\n")
   }
   cat(':::\n\n')
+} else {
+  cat("Pass-1 doublet proportion data not available.\n")
+}
+```
+
+## Doublet proportion on UMAP
+
+Each cell is coloured by its pass-1 `dbl_prop`. Labels at cluster centroids show the pass-2 cluster ID and mean `dbl_prop`; red-tinted labels indicate clusters at or above the removal threshold.
+
+```{r plot_dbl_umap_overlay, fig.height = 7, fig.width = 7, results='asis'}
+if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
+  make_dbl_umap <- function(cl_col) {
+    dt <- int_dt_pass2[get(cl_col) != "" & !is.na(get(cl_col)),
+                       .(cell_id, UMAP1, UMAP2,
+                         cluster  = get(cl_col),
+                         dbl_prop)]
+    dt[, UMAP1s := rescale(UMAP1, to = c(0.05, 0.95))]
+    dt[, UMAP2s := rescale(UMAP2, to = c(0.05, 0.95))]
+
+    cl_labs <- dt[, .(
+      mean_dbl = mean(dbl_prop, na.rm = TRUE),
+      lx       = median(UMAP1s),
+      ly       = median(UMAP2s)
+    ), by = cluster]
+    cl_labs[, above := mean_dbl >= dbl_cl_prop]
+    cl_labs[, lab   := sprintf("%s\n%.0f%%", cluster, mean_dbl * 100)]
+
+    set.seed(42)
+    plot_cells <- dt[sample(.N, min(.N, 200000))][sample(.N, .N)]
+
+    ggplot(plot_cells, aes(x = UMAP1s, y = UMAP2s, colour = dbl_prop)) +
+      geom_point(size = 0.1) +
+      geom_label(
+        data          = cl_labs,
+        aes(x = lx, y = ly, label = lab, fill = above),
+        colour        = "black", size = 1.8,
+        label.size    = 0.2,
+        label.padding = unit(0.12, "lines"),
+        inherit.aes   = FALSE
+      ) +
+      scale_colour_gradientn(
+        colours = qc_feature_palette,
+        limits  = c(0, dbl_cl_prop),
+        oob     = squish,
+        name    = "Pass-1\ndoublet prop.",
+        labels  = percent_format(accuracy = 1)
+      ) +
+      scale_fill_manual(
+        values = c("FALSE" = "white", "TRUE" = "#ffd6d6"),
+        guide  = "none"
+      ) +
+      scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      theme_bw() +
+      theme(panel.grid            = element_blank(),
+            aspect.ratio          = 1,
+            legend.title.position = "left",
+            legend.position       = "bottom",
+            axis.ticks            = element_blank(),
+            axis.text             = element_blank()) +
+      labs(x = "UMAP 1", y = "UMAP 2",
+           caption = sprintf(
+             "Labels: cluster ID / mean pass-1 dbl_prop. Red-tinted ≥ %.0f%% threshold.",
+             dbl_cl_prop * 100))
+  }
+
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    print(make_dbl_umap(cl_col))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("Pass-1 doublet proportion data not available.\n")
 }
 ```
 
