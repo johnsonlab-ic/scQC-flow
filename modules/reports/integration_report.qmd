@@ -250,13 +250,96 @@ if (has_sweep && exists("sweep_dt") && nrow(sweep_dt) > 0) {
 }
 ```
 
+## Doublet proportion on UMAP
+
+Left panel: cells coloured by the mean pass-1 `dbl_prop` of their pass-2 cluster — a resolution-dependent metric showing which regions of the embedding are enriched for cells from high-doublet pass-1 clusters. Red-tinted labels indicate clusters at or above the removal threshold. Right panel: cluster assignments for reference.
+
+```{r plot_dbl_umap_overlay, fig.height = 7, fig.width = 14, results='asis'}
+if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
+  int_dt_pass2[, dbl_prop := as.numeric(dbl_prop)]
+
+  make_dbl_umap <- function(cl_col) {
+    dt <- int_dt_pass2[get(cl_col) != "" & !is.na(get(cl_col)),
+                       .(cell_id, UMAP1, UMAP2, cluster = get(cl_col), dbl_prop)]
+    dt[, UMAP1s := rescale(UMAP1, to = c(0.05, 0.95))]
+    dt[, UMAP2s := rescale(UMAP2, to = c(0.05, 0.95))]
+
+    cl_labs <- dt[, .(
+      mean_dbl = mean(dbl_prop, na.rm = TRUE),
+      lx       = median(UMAP1s),
+      ly       = median(UMAP2s)
+    ), by = cluster]
+    cl_labs[, above := mean_dbl >= dbl_cl_prop]
+    cl_labs[, lab   := sprintf("%s\n%.0f%%", cluster, mean_dbl * 100)]
+
+    dt <- merge(dt, cl_labs[, .(cluster, mean_dbl)], by = "cluster")
+
+    set.seed(42)
+    plot_cells <- dt[sample(.N, min(.N, 200000))][sample(.N, .N)]
+
+    umap_theme <- theme_bw() +
+      theme(panel.grid = element_blank(), aspect.ratio = 1,
+            axis.ticks = element_blank(), axis.text = element_blank())
+
+    g_dbl <- ggplot(plot_cells, aes(x = UMAP1s, y = UMAP2s, colour = mean_dbl)) +
+      geom_point(size = 0.1) +
+      geom_label(
+        data          = cl_labs,
+        aes(x = lx, y = ly, label = lab, fill = above),
+        colour        = "black", size = 1.8, label.size = 0.2,
+        label.padding = unit(0.12, "lines"), inherit.aes = FALSE
+      ) +
+      scale_colour_gradientn(
+        colours = qc_feature_palette,
+        limits  = c(0, dbl_cl_prop), oob = squish,
+        name    = "Mean pass-1\ndoublet prop.",
+        labels  = percent_format(accuracy = 1)
+      ) +
+      scale_fill_manual(values = c("FALSE" = "white", "TRUE" = "#ffd6d6"), guide = "none") +
+      scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      labs(x = "UMAP 1", y = "UMAP 2",
+           caption = sprintf("Red-tinted labels ≥ %.0f%% removal threshold.", dbl_cl_prop * 100)) +
+      umap_theme +
+      theme(legend.title.position = "left", legend.position = "bottom")
+
+    g_cl <- ggplot(plot_cells, aes(x = UMAP1s, y = UMAP2s, colour = cluster)) +
+      geom_point(size = 0.1) +
+      geom_label(
+        data          = cl_labs,
+        aes(x = lx, y = ly, label = cluster),
+        colour        = "black", size = 1.8, label.size = 0.2,
+        label.padding = unit(0.10, "lines"), inherit.aes = FALSE, fill = "white"
+      ) +
+      scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+      labs(x = "UMAP 1", y = "UMAP 2") +
+      umap_theme +
+      theme(legend.position = "none")
+
+    g_dbl + g_cl
+  }
+
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
+    res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    print(make_dbl_umap(cl_col))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("Pass-1 doublet proportion data not available.\n")
+}
+```
+
 ## Doublet proportion per cluster
 
-`dbl_prop` is the pass-1 cluster doublet fraction carried by each cell. For each pass-2 cluster the mean `dbl_prop` of its constituent cells is shown. Clusters flagged as outliers satisfy **both** conditions: IQR outlier (> Q3 + 1.5 × IQR) and mean `dbl_prop` > 15%. The combined criterion prevents spurious flags at higher resolutions where natural spread is wider.
+For each pass-2 cluster the mean `dbl_prop` of its constituent cells is shown. Clusters flagged as outliers satisfy **both** conditions: IQR outlier (> Q3 + 1.5 × IQR) and mean `dbl_prop` > 15%. The combined criterion prevents spurious flags at higher resolutions where natural spread is wider.
 
 ```{r plot_dbl_lollipop, fig.height = 10, fig.width = 10, results='asis'}
 if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
-  int_dt_pass2[, dbl_prop := as.numeric(dbl_prop)]
 
   make_dbl_lollipop <- function(cl_col) {
     dt  <- int_dt_pass2[get(cl_col) != "" & !is.na(get(cl_col)),
@@ -265,7 +348,7 @@ if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
     q1  <- quantile(cl$mean_dbl, 0.25, na.rm = TRUE)
     q3  <- quantile(cl$mean_dbl, 0.75, na.rm = TRUE)
     iqr <- q3 - q1
-    cl[, outlier    := mean_dbl > (q3 + 1.5 * iqr) & mean_dbl > 0.15]
+    cl[, outlier     := mean_dbl > (q3 + 1.5 * iqr) & mean_dbl > 0.15]
     cl[, cluster_ord := reorder(cluster, mean_dbl)]
 
     ggplot(cl, aes(x = mean_dbl, y = cluster_ord)) +
@@ -307,81 +390,6 @@ if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
     res_val <- sub('^leiden_', '', res_val)
     cat("### ", res_val, "\n\n")
     print(make_dbl_lollipop(cl_col))
-    cat("\n\n")
-  }
-  cat(':::\n\n')
-} else {
-  cat("Pass-1 doublet proportion data not available.\n")
-}
-```
-
-## Doublet proportion on UMAP
-
-Each cell is coloured by its pass-1 `dbl_prop`. Labels at cluster centroids show the pass-2 cluster ID and mean `dbl_prop`; red-tinted labels indicate clusters at or above the removal threshold.
-
-```{r plot_dbl_umap_overlay, fig.height = 7, fig.width = 7, results='asis'}
-if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
-  make_dbl_umap <- function(cl_col) {
-    dt <- int_dt_pass2[get(cl_col) != "" & !is.na(get(cl_col)),
-                       .(cell_id, UMAP1, UMAP2,
-                         cluster  = get(cl_col),
-                         dbl_prop)]
-    dt[, UMAP1s := rescale(UMAP1, to = c(0.05, 0.95))]
-    dt[, UMAP2s := rescale(UMAP2, to = c(0.05, 0.95))]
-
-    cl_labs <- dt[, .(
-      mean_dbl = mean(dbl_prop, na.rm = TRUE),
-      lx       = median(UMAP1s),
-      ly       = median(UMAP2s)
-    ), by = cluster]
-    cl_labs[, above := mean_dbl >= dbl_cl_prop]
-    cl_labs[, lab   := sprintf("%s\n%.0f%%", cluster, mean_dbl * 100)]
-
-    set.seed(42)
-    plot_cells <- dt[sample(.N, min(.N, 200000))][sample(.N, .N)]
-
-    ggplot(plot_cells, aes(x = UMAP1s, y = UMAP2s, colour = dbl_prop)) +
-      geom_point(size = 0.1) +
-      geom_label(
-        data          = cl_labs,
-        aes(x = lx, y = ly, label = lab, fill = above),
-        colour        = "black", size = 1.8,
-        label.size    = 0.2,
-        label.padding = unit(0.12, "lines"),
-        inherit.aes   = FALSE
-      ) +
-      scale_colour_gradientn(
-        colours = qc_feature_palette,
-        limits  = c(0, dbl_cl_prop),
-        oob     = squish,
-        name    = "Pass-1\ndoublet prop.",
-        labels  = percent_format(accuracy = 1)
-      ) +
-      scale_fill_manual(
-        values = c("FALSE" = "white", "TRUE" = "#ffd6d6"),
-        guide  = "none"
-      ) +
-      scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
-      scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
-      theme_bw() +
-      theme(panel.grid            = element_blank(),
-            aspect.ratio          = 1,
-            legend.title.position = "left",
-            legend.position       = "bottom",
-            axis.ticks            = element_blank(),
-            axis.text             = element_blank()) +
-      labs(x = "UMAP 1", y = "UMAP 2",
-           caption = sprintf(
-             "Labels: cluster ID / mean pass-1 dbl_prop. Red-tinted ≥ %.0f%% threshold.",
-             dbl_cl_prop * 100))
-  }
-
-  cat('::: {.panel-tabset}\n\n')
-  for (cl_col in present_leiden) {
-    res_val <- sub('^RNA_snn_res\\.', '', cl_col)
-    res_val <- sub('^leiden_', '', res_val)
-    cat("### ", res_val, "\n\n")
-    print(make_dbl_umap(cl_col))
     cat("\n\n")
   }
   cat(':::\n\n')
