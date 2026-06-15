@@ -2,6 +2,7 @@
 # scQC-flow (Nextflow re-implementation of scprocess)
 
 **Based on [scprocess](https://www.biorxiv.org/content/10.64898/2026.03.09.710141v1)**
+
 Full credit for the analytical design, methods, and workflow goes to the scprocess authors.
 scQC-flow is a Nextflow re-implementation of scprocess, adapted for HPC execution.
 Please cite the scprocess publication if you use this pipeline.
