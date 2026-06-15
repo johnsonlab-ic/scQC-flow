@@ -1,6 +1,11 @@
 
 # scQC-flow
 
+> **Based on [scprocess](https://www.biorxiv.org/content/10.64898/2026.03.09.710141v1)**
+> Full credit for the analytical design, methods, and workflow goes to the scprocess authors.
+> scQC-flow is a Nextflow re-implementation of scprocess, adapted for HPC execution.
+> Please cite the scprocess publication if you use this pipeline.
+
 Nextflow DSL2 pipeline for single-cell/single-nucleus RNA-seq mapping, QC, and reporting.
 
 **Features:**
@@ -15,61 +20,6 @@ Nextflow DSL2 pipeline for single-cell/single-nucleus RNA-seq mapping, QC, and r
 - Zoom subsets (re-analysis of cluster subsets)
 - Export to AnnData (.h5ad) or Seurat (.rds)
 - Automated HTML reports collected into a landing page
-
----
-
-## Pipeline DAG (Current)
-
-```mermaid
-flowchart TD
-  A[raw_data_dir sample folders] --> M1[SIMPLEAF_INDEX]
-  A --> M2[SIMPLEAF_QUANT]
-  M1 --> M2
-  M2 --> M3[BARCODE_ESTIMATION<br/>cell calling + knee]
-  A --> SM[SAMPLE_METADATA]
-
-  M3 --> BR[MAPPING_REPORT]
-  M3 --> AM{run_ambient}
-
-  AM -- true --> C[AMBIENT<br/>decontx or cellbender]
-  C --> CR[AMBIENT_REPORT or CELLBENDER_REPORT]
-
-  C --> QF{run_qc}
-  QF -- true --> D[QC]
-  D --> DR[QC_REPORT]
-
-  D --> HF{run_hvg}
-  HF -- true --> E[HVG]
-  E --> ER[HVG_REPORT]
-
-  E --> IF{run_integration}
-  IF -- true --> F[INTEGRATION]
-  F --> FR[INTEGRATION_REPORT]
-
-  F --> AF{run_annotation}
-  AF -- true --> G[ANNOTATION]
-  G --> GR[ANNOTATION_REPORT]
-
-  G --> ZF{zoom.enabled and zoom.items}
-  ZF -- true --> Z[ZOOMS]
-  Z --> ZR[ZOOM_REPORT]
-
-  F --> XF{export != none}
-  XF -- true --> X[EXPORT_SCANPY/EXPORT_SEURAT<br/>plus zoom exports if zooms enabled]
-
-  BR --> RS[REPORT_SITE]
-  CR --> RS
-  DR --> RS
-  ER --> RS
-  FR --> RS
-  GR --> RS
-  ZR --> RS
-```
-
-Notes:
-- Mapping runs in order: `SIMPLEAF_INDEX` -> `SIMPLEAF_QUANT` -> `BARCODE_ESTIMATION` (cell calling) -> mapping report.
-- `SAMPLE_METADATA` runs when `--metadata_csv` is provided.
-- `REPORT_SITE` always runs and collects report pages from whichever stages were enabled.
 
 ---
 
