@@ -566,8 +566,17 @@ workflow {
             ? channel.value(file("${params.outputDir}/pipeline_info/execution_trace_${params.trace_report_suffix}.txt"))
             : channel.value(file("${projectDir}/templates/NO_FILE"))
 
+        // Carry over the upstream pass-1 reports (mapping, cell-calling, qc,
+        // cellsweep) so the pass-2 index shows one report per process; the
+        // downstream hvg/integration/annotation reports are the pass-2 ones.
+        def sp_regenerated = ['hvg_report.html', 'integration_report.html',
+                              'annotation_report.html', 'index.html']
+        def sp_carry_ch = channel
+            .fromPath("${params.second_pass_dir}/reports/*_report*.html")
+            .filter { f -> !(f.name in sp_regenerated) && !f.name.startsWith('annotation_report_') }
+
         REPORT_SITE(
-            SECOND_PASS.out.report_pages.collect(),
+            SECOND_PASS.out.report_pages.mix(sp_carry_ch).collect(),
             channel.value(file("${projectDir}/modules/reports/landing_page.qmd")),
             landingPayload,
             SECOND_PASS.out.integration_dt,
