@@ -8,6 +8,7 @@ include { HVG               } from './workflows/workflows'
 include { INTEGRATION       } from './workflows/workflows'
 include { ANNOTATION        } from './workflows/workflows'
 include { ANNOTATION_METHODS } from './workflows/workflows'
+include { CELLSWEEP_WF      } from './workflows/workflows'
 include { ZOOMS             } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
 include { EXPORT_SCANPY     } from './modules/export/export_sc'
@@ -155,6 +156,9 @@ workflow {
     }
     if (params.run_annotation && !params.run_integration) {
         error "--run_annotation requires --run_integration"
+    }
+    if (params.run_cellsweep && !params.run_integration) {
+        error "--run_cellsweep requires --run_integration (needs cluster labels)"
     }
 
     def rawAnnotationMethods = params.annotation_methods ?: []
@@ -583,6 +587,17 @@ workflow {
                     )
                     landing_integration_ch = INTEGRATION.out.integration_dt
                     report_pages = report_pages.mix(INTEGRATION.out.report)
+
+                    // CellSweep decontamination (post-integration refinement; opt-in)
+                    if (params.run_cellsweep) {
+                        CELLSWEEP_WF(
+                            AMBIENT.out.h5_files,
+                            MAPPING.out.h5_files,
+                            AMBIENT.out.empties,
+                            INTEGRATION.out.integration_dt
+                        )
+                        report_pages = report_pages.mix(CELLSWEEP_WF.out.report)
+                    }
 
                     if (params.run_annotation) {
                         ANNOTATION(

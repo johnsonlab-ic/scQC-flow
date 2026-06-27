@@ -78,6 +78,73 @@ process AMBIENT_REPORT {
     """
 }
 
+process CELL_CALLING_REPORT {
+    label     "process_reports"
+    tag       "cell_calling_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path summary_csvs   // cell_calling_summary_*.csv     — per-sample counts + cuts
+    path label_csvs     // cell_calling_labels_*.csv.gz   — per-barcode posteriors + population
+    path gmm_rds        // cell_calling_gmm_*.rds         — fitted GMM params + cuts
+    path report_qmd     // cell_calling_report.qmd
+
+    output:
+    path "cell_calling_report.html", emit: html
+    path "plots/**",                  optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output cell_calling_report.html
+    """
+}
+
+process EMPTYDROPS_REPORT {
+    label     "process_reports"
+    tag       "emptydrops_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path summary_csvs   // emptydrops_summary_*.csv
+    path label_csvs     // emptydrops_labels_*.csv.gz
+    path report_qmd     // emptydrops_report.qmd
+
+    output:
+    path "emptydrops_report.html", emit: html
+    path "plots/**",               optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output emptydrops_report.html
+    """
+}
+
+process CELLSWEEP_REPORT {
+    label     "process_reports"
+    tag       "cellsweep_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cellsweep", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path alpha_csvs       // <sid>_alpha_hat.csv.gz from CELLSWEEP
+    path integration_dt   // integration_dt.csv.gz (UMAP + clusters)
+    path report_qmd       // cellsweep_report.qmd
+
+    output:
+    path "cellsweep_report.html", emit: html
+    path "plots/**",               optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output cellsweep_report.html
+    """
+}
+
 // ---------------------------------------------------------------------------
 // QC report (one HTML across all samples)
 // ---------------------------------------------------------------------------

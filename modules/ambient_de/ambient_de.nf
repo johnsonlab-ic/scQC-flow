@@ -34,7 +34,8 @@ process AMBIENT_DE {
     input:
     path raw_h5_files      // collected barcode_matrix_*.h5 (uniquely named via STAGE_RAW_H5)
     path knee_csvs         // collected knee_plot_data_*.csv from BARCODE_ESTIMATION
-    path filt_h5_files     // collected filt_counts_*.h5 from DECONTX
+    path filt_h5_files     // collected filt_counts_*.h5 (is_cell matrix) from CELL_CALLING
+    path empty_bc_csvs     // collected empty_barcodes_*.csv (is_empty) from CELL_CALLING
     path genome_gtf        // reference GTF
     path script            // ambient_de.R
 

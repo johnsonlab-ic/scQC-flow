@@ -12,12 +12,22 @@ execute:
   cache: false
 ---
 
+```{=html}
+<style>
+/* keep report figures from rendering oversized */
+.quarto-figure img, .cell-output-display img, p > img, img.img-fluid {
+  max-width: min(100%, 820px);
+  height: auto;
+}
+</style>
+```
+
 This report summarizes decontX ambient RNA correction for each sample, including
 the number of cells retained, the amount of background used for contamination
 estimation, and how read composition changes before and after decontamination.
 
 ```{r setup}
-knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 150)
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 110)
 suppressPackageStartupMessages({
   library(data.table)
   library(magrittr)

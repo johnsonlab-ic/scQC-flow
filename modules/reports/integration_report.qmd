@@ -14,8 +14,18 @@ execute:
   cache: false
 ---
 
+```{=html}
+<style>
+/* keep report figures from rendering oversized */
+.quarto-figure img, .cell-output-display img, p > img, img.img-fluid {
+  max-width: min(100%, 820px);
+  height: auto;
+}
+</style>
+```
+
 ```{r setup}
-knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 150)
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 110)
 source("integration_plots.R")
 
 leiden_res_str    <- Sys.getenv("LEIDEN_RES",    "0.2 0.5 1.0")

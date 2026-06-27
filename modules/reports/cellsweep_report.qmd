@@ -1,0 +1,80 @@
+---
+title: "CellSweep decontamination diagnostics"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{=html}
+<style>.quarto-figure img,.cell-output-display img,img.img-fluid{max-width:min(100%,860px);height:auto}</style>
+```
+
+CellSweep models each barcode's counts as a mixture of **cell-type expression**, **ambient
+contamination** (fraction α̂ per cell), and **bulk contamination** (β), fit by EM. It runs
+**per sample** on the post-QC singlet nuclei (cell type = integration Leiden cluster) plus a
+subsample of `is_empty` barcodes that define the ambient profile. The decontaminated counts
+are written per sample (`<sid>_cellsweep.h5ad`); **α̂** (`obs["alpha_hat"]`) is the per-cell
+ambient fraction shown here. CellSweep does not prescribe an α̂ cutoff — α̂ is a QC metric;
+optionally drop high-α̂ cells (e.g. α̂>0.5) as a post-hoc trim.
+
+```{r setup}
+knitr::opts_chunk$set(fig.path='plots/', dev='png', dpi=110)
+suppressPackageStartupMessages({library(data.table); library(ggplot2); library(patchwork)})
+CT <- "RNA_snn_res.0.5"
+fs <- list.files(".", pattern="_alpha_hat\\.csv\\.gz$", full.names=TRUE)
+al <- rbindlist(lapply(fs, function(f){
+  d <- fread(f); d[, sample_id := sub("_alpha_hat\\.csv\\.gz$","",basename(f))]
+  d[, cell_id := paste(sample_id, barcode, sep="_")]; d}))
+al[, sample := sub("_snRNAseq$","",sub("^LM[0-9]+_","",sample_id))]
+integ <- fread("integration_dt.csv.gz",
+  select=intersect(c("cell_id","UMAP1","UMAP2",CT,"sample_id"),
+                   names(fread("integration_dt.csv.gz", nrows=0))))
+m <- merge(al, integ, by="cell_id", all.x=TRUE, suffixes=c("","_i"))
+```
+
+## α̂ summary by sample
+
+```{r by-sample}
+g <- al[, .(cells=.N, median_alpha=round(median(alpha_hat),3), mean_alpha=round(mean(alpha_hat),3),
+            `frac_>0.3`=round(mean(alpha_hat>0.3),3), `frac_>0.5`=round(mean(alpha_hat>0.5),3)),
+        by=sample][order(sample)]
+knitr::kable(g, caption="Per-sample ambient fraction (alpha_hat). frac_>0.5 = cells mostly ambient.")
+```
+
+## α̂ on the integration UMAP
+
+```{r umap, fig.width=8, fig.height=6}
+o <- m[!is.na(UMAP1)][order(alpha_hat)]
+ggplot(o, aes(UMAP1, UMAP2, colour=alpha_hat)) + geom_point(size=0.4, alpha=0.6) +
+  scale_colour_viridis_c(limits=c(0, quantile(o$alpha_hat,0.99)), name="alpha_hat") +
+  theme_classic(base_size=10) + labs(title="Per-cell ambient fraction on the UMAP")
+```
+
+## α̂ by cluster and by sample
+
+```{r dist, fig.width=11, fig.height=4}
+cl <- m[!is.na(get(CT))]
+p1 <- ggplot(cl, aes(factor(get(CT)), alpha_hat)) + geom_boxplot(outlier.size=0.2, fill="#69b3a2") +
+  theme_classic(base_size=9) + theme(axis.text.x=element_text(angle=90,size=7)) +
+  labs(title="alpha_hat by integration cluster", x="cluster", y="alpha_hat")
+p2 <- ggplot(al, aes(sample, alpha_hat)) + geom_violin(fill="#4477aa", scale="width") +
+  theme_classic(base_size=9) + theme(axis.text.x=element_text(angle=45,hjust=1,size=7)) +
+  labs(title="alpha_hat by sample", x=NULL, y="alpha_hat")
+p1 | p2
+```
+
+## α̂ distribution and candidate thresholds
+
+```{r hist, fig.width=7, fig.height=3.5}
+ggplot(al, aes(alpha_hat)) + geom_histogram(bins=60, fill="#4477aa") +
+  geom_vline(xintercept=c(0.3,0.5), linetype="dashed", colour="red") +
+  theme_classic(base_size=9) +
+  labs(title=sprintf("alpha_hat (all cells); >0.3: %.1f%%  >0.5: %.1f%%",
+       100*mean(al$alpha_hat>0.3), 100*mean(al$alpha_hat>0.5)), x="alpha_hat", y="cells")
+```

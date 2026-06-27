@@ -8,6 +8,12 @@ include { DECONTX           } from '../modules/ambient/ambient.nf'
 include { CELLBENDER        } from '../modules/ambient/ambient.nf'
 include { AMBIENT_REPORT    } from '../modules/reports/reports.nf'
 include { CELLBENDER_REPORT } from '../modules/reports/reports.nf'
+include { CELL_CALLING      } from '../modules/cell_calling/cell_calling.nf'
+include { CELL_CALLING_REPORT } from '../modules/reports/reports.nf'
+include { EMPTYDROPS_CALLING } from '../modules/emptydrops/emptydrops.nf'
+include { EMPTYDROPS_REPORT } from '../modules/reports/reports.nf'
+include { CELLSWEEP         } from '../modules/cellsweep/cellsweep.nf'
+include { CELLSWEEP_REPORT  } from '../modules/reports/reports.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
 include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
 include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
@@ -140,12 +146,15 @@ workflow MAPPING {
 }
 
 // =============================================================================
-// AMBIENT
+// AMBIENT  (dev-cellsweep: cell calling, no ambient removal)
 //
-// H5 + knee CSV -> {decontX | CellBender} -> ambient report
+// H5 + knee CSV -> CELL_CALLING (splice-aware GMM + guardrails) -> report
 //
-// Both methods consume the same raw H5 + knee CSV inputs from MAPPING and
-// emit filtered H5 matrices under the same filename contract.
+// decontX/CellBender are dropped on this branch: cells flow downstream
+// UNCORRECTED (CellSweep decontamination is evaluated post-hoc). CELL_CALLING
+// emits the is_cell matrix under the same filt_counts_<id>.h5 filename contract
+// the QC/HVG stages already expect, plus the is_empty barcode set used to build
+// the ambient profile for AMBIENT_DE (and, later, CellSweep).
 // =============================================================================
 
 workflow AMBIENT {
@@ -156,49 +165,37 @@ workflow AMBIENT {
 
     main:
 
-    def ambientMethod = (params.ambient_method ?: 'decontx').toString().trim().toLowerCase()
-    if (!(ambientMethod in ['decontx', 'cellbender'])) {
-        error "Unsupported --ambient_method '${ambientMethod}'. Use one of: decontx, cellbender"
-    }
-
     joined_input = h5_ch.join(knee_ch)   // tuple(sampleId, h5, knee_csv)
 
-    def ambient_h5_files
-    def ambient_barcodes
-    def ambient_report
-
-    if (ambientMethod == 'cellbender') {
-        CELLBENDER(
-            joined_input,
-            channel.value(file("${projectDir}/modules/ambient/cellbender_postprocess.py"))
+    if (params.cell_caller == 'emptydrops') {
+        EMPTYDROPS_CALLING(
+            h5_ch,
+            channel.value(file("${projectDir}/modules/emptydrops/emptydrops_calling.R"))
         )
-
-        CELLBENDER_REPORT(
-            CELLBENDER.out.summaries.map { _id, csv -> csv }.collect(),
-            CELLBENDER.out.labels.map { _id, csv -> csv }.collect(),
-            channel.value(file("${projectDir}/modules/reports/cellbender_report.qmd"))
+        EMPTYDROPS_REPORT(
+            EMPTYDROPS_CALLING.out.summaries.map { _id, csv -> csv }.collect(),
+            EMPTYDROPS_CALLING.out.labels.map    { _id, csv -> csv }.collect(),
+            channel.value(file("${projectDir}/modules/reports/emptydrops_report.qmd"))
         )
-
-        ambient_h5_files = CELLBENDER.out.h5_files
-        ambient_barcodes = CELLBENDER.out.barcodes
-        ambient_report = CELLBENDER_REPORT.out.html
+        cc_h5       = EMPTYDROPS_CALLING.out.h5_files
+        cc_barcodes = EMPTYDROPS_CALLING.out.barcodes
+        cc_empties  = EMPTYDROPS_CALLING.out.empties
+        cc_report   = EMPTYDROPS_REPORT.out.html
     } else {
-        DECONTX(
+        CELL_CALLING(
             joined_input,
-            channel.value(file("${projectDir}/modules/ambient/decontx.R"))
+            channel.value(file("${projectDir}/modules/cell_calling/cell_calling.R"))
         )
-
-        AMBIENT_REPORT(
-            DECONTX.out.qc_metrics.map { _id, csv -> csv }.collect(),
-            DECONTX.out.barcodes.map   { _id, csv -> csv }.collect(),
-            DECONTX.out.dcx_params.map { _id, csv -> csv }.collect(),
-            DECONTX.out.summaries.map  { _id, csv -> csv }.collect(),
-            channel.value(file("${projectDir}/modules/reports/ambient_report.qmd"))
+        CELL_CALLING_REPORT(
+            CELL_CALLING.out.summaries.map { _id, csv -> csv }.collect(),
+            CELL_CALLING.out.labels.map    { _id, csv -> csv }.collect(),
+            CELL_CALLING.out.gmm.map       { _id, rds -> rds }.collect(),
+            channel.value(file("${projectDir}/modules/reports/cell_calling_report.qmd"))
         )
-
-        ambient_h5_files = DECONTX.out.h5_files
-        ambient_barcodes = DECONTX.out.barcodes
-        ambient_report = AMBIENT_REPORT.out.html
+        cc_h5       = CELL_CALLING.out.h5_files
+        cc_barcodes = CELL_CALLING.out.barcodes
+        cc_empties  = CELL_CALLING.out.empties
+        cc_report   = CELL_CALLING_REPORT.out.html
     }
 
     STAGE_RAW_H5(h5_ch)
@@ -206,17 +203,57 @@ workflow AMBIENT {
     AMBIENT_DE_PROC(
         STAGE_RAW_H5.out.h5.collect(),
         knee_ch.map { _id, csv -> csv }.collect(),
-        ambient_h5_files.map { _id, h5 -> h5 }.collect(),
+        cc_h5.map      { _id, h5 -> h5 }.collect(),
+        cc_empties.map { _id, csv -> csv }.collect(),
         channel.value(file(params.genome_gtf)),
         channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
     )
 
     emit:
-    h5_files   = ambient_h5_files
-    barcodes   = ambient_barcodes
-    report     = ambient_report
+    h5_files   = cc_h5
+    barcodes   = cc_barcodes
+    empties    = cc_empties
+    report     = cc_report
     de_table   = AMBIENT_DE_PROC.out.de_table
     pb_empties = AMBIENT_DE_PROC.out.pb_empties
+}
+
+// =============================================================================
+// CELLSWEEP  (post-annotation decontamination refinement)
+//
+// Per sample: is_cell counts + raw H5 (for the is_empty ambient profile) +
+// integration cluster labels -> CellSweep EM -> decontaminated counts + alpha_hat.
+// Runs after INTEGRATION (needs cluster labels). See modules/cellsweep/.
+// =============================================================================
+
+workflow CELLSWEEP_WF {
+
+    take:
+    filt_ch        // tuple(sampleId, filt_counts.h5)  from AMBIENT.h5_files
+    raw_ch         // tuple(sampleId, af_counts_mat.h5) from MAPPING.h5_files
+    empties_ch     // tuple(sampleId, empty_barcodes.csv) from AMBIENT.empties
+    integration_dt // path integration_dt.csv.gz       from INTEGRATION
+
+    main:
+    int_v   = integration_dt.first()                     // value channel, reused per sample
+    in_ch   = filt_ch.join(raw_ch).join(empties_ch)      // tuple(sid, filt, raw, empty)
+
+    CELLSWEEP(
+        in_ch,
+        int_v,
+        channel.value(file("${projectDir}/modules/cellsweep/cellsweep_run_sample.py"))
+    )
+
+    CELLSWEEP_REPORT(
+        CELLSWEEP.out.alpha.map { _id, f -> f }.collect(),
+        int_v,
+        channel.value(file("${projectDir}/modules/reports/cellsweep_report.qmd"))
+    )
+
+    emit:
+    alpha  = CELLSWEEP.out.alpha
+    h5ad   = CELLSWEEP.out.h5ad
+    report = CELLSWEEP_REPORT.out.html
 }
 
 // =============================================================================
