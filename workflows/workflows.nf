@@ -14,6 +14,7 @@ include { EMPTYDROPS_CALLING } from '../modules/emptydrops/emptydrops.nf'
 include { EMPTYDROPS_REPORT } from '../modules/reports/reports.nf'
 include { CELLSWEEP         } from '../modules/cellsweep/cellsweep.nf'
 include { CELLSWEEP_REPORT  } from '../modules/reports/reports.nf'
+include { CELLSWEEP_TO_H5   } from '../modules/second_pass/second_pass.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
 include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
 include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
@@ -656,4 +657,76 @@ workflow ZOOMS {
     emit:
     report = ZOOM_REPORT.out.html
     zoom_int = RUN_ZOOM_INTEGRATION.out.zoom_int
+}
+
+// =============================================================================
+// SECOND_PASS  (re-run HVG -> integration -> annotation on CellSweep-corrected
+// counts; cells already QC-passed singlets with alpha_hat<alpha_max). Reuses the
+// existing downstream processes/subworkflows via a corrected-count adapter.
+// =============================================================================
+
+workflow SECOND_PASS {
+
+    take:
+    adapter_in_ch      // tuple(sampleId, <sid>_cellsweep.h5ad, pass1 qc_metrics csv)
+    de_table           // path edger_dt.csv.gz  (pass-1; HVG report diagnostic only)
+    pb_empties         // path pb_empties.rds   (pass-1; HVG report diagnostic only)
+    annotation_methods // normalized annotation method specs
+
+    main:
+
+    CELLSWEEP_TO_H5(
+        adapter_in_ch,
+        channel.value(file("${projectDir}/modules/second_pass/cellsweep_to_h5.py"))
+    )
+
+    cc_h5   = CELLSWEEP_TO_H5.out.h5_files
+    cc_qc   = CELLSWEEP_TO_H5.out.qc_metrics
+    no_file = channel.value(file("${projectDir}/templates/NO_FILE"))
+
+    HVG_SELECTION(
+        cc_h5.map { _id, h5 -> h5 }.collect(),
+        cc_qc.map { _id, csv -> csv }.collect(),
+        channel.value(file(params.genome_gtf)),
+        no_file,                      // no ambient-gene exclusion: counts already corrected
+        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
+    )
+
+    HVG_REPORT(
+        HVG_SELECTION.out.hvg_stats,
+        de_table,                     // pass-1 ambient genes vs pass-2 HVGs (diagnostic)
+        pb_empties,
+        channel.value(file("${projectDir}/modules/reports/hvg_report.qmd")),
+        channel.value(file("${projectDir}/modules/hvg/hvg_plots.R"))
+    )
+
+    RUN_INTEGRATION(
+        HVG_SELECTION.out.hvg_counts,
+        HVG_SELECTION.out.dbl_hvg_counts,
+        cc_qc.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
+    )
+
+    INTEGRATION_REPORT(
+        RUN_INTEGRATION.out.integration_dt,
+        RUN_INTEGRATION.out.dbl_sweep,
+        cc_qc.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/integration_report.qmd")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
+    )
+
+    report_pages = HVG_REPORT.out.html.mix(INTEGRATION_REPORT.out.html)
+
+    if (params.run_annotation) {
+        ANNOTATION(cc_h5, RUN_INTEGRATION.out.integration_dt)
+        report_pages = report_pages.mix(ANNOTATION.out.report)
+    }
+    if (annotation_methods) {
+        ANNOTATION_METHODS(cc_h5, RUN_INTEGRATION.out.integration_dt, annotation_methods)
+        report_pages = report_pages.mix(ANNOTATION_METHODS.out.report)
+    }
+
+    emit:
+    report_pages   = report_pages
+    integration_dt = RUN_INTEGRATION.out.integration_dt
 }

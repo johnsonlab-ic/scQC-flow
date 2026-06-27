@@ -9,6 +9,7 @@ include { INTEGRATION       } from './workflows/workflows'
 include { ANNOTATION        } from './workflows/workflows'
 include { ANNOTATION_METHODS } from './workflows/workflows'
 include { CELLSWEEP_WF      } from './workflows/workflows'
+include { SECOND_PASS       } from './workflows/workflows'
 include { ZOOMS             } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
 include { EXPORT_SCANPY     } from './modules/export/export_sc'
@@ -538,6 +539,45 @@ workflow {
         sample_metadata_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     }
 
+    // ==================================================================
+    // SECOND-PASS MODE: skip mapping..cellsweep; re-run HVG -> integration
+    // -> annotation on the CellSweep-corrected counts from a finished pass-1.
+    // ==================================================================
+    if (params.mode == 'second_pass') {
+        if (!params.second_pass_dir) {
+            error "--second_pass_dir (a finished pass-1 outputDir) is required when --mode second_pass"
+        }
+        def sp_h5ad_ch = channel
+            .fromPath("${params.second_pass_dir}/cellsweep/*_cellsweep.h5ad")
+            .map { f -> tuple(f.getName().replaceAll('_cellsweep\\.h5ad$', ''), f) }
+        def sp_qc_ch = channel
+            .fromPath("${params.second_pass_dir}/qc/apply_qc/*/qc_metrics_*.csv.gz")
+            .map { f -> tuple(f.getName().replaceAll('^qc_metrics_', '').replaceAll('\\.csv\\.gz$', ''), f) }
+        def sp_adapter_ch = sp_h5ad_ch.join(sp_qc_ch)
+
+        SECOND_PASS(
+            sp_adapter_ch,
+            channel.value(file("${params.second_pass_dir}/ambient/ambient_de/edger_dt.csv.gz")),
+            channel.value(file("${params.second_pass_dir}/ambient/ambient_de/pb_empties.rds")),
+            normalizedAnnotationMethods
+        )
+
+        def sp_trace_ch = params.containsKey('trace_report_suffix')
+            ? channel.value(file("${params.outputDir}/pipeline_info/execution_trace_${params.trace_report_suffix}.txt"))
+            : channel.value(file("${projectDir}/templates/NO_FILE"))
+
+        REPORT_SITE(
+            SECOND_PASS.out.report_pages.collect(),
+            channel.value(file("${projectDir}/modules/reports/landing_page.qmd")),
+            landingPayload,
+            SECOND_PASS.out.integration_dt,
+            channel.value(file("${projectDir}/modules/reports/build_report_site.py")),
+            channel.value(file("${projectDir}/modules/reports/site.css")),
+            channel.value(file("${projectDir}/modules/reports/site.js")),
+            sp_trace_ch
+        )
+    } else {
+
     // ------------------------------------------------------------------
     // 1. Mapping (always runs)
     // ------------------------------------------------------------------
@@ -724,4 +764,5 @@ workflow {
         channel.value(file("${projectDir}/modules/reports/site.js")),
         traceFileCh
     )
+    }  // end full-pipeline (mode != second_pass)
 }
