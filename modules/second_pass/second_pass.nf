@@ -4,6 +4,7 @@
 process CELLSWEEP_TO_H5 {
     label     "process_medium"
     tag       "$sampleId"
+    cache     'lenient'   // inputs are pass-1 published symlinks; ignore timestamps so -resume hits
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/corrected_counts", mode: params.publish_mode_nonreport, overwrite: true
 
@@ -27,5 +28,24 @@ process CELLSWEEP_TO_H5 {
       --alpha_max ${params.cell_calling_alpha_max} \\
       --out_h5 filt_counts_${sampleId}.h5 \\
       --out_qc qc_metrics_${sampleId}.csv.gz
+    """
+}
+
+// Rename a pass-2 downstream report to a *_pass2.html so it sits alongside the
+// (carried-over) pass-1 report of the same stage in the combined report site.
+process LABEL_PASS2_REPORT {
+    label     "process_low"
+    tag       "${report.baseName}"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+
+    input:
+    path report
+
+    output:
+    path "${report.baseName}_pass2.html", emit: html
+
+    script:
+    """
+    cp "${report}" "${report.baseName}_pass2.html"
     """
 }

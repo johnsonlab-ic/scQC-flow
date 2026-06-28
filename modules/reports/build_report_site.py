@@ -8,7 +8,8 @@ import shutil
 from pathlib import Path
 
 
-STAGE_ORDER = ["mapping", "ambient", "qc", "hvg", "integration", "annotation", "zoom", "other"]
+STAGE_ORDER = ["mapping", "ambient", "qc", "hvg", "integration", "annotation", "cellsweep",
+               "hvg2", "integration2", "annotation2", "zoom", "other"]
 
 STAGE_LABELS = {
     "overview": "Overview",
@@ -18,6 +19,10 @@ STAGE_LABELS = {
     "hvg": "HVG",
     "integration": "Integration",
     "annotation": "Annotation",
+    "cellsweep": "CellSweep",
+    "hvg2": "HVG (post-CellSweep)",
+    "integration2": "Integration (post-CellSweep)",
+    "annotation2": "Annotation (post-CellSweep)",
     "zoom": "Zoom",
     "other": "Other",
 }
@@ -57,6 +62,36 @@ KNOWN_REPORTS = {
         "title": "Annotation diagnostics",
         "stage": "annotation",
         "blurb": "Marker-panel matching, cluster labels, and marker expression views.",
+    },
+    "emptydrops_report.html": {
+        "title": "Cell calling (EmptyDrops)",
+        "stage": "ambient",
+        "blurb": "DropletUtils emptyDrops cell calling: cells vs empty droplets per sample.",
+    },
+    "cell_calling_report.html": {
+        "title": "Cell calling (GMM)",
+        "stage": "ambient",
+        "blurb": "Splice-aware GMM cell calling: nuclei/ambient/damaged populations per sample.",
+    },
+    "cellsweep_report.html": {
+        "title": "CellSweep decontamination",
+        "stage": "cellsweep",
+        "blurb": "Ambient-fraction (alpha_hat) estimates per cell and per cluster from the EM denoiser.",
+    },
+    "hvg_report_pass2.html": {
+        "title": "HVG selection (post-CellSweep)",
+        "stage": "hvg2",
+        "blurb": "Second-pass HVG selection on CellSweep-corrected counts.",
+    },
+    "integration_report_pass2.html": {
+        "title": "Integration diagnostics (post-CellSweep)",
+        "stage": "integration2",
+        "blurb": "Second-pass Harmony integration and clustering on CellSweep-corrected counts.",
+    },
+    "annotation_report_pass2.html": {
+        "title": "Annotation diagnostics (post-CellSweep)",
+        "stage": "annotation2",
+        "blurb": "Second-pass marker-panel annotation on CellSweep-corrected counts.",
     },
     "index.html": {
         "title": "Run overview",
@@ -106,6 +141,9 @@ def pretty_report_name(file_name):
     known = KNOWN_REPORTS.get(file_name)
     if known:
         return known["title"]
+    if file_name.startswith("annotation_report_") and file_name.endswith("_pass2.html"):
+        method_name = file_name[len("annotation_report_"):-len("_pass2.html")]
+        return f"Annotation: {pretty_method_name(method_name)} (post-CellSweep)"
     if file_name.startswith("annotation_report_") and file_name.endswith(".html"):
         method_name = file_name[len("annotation_report_"):-len(".html")]
         return f"Annotation: {pretty_method_name(method_name)}"
@@ -119,6 +157,8 @@ def report_stage(file_name):
     known = KNOWN_REPORTS.get(file_name)
     if known:
         return known["stage"]
+    if file_name.startswith("annotation_report_") and file_name.endswith("_pass2.html"):
+        return "annotation2"
     if file_name.startswith("annotation_report_") and file_name.endswith(".html"):
         return "annotation"
     if file_name.startswith("zoom_"):
@@ -130,6 +170,8 @@ def report_blurb(file_name):
     known = KNOWN_REPORTS.get(file_name)
     if known:
         return known["blurb"]
+    if file_name.startswith("annotation_report_") and file_name.endswith("_pass2.html"):
+        return "Second-pass per-method annotation on CellSweep-corrected counts."
     if file_name.startswith("annotation_report_") and file_name.endswith(".html"):
         return "Per-method annotation diagnostics, prediction confidence summaries, and cluster-level label agreement views."
     if file_name.startswith("zoom_"):

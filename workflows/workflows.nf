@@ -15,6 +15,7 @@ include { EMPTYDROPS_REPORT } from '../modules/reports/reports.nf'
 include { CELLSWEEP         } from '../modules/cellsweep/cellsweep.nf'
 include { CELLSWEEP_REPORT  } from '../modules/reports/reports.nf'
 include { CELLSWEEP_TO_H5   } from '../modules/second_pass/second_pass.nf'
+include { LABEL_PASS2_REPORT } from '../modules/second_pass/second_pass.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
 include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
 include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
@@ -715,18 +716,22 @@ workflow SECOND_PASS {
         channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
     )
 
-    report_pages = HVG_REPORT.out.html.mix(INTEGRATION_REPORT.out.html)
+    pass2_reports = HVG_REPORT.out.html.mix(INTEGRATION_REPORT.out.html)
 
     if (params.run_annotation) {
         ANNOTATION(cc_h5, RUN_INTEGRATION.out.integration_dt)
-        report_pages = report_pages.mix(ANNOTATION.out.report)
+        pass2_reports = pass2_reports.mix(ANNOTATION.out.report)
     }
     if (annotation_methods) {
         ANNOTATION_METHODS(cc_h5, RUN_INTEGRATION.out.integration_dt, annotation_methods)
-        report_pages = report_pages.mix(ANNOTATION_METHODS.out.report)
+        pass2_reports = pass2_reports.mix(ANNOTATION_METHODS.out.report)
     }
 
+    // tag the pass-2 downstream reports as *_pass2 so they coexist with the
+    // carried-over pass-1 reports of the same stage in the combined site
+    LABEL_PASS2_REPORT(pass2_reports)
+
     emit:
-    report_pages   = report_pages
+    report_pages   = LABEL_PASS2_REPORT.out.html
     integration_dt = RUN_INTEGRATION.out.integration_dt
 }
