@@ -14,6 +14,7 @@ process CELLSWEEP {
     input:
     tuple val(sampleId), path(filt_h5), path(raw_h5), path(empty_csv)
     path  integration_dt
+    path  cluster_annotation_csv
     path  script
 
     output:
@@ -36,6 +37,7 @@ process CELLSWEEP {
       --raw_h5 ${raw_h5} \\
       --empty_barcodes ${empty_csv} \\
       --integration_dt ${integration_dt} \\
+      --cluster_annotation_csv ${cluster_annotation_csv} \\
       --out_dir . \\
       --n_empties ${n_emp} \\
       --celltype_col ${ctcol} \\

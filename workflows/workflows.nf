@@ -14,8 +14,6 @@ include { EMPTYDROPS_CALLING } from '../modules/emptydrops/emptydrops.nf'
 include { EMPTYDROPS_REPORT } from '../modules/reports/reports.nf'
 include { CELLSWEEP         } from '../modules/cellsweep/cellsweep.nf'
 include { CELLSWEEP_REPORT  } from '../modules/reports/reports.nf'
-include { CELLSWEEP_TO_H5   } from '../modules/second_pass/second_pass.nf'
-include { LABEL_PASS2_REPORT } from '../modules/second_pass/second_pass.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
 include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
 include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
@@ -235,14 +233,17 @@ workflow CELLSWEEP_WF {
     raw_ch         // tuple(sampleId, af_counts_mat.h5) from MAPPING.h5_files
     empties_ch     // tuple(sampleId, empty_barcodes.csv) from AMBIENT.empties
     integration_dt // path integration_dt.csv.gz       from INTEGRATION
+    cluster_ann    // path xgboost cluster summary csv  from ANNOTATION_METHODS
 
     main:
     int_v   = integration_dt.first()                     // value channel, reused per sample
+    ann_v   = cluster_ann.first()                        // value channel, reused per sample
     in_ch   = filt_ch.join(raw_ch).join(empties_ch)      // tuple(sid, filt, raw, empty)
 
     CELLSWEEP(
         in_ch,
         int_v,
+        ann_v,
         channel.value(file("${projectDir}/modules/cellsweep/cellsweep_run_sample.py"))
     )
 
@@ -576,6 +577,7 @@ workflow ANNOTATION_METHODS {
     emit:
     cell_labels = COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result.map { _id, _spec_b64, cells_csv, _cluster_csv, _export_csv -> cells_csv }
     export_metadata = COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result.map { _id, _spec_b64, _cells_csv, _cluster_csv, export_csv -> export_csv }
+    cluster_summary = COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result.map { _id, _spec_b64, _cells_csv, cluster_csv, _export_csv -> cluster_csv }
     report = ANNOTATION_METHOD_REPORT.out.html
 }
 
@@ -658,80 +660,4 @@ workflow ZOOMS {
     emit:
     report = ZOOM_REPORT.out.html
     zoom_int = RUN_ZOOM_INTEGRATION.out.zoom_int
-}
-
-// =============================================================================
-// SECOND_PASS  (re-run HVG -> integration -> annotation on CellSweep-corrected
-// counts; cells already QC-passed singlets with alpha_hat<alpha_max). Reuses the
-// existing downstream processes/subworkflows via a corrected-count adapter.
-// =============================================================================
-
-workflow SECOND_PASS {
-
-    take:
-    adapter_in_ch      // tuple(sampleId, <sid>_cellsweep.h5ad, pass1 qc_metrics csv)
-    de_table           // path edger_dt.csv.gz  (pass-1; HVG report diagnostic only)
-    pb_empties         // path pb_empties.rds   (pass-1; HVG report diagnostic only)
-    annotation_methods // normalized annotation method specs
-
-    main:
-
-    CELLSWEEP_TO_H5(
-        adapter_in_ch,
-        channel.value(file("${projectDir}/modules/second_pass/cellsweep_to_h5.py"))
-    )
-
-    cc_h5   = CELLSWEEP_TO_H5.out.h5_files
-    cc_qc   = CELLSWEEP_TO_H5.out.qc_metrics
-    no_file = channel.value(file("${projectDir}/templates/NO_FILE"))
-
-    HVG_SELECTION(
-        cc_h5.map { _id, h5 -> h5 }.collect(),
-        cc_qc.map { _id, csv -> csv }.collect(),
-        channel.value(file(params.genome_gtf)),
-        no_file,                      // no ambient-gene exclusion: counts already corrected
-        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
-    )
-
-    HVG_REPORT(
-        HVG_SELECTION.out.hvg_stats,
-        de_table,                     // pass-1 ambient genes vs pass-2 HVGs (diagnostic)
-        pb_empties,
-        channel.value(file("${projectDir}/modules/reports/hvg_report.qmd")),
-        channel.value(file("${projectDir}/modules/hvg/hvg_plots.R"))
-    )
-
-    RUN_INTEGRATION(
-        HVG_SELECTION.out.hvg_counts,
-        HVG_SELECTION.out.dbl_hvg_counts,
-        cc_qc.map { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
-    )
-
-    INTEGRATION_REPORT(
-        RUN_INTEGRATION.out.integration_dt,
-        RUN_INTEGRATION.out.dbl_sweep,
-        cc_qc.map { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/reports/integration_report.qmd")),
-        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
-    )
-
-    pass2_reports = HVG_REPORT.out.html.mix(INTEGRATION_REPORT.out.html)
-
-    if (params.run_annotation) {
-        ANNOTATION(cc_h5, RUN_INTEGRATION.out.integration_dt)
-        pass2_reports = pass2_reports.mix(ANNOTATION.out.report)
-    }
-    if (annotation_methods) {
-        ANNOTATION_METHODS(cc_h5, RUN_INTEGRATION.out.integration_dt, annotation_methods)
-        pass2_reports = pass2_reports.mix(ANNOTATION_METHODS.out.report)
-    }
-
-    // tag the pass-2 downstream reports as *_pass2 so they coexist with the
-    // carried-over pass-1 reports of the same stage in the combined site
-    LABEL_PASS2_REPORT(pass2_reports)
-
-    emit:
-    report_pages   = LABEL_PASS2_REPORT.out.html
-    integration_dt = RUN_INTEGRATION.out.integration_dt
 }

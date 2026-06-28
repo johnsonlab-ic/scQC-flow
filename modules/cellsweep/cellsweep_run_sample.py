@@ -45,7 +45,11 @@ def main():
     p.add_argument("--integration_dt", required=True)
     p.add_argument("--out_dir", required=True)
     p.add_argument("--n_empties", type=int, default=30000)
-    p.add_argument("--celltype_col", default="RNA_snn_res.0.5")
+    p.add_argument("--celltype_col", default="RNA_snn_res.0.5",
+                   help="integration cluster column whose xgboost cluster-level label is the CellSweep celltype")
+    p.add_argument("--cluster_annotation_csv", required=True,
+                   help="xgboost cluster summary (cols: cluster_col, cluster, top_label); "
+                        "celltype = top_label of each cell's --celltype_col cluster")
     p.add_argument("--keep_h5ad", action="store_true",
                    help="keep the (large) decontaminated h5ad; default drops it, keeps alpha_hat CSV")
     a = p.parse_args()
@@ -53,15 +57,24 @@ def main():
     sid = a.sample_id
     print(f"== CellSweep: {sid} ==", flush=True)
 
-    # --- cells: post-QC singlet nuclei from integration, celltype = Leiden cluster ---
+    # --- cells: post-QC singlet nuclei from integration; celltype = xgboost
+    #     cluster-level annotation (each cell's Leiden cluster -> its top_label) ---
+    ann = pd.read_csv(a.cluster_annotation_csv)
+    ann = ann[ann["cluster_col"].astype(str) == a.celltype_col]
+    cl2lab = dict(zip(ann["cluster"].astype(str), ann["top_label"].astype(str)))
+    if not cl2lab:
+        raise SystemExit(f"no cluster labels for cluster_col={a.celltype_col} in {a.cluster_annotation_csv}")
+
     integ = pd.read_csv(a.integration_dt)
     integ = integ[integ["sample_id"] == sid].copy()
     if "is_dbl" in integ.columns:
         integ = integ[integ["is_dbl"] != True]
     integ["barcode"] = integ["cell_id"].str.replace(f"^{re.escape(sid)}_", "", regex=True)
     integ = integ[integ[a.celltype_col].notna() & (integ[a.celltype_col].astype(str) != "")]
-    ct = dict(zip(integ["barcode"], integ[a.celltype_col].astype(str)))
-    print(f"  integration singlet cells: {len(ct)}", flush=True)
+    integ["__celltype"] = integ[a.celltype_col].astype(str).map(cl2lab)
+    integ = integ[integ["__celltype"].notna()]
+    ct = dict(zip(integ["barcode"], integ["__celltype"]))
+    print(f"  integration singlet cells: {len(ct)}; celltypes: {sorted(set(ct.values()))}", flush=True)
 
     X, bc, genes = load_sua(a.filt_h5)
     keep = np.array([b in ct for b in bc])

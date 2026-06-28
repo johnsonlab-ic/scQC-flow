@@ -9,8 +9,20 @@ include { INTEGRATION       } from './workflows/workflows'
 include { ANNOTATION        } from './workflows/workflows'
 include { ANNOTATION_METHODS } from './workflows/workflows'
 include { CELLSWEEP_WF      } from './workflows/workflows'
-include { SECOND_PASS       } from './workflows/workflows'
 include { ZOOMS             } from './workflows/workflows'
+
+// Second-pass (post-CellSweep) re-runs HVG -> integration -> annotation on the
+// corrected counts. Aliased so they are distinct process instances from pass 1
+// (a process can be invoked only once per run); publishDir for the *_P2 aliases
+// is redirected to outputDir/pass2/* via withName selectors in nextflow.config.
+include { CELLSWEEP_TO_H5    } from './modules/second_pass/second_pass.nf'
+include { LABEL_PASS2_REPORT } from './modules/second_pass/second_pass.nf'
+include { HVG_SELECTION as HVG_SELECTION_P2 } from './modules/hvg/hvg.nf'
+include { HVG_REPORT as HVG_REPORT_P2 } from './modules/reports/reports.nf'
+include { RUN_INTEGRATION as RUN_INTEGRATION_P2 } from './modules/integration/integration.nf'
+include { INTEGRATION_REPORT as INTEGRATION_REPORT_P2 } from './modules/reports/reports.nf'
+include { ANNOTATION as ANNOTATION_P2 } from './workflows/workflows'
+include { ANNOTATION_METHODS as ANNOTATION_METHODS_P2 } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
 include { EXPORT_SCANPY     } from './modules/export/export_sc'
 include { EXPORT_SEURAT     } from './modules/export/export_sc'
@@ -94,6 +106,81 @@ def helpMessage() {
             --chemistry       3v4 \\
             --outputDir       results/
     """
+}
+
+// =============================================================================
+// SECOND_PASS — re-run HVG -> integration -> annotation on CellSweep-corrected
+// counts (QC singlets with alpha_hat < cell_calling_alpha_max). Uses the *_P2
+// aliased components so it runs in the same pipeline run as pass 1.
+// =============================================================================
+workflow SECOND_PASS {
+
+    take:
+    adapter_in_ch      // tuple(sampleId, <sid>_cellsweep.h5ad, pass1 qc_metrics csv)
+    de_table           // path edger_dt.csv.gz  (pass-1; HVG report diagnostic only)
+    pb_empties         // path pb_empties.rds   (pass-1; HVG report diagnostic only)
+    annotation_methods // normalized annotation method specs
+
+    main:
+
+    CELLSWEEP_TO_H5(
+        adapter_in_ch,
+        channel.value(file("${projectDir}/modules/second_pass/cellsweep_to_h5.py"))
+    )
+
+    cc_h5   = CELLSWEEP_TO_H5.out.h5_files
+    cc_qc   = CELLSWEEP_TO_H5.out.qc_metrics
+    no_file = channel.value(file("${projectDir}/templates/NO_FILE"))
+
+    HVG_SELECTION_P2(
+        cc_h5.map { _id, h5 -> h5 }.collect(),
+        cc_qc.map { _id, csv -> csv }.collect(),
+        channel.value(file(params.genome_gtf)),
+        no_file,                      // no ambient-gene exclusion: counts already corrected
+        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
+    )
+
+    HVG_REPORT_P2(
+        HVG_SELECTION_P2.out.hvg_stats,
+        de_table,                     // pass-1 ambient genes vs pass-2 HVGs (diagnostic)
+        pb_empties,
+        channel.value(file("${projectDir}/modules/reports/hvg_report.qmd")),
+        channel.value(file("${projectDir}/modules/hvg/hvg_plots.R"))
+    )
+
+    RUN_INTEGRATION_P2(
+        HVG_SELECTION_P2.out.hvg_counts,
+        HVG_SELECTION_P2.out.dbl_hvg_counts,
+        cc_qc.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
+    )
+
+    INTEGRATION_REPORT_P2(
+        RUN_INTEGRATION_P2.out.integration_dt,
+        RUN_INTEGRATION_P2.out.dbl_sweep,
+        cc_qc.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/integration_report.qmd")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
+    )
+
+    pass2_reports = HVG_REPORT_P2.out.html.mix(INTEGRATION_REPORT_P2.out.html)
+
+    if (params.run_annotation) {
+        ANNOTATION_P2(cc_h5, RUN_INTEGRATION_P2.out.integration_dt)
+        pass2_reports = pass2_reports.mix(ANNOTATION_P2.out.report)
+    }
+    if (annotation_methods) {
+        ANNOTATION_METHODS_P2(cc_h5, RUN_INTEGRATION_P2.out.integration_dt, annotation_methods)
+        pass2_reports = pass2_reports.mix(ANNOTATION_METHODS_P2.out.report)
+    }
+
+    // tag the pass-2 downstream reports as *_pass2 so they coexist with the
+    // pass-1 reports of the same stage in the combined report site
+    LABEL_PASS2_REPORT(pass2_reports)
+
+    emit:
+    report_pages   = LABEL_PASS2_REPORT.out.html
+    integration_dt = RUN_INTEGRATION_P2.out.integration_dt
 }
 
 // =============================================================================
@@ -236,6 +323,9 @@ workflow {
     def annotationMethodIds = normalizedAnnotationMethods.collect { spec -> spec.id }
     if (annotationMethodIds.toSet().size() != annotationMethodIds.size()) {
         error "Annotation method ids must be unique: ${annotationMethodIds}"
+    }
+    if (params.run_cellsweep && !normalizedAnnotationMethods) {
+        error "--run_cellsweep requires an xgboost annotation method (CellSweep groups cells by cluster-level xgboost labels). Configure params.annotation_methods."
     }
     if (normalizedAnnotationMethods && !params.run_integration) {
         error "params.annotation_methods requires --run_integration"
@@ -539,53 +629,6 @@ workflow {
         sample_metadata_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
     }
 
-    // ==================================================================
-    // SECOND-PASS MODE: skip mapping..cellsweep; re-run HVG -> integration
-    // -> annotation on the CellSweep-corrected counts from a finished pass-1.
-    // ==================================================================
-    if (params.mode == 'second_pass') {
-        if (!params.second_pass_dir) {
-            error "--second_pass_dir (a finished pass-1 outputDir) is required when --mode second_pass"
-        }
-        def sp_h5ad_ch = channel
-            .fromPath("${params.second_pass_dir}/cellsweep/*_cellsweep.h5ad")
-            .map { f -> tuple(f.getName().replaceAll('_cellsweep\\.h5ad$', ''), f) }
-        def sp_qc_ch = channel
-            .fromPath("${params.second_pass_dir}/qc/apply_qc/*/qc_metrics_*.csv.gz")
-            .map { f -> tuple(f.getName().replaceAll('^qc_metrics_', '').replaceAll('\\.csv\\.gz$', ''), f) }
-        def sp_adapter_ch = sp_h5ad_ch.join(sp_qc_ch)
-
-        SECOND_PASS(
-            sp_adapter_ch,
-            channel.value(file("${params.second_pass_dir}/ambient/ambient_de/edger_dt.csv.gz")),
-            channel.value(file("${params.second_pass_dir}/ambient/ambient_de/pb_empties.rds")),
-            normalizedAnnotationMethods
-        )
-
-        def sp_trace_ch = params.containsKey('trace_report_suffix')
-            ? channel.value(file("${params.outputDir}/pipeline_info/execution_trace_${params.trace_report_suffix}.txt"))
-            : channel.value(file("${projectDir}/templates/NO_FILE"))
-
-        // Carry over ALL pass-1 reports (mapping, cell-calling, qc, hvg,
-        // integration, annotation, cellsweep). The pass-2 downstream reports are
-        // renamed *_pass2 in SECOND_PASS, so both passes coexist in the site:
-        // mapping, calling, qc, [pass1] hvg/integration/annotation, cellsweep,
-        // [pass2] hvg/integration/annotation.
-        def sp_carry_ch = channel
-            .fromPath("${params.second_pass_dir}/reports/*_report*.html")
-
-        REPORT_SITE(
-            SECOND_PASS.out.report_pages.mix(sp_carry_ch).collect(),
-            channel.value(file("${projectDir}/modules/reports/landing_page.qmd")),
-            landingPayload,
-            SECOND_PASS.out.integration_dt,
-            channel.value(file("${projectDir}/modules/reports/build_report_site.py")),
-            channel.value(file("${projectDir}/modules/reports/site.css")),
-            channel.value(file("${projectDir}/modules/reports/site.js")),
-            sp_trace_ch
-        )
-    } else {
-
     // ------------------------------------------------------------------
     // 1. Mapping (always runs)
     // ------------------------------------------------------------------
@@ -636,17 +679,6 @@ workflow {
                     landing_integration_ch = INTEGRATION.out.integration_dt
                     report_pages = report_pages.mix(INTEGRATION.out.report)
 
-                    // CellSweep decontamination (post-integration refinement; opt-in)
-                    if (params.run_cellsweep) {
-                        CELLSWEEP_WF(
-                            AMBIENT.out.h5_files,
-                            MAPPING.out.h5_files,
-                            AMBIENT.out.empties,
-                            INTEGRATION.out.integration_dt
-                        )
-                        report_pages = report_pages.mix(CELLSWEEP_WF.out.report)
-                    }
-
                     if (params.run_annotation) {
                         ANNOTATION(
                             AMBIENT.out.h5_files,
@@ -668,6 +700,28 @@ workflow {
                         annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION_METHODS.out.export_metadata)
                         hasAnnotationExportMetadata = true
                         report_pages = report_pages.mix(ANNOTATION_METHODS.out.report)
+                    }
+
+                    // CellSweep decontamination — groups cells by xgboost cluster-
+                    // level labels (requires annotation_methods), then a SECOND PASS
+                    // re-runs HVG -> integration -> annotation on the corrected counts.
+                    if (params.run_cellsweep) {
+                        CELLSWEEP_WF(
+                            AMBIENT.out.h5_files,
+                            MAPPING.out.h5_files,
+                            AMBIENT.out.empties,
+                            INTEGRATION.out.integration_dt,
+                            ANNOTATION_METHODS.out.cluster_summary
+                        )
+                        report_pages = report_pages.mix(CELLSWEEP_WF.out.report)
+
+                        SECOND_PASS(
+                            CELLSWEEP_WF.out.h5ad.join(QC.out.qc_metrics),
+                            AMBIENT.out.de_table,
+                            AMBIENT.out.pb_empties,
+                            normalizedAnnotationMethods
+                        )
+                        report_pages = report_pages.mix(SECOND_PASS.out.report_pages)
                     }
 
                     def annotation_export_input_ch = hasAnnotationExportMetadata
@@ -772,5 +826,4 @@ workflow {
         channel.value(file("${projectDir}/modules/reports/site.js")),
         traceFileCh
     )
-    }  // end full-pipeline (mode != second_pass)
 }
