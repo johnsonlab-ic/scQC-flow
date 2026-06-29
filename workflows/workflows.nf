@@ -12,6 +12,8 @@ include { CELL_CALLING      } from '../modules/cell_calling/cell_calling.nf'
 include { CELL_CALLING_REPORT } from '../modules/reports/reports.nf'
 include { EMPTYDROPS_CALLING } from '../modules/emptydrops/emptydrops.nf'
 include { EMPTYDROPS_REPORT } from '../modules/reports/reports.nf'
+include { KNEE_CALLING      } from '../modules/knee/knee.nf'
+include { KNEE_REPORT       } from '../modules/reports/reports.nf'
 include { CELLSWEEP         } from '../modules/cellsweep/cellsweep.nf'
 include { CELLSWEEP_REPORT  } from '../modules/reports/reports.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
@@ -181,6 +183,20 @@ workflow AMBIENT {
         cc_barcodes = EMPTYDROPS_CALLING.out.barcodes
         cc_empties  = EMPTYDROPS_CALLING.out.empties
         cc_report   = EMPTYDROPS_REPORT.out.html
+    } else if (params.cell_caller == 'knee') {
+        KNEE_CALLING(
+            joined_input,
+            channel.value(file("${projectDir}/modules/knee/knee_calling.R"))
+        )
+        KNEE_REPORT(
+            KNEE_CALLING.out.summaries.map { _id, csv -> csv }.collect(),
+            KNEE_CALLING.out.labels.map    { _id, csv -> csv }.collect(),
+            channel.value(file("${projectDir}/modules/reports/knee_report.qmd"))
+        )
+        cc_h5       = KNEE_CALLING.out.h5_files
+        cc_barcodes = KNEE_CALLING.out.barcodes
+        cc_empties  = KNEE_CALLING.out.empties
+        cc_report   = KNEE_REPORT.out.html
     } else {
         CELL_CALLING(
             joined_input,

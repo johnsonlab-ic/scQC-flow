@@ -101,6 +101,28 @@ process CELL_CALLING_REPORT {
     """
 }
 
+process KNEE_REPORT {
+    label     "process_reports"
+    tag       "knee_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path summary_csvs   // knee_summary_*.csv
+    path label_csvs     // knee_labels_*.csv.gz
+    path report_qmd     // knee_report.qmd
+
+    output:
+    path "knee_report.html", emit: html
+    path "plots/**",         optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output knee_report.html
+    """
+}
+
 process EMPTYDROPS_REPORT {
     label     "process_reports"
     tag       "emptydrops_report"

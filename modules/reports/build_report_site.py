@@ -73,6 +73,11 @@ KNOWN_REPORTS = {
         "stage": "ambient",
         "blurb": "Splice-aware GMM cell calling: nuclei/ambient/damaged populations per sample.",
     },
+    "knee_report.html": {
+        "title": "Cell calling (knee/shin)",
+        "stage": "ambient",
+        "blurb": "Classic barcode-rank cell calling (decontX-style selection): top expected_cells by rank.",
+    },
     "cellsweep_report.html": {
         "title": "CellSweep decontamination",
         "stage": "cellsweep",
