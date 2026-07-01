@@ -57,7 +57,7 @@ mad_nmads  <- as.numeric(Sys.getenv("QC_MAD_NMADS", "3.0"))
 qc_files <- Sys.glob("qc_metrics_*.csv.gz")
 stopifnot("No qc_metrics CSV files found" = length(qc_files) > 0)
 
-qc_dt <- rbindlist(lapply(qc_files, fread))
+qc_dt <- rbindlist(lapply(qc_files, fread), fill = TRUE)
 setnames(qc_dt, "sample_id", "batch_var")
 
 # All cells entering QC — used for pre-QC plots, scatter plots, and N pre-QC in summary
