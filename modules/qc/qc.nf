@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 process DOUBLET_DETECTION {
-    label     "process_high"
+    label     "process_dblfinder"
     tag       "$sampleId"
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
     publishDir "${params.outputDir}/qc/doublet_detection/${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
@@ -28,6 +28,11 @@ process DOUBLET_DETECTION {
     script:
     """
     set -euo pipefail
+
+    export OMP_NUM_THREADS=4
+    export OPENBLAS_NUM_THREADS=4
+    export MKL_NUM_THREADS=4
+    export OMP_THREAD_LIMIT=4
 
     Rscript ${script} \
         "${sampleId}" \

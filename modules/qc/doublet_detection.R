@@ -16,7 +16,14 @@ suppressPackageStartupMessages({
   library(SingleCellExperiment)
   library(scDblFinder)
   library(strex)
+  library(BiocParallel)
 })
+
+# Container isn't CPU-capped (docker --cpu-shares, not --cpus), so
+# scDblFinder's default parallel backend can see the host's full core
+# count and over-subscribe when several samples run concurrently.
+# Cap workers to what this process is actually allocated.
+register(MulticoreParam(workers = 4))
 
 # ---------------------------------------------------------------------------
 # Read H5 (stacked S+U+A)
@@ -136,7 +143,8 @@ run_doublet_detection <- function() {
     dbl_mat   <- counts_mat[, dbl_cells, drop = FALSE]
     dbl_sce   <- SingleCellExperiment(assays = list(counts = dbl_mat))
     dbl_res   <- scDblFinder(dbl_sce, returnType = "table",
-                             multiSampleMode = "singleModel", verbose = FALSE)
+                             multiSampleMode = "singleModel", verbose = FALSE,
+                             BPPARAM = MulticoreParam(workers = 4))
     dbl_dt    <- as.data.table(dbl_res, keep.rownames = "cell_id")
     dbl_dt    <- dbl_dt[type == "real"]
     dbl_dt[, sample_id := sample_id]
