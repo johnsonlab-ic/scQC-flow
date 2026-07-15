@@ -1,0 +1,204 @@
+---
+title: "Per-sample annotation (workflow_improvement.md step 4)"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{=html}
+<style>
+.quarto-figure img, .cell-output-display img, p > img, img.img-fluid {
+  max-width: min(100%, 820px);
+  height: auto;
+}
+</style>
+```
+
+Per-sample normalize -> HVG -> PCA -> Leiden(`r Sys.getenv("ANNOTATION_CLUSTER_COL")`) ->
+xgboost cluster-level annotation, run independently per sample (no cross-sample
+integration/Harmony). Reuses the exact pipeline scripts (`hvg_selection.py`,
+`run_integration.py --singlet_only`, `prepare_annotation_query.R`,
+`run_xgboost_reference_annotation.R`) and report styling (`plot_umap_cluster`, `nice_cols`,
+`plot_qc_metric_scatter`, `plot_qc_split_violin`) as the rest of the pipeline.
+
+```{r setup}
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 110)
+suppressPackageStartupMessages({library(data.table); library(ggplot2)})
+source("integration_plots.R")
+source("qc_plots.R")
+setDTthreads(1)
+
+method_id <- Sys.getenv("ANNOTATION_METHOD_ID")
+
+cells_fs <- list.files(".", pattern = sprintf("^annotation_cells_%s_.+\\.csv\\.gz$", method_id), full.names = TRUE)
+names(cells_fs) <- sub(sprintf("^annotation_cells_%s_(.+)\\.csv\\.gz$", method_id), "\\1", basename(cells_fs))
+summ_fs <- list.files(".", pattern = sprintf("^annotation_cluster_summary_%s_.+\\.csv\\.gz$", method_id), full.names = TRUE)
+names(summ_fs) <- sub(sprintf("^annotation_cluster_summary_%s_(.+)\\.csv\\.gz$", method_id), "\\1", basename(summ_fs))
+qc_fs <- list.files(".", pattern = "^qc_metrics_.+\\.csv\\.gz$", full.names = TRUE)
+names(qc_fs) <- sub("\\.csv\\.gz$", "", sub("^qc_metrics_", "", basename(qc_fs)))
+
+sids <- sort(Reduce(intersect, list(names(cells_fs), names(summ_fs), names(qc_fs))))
+
+method_label <- toupper(substr(method_id, 1, 1)) %>% paste0(substr(method_id, 2, nchar(method_id)))
+
+qc_names <- c("n_cells", "log_counts", "log_feats", "logit_mito", "logit_spliced")
+qc_lu    <- setNames(c("no. of cells", "no. of UMIs", "no. of genes", "mito. pct.", "spliced pct."), qc_names)
+hard_min_counts <- as.numeric(Sys.getenv("HARD_MIN_COUNTS", "200"))
+hard_min_feats  <- as.numeric(Sys.getenv("HARD_MIN_FEATS", "100"))
+hard_max_mito   <- as.numeric(Sys.getenv("HARD_MAX_MITO", "0.5"))
+min_counts <- as.numeric(Sys.getenv("MIN_COUNTS", "500"))
+min_feats  <- as.numeric(Sys.getenv("MIN_FEATS", "300"))
+max_mito   <- as.numeric(Sys.getenv("MAX_MITO", "0.2"))
+min_mito   <- as.numeric(Sys.getenv("MIN_MITO", "0"))
+max_splice <- as.numeric(Sys.getenv("MAX_SPLICE", "0.6"))
+min_splice <- as.numeric(Sys.getenv("MIN_SPLICE", "0"))
+
+cuts_dt      <- make_cuts_dt(sids, min_counts, min_feats, min_mito, max_mito, min_splice, max_splice)
+hard_cuts_dt <- make_hard_cuts_dt(sids, hard_min_counts, hard_min_feats, hard_max_mito)
+
+# Per-sample data, loaded once up front and reused across all sections
+load_sample <- function(sid) {
+  qc_all_dt <- fread(qc_fs[[sid]])
+  setnames(qc_all_dt, "sample_id", "batch_var")
+  list(
+    int_dt    = fread(cells_fs[[sid]]),
+    m_summ    = fread(summ_fs[[sid]]),
+    qc_all_dt = qc_all_dt,
+    kept_dt   = qc_all_dt[keep == TRUE]
+  )
+}
+sample_data <- setNames(lapply(sids, load_sample), sids)
+```
+
+```{r pca_plot_fn}
+# Same styling as plot_umap_cluster, applied to PC1/PC2 instead of UMAP1/UMAP2
+plot_pca_cluster <- function(dt) {
+  pdt <- copy(dt)[, .(cell_id, UMAP1 = pca_01, UMAP2 = pca_02)]
+  plot_umap_cluster(pdt, dt[, .(cell_id, cluster)], name = "cluster") +
+    labs(x = "PC1", y = "PC2")
+}
+```
+
+## QC metrics
+
+Per-sample distributions (vertical violin, pre-QC vs post-QC per metric)
+shown first so the effect of filtering on each metric is visible directly.
+Dashed lines mark the soft thresholds, dotted lines the hard thresholds (see
+legend). Same thresholds as the pipeline's `qc_report`.
+
+```{r results='asis', fig.height=4, fig.width=9}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  cat("### ", sid, "\n\n")
+  d <- sample_data[[sid]]
+  suppressWarnings(print(
+    plot_qc_split_violin(d$qc_all_dt, sid, qc_names, qc_lu, cuts_dt, hard_cuts_dt = hard_cuts_dt)
+  ))
+  cat("\n\n")
+}
+cat(":::\n\n")
+```
+
+Reasons cells were removed (UpSet plot of overlapping exclusion criteria:
+doublet, hard threshold, soft threshold per metric, MAD-adaptive filter per
+metric). Tabs are omitted for samples with nothing excluded.
+
+```{r results='asis', fig.height=4, fig.width=7}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  d <- sample_data[[sid]]
+  qc_tmp <- d$qc_all_dt
+  if (nrow(qc_tmp) <= 1 || sum(qc_tmp$keep) == nrow(qc_tmp)) next
+  cat("### ", sid, "\n\n")
+  suppressMessages(print(plot_upset_of_exclusions(qc_tmp, qc_names, qc_lu, cuts_dt)))
+  cat("\n\n")
+}
+cat(":::\n\n")
+```
+
+## QC density plots
+
+Pairwise relationships between QC metrics at individual cell level (grey = soft
+threshold pass zone).
+
+```{r results='asis', fig.height=6, fig.width=8}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  cat("### ", sid, "\n\n")
+  d <- sample_data[[sid]]
+  print(plot_qc_metric_scatter(d$qc_all_dt, qc_names, qc_lu, cuts_dt[batch_var == sid], sid))
+  cat("\n\n")
+}
+cat(":::\n\n")
+```
+
+## PCA
+
+```{r results='asis'}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  cat("### ", sid, "\n\n")
+  print(plot_pca_cluster(sample_data[[sid]]$int_dt))
+  cat("\n\n")
+}
+cat(":::\n\n")
+```
+
+```{r results='asis'}
+cat(sprintf("## Annotation (%s)\n\n", method_label))
+```
+
+Cell label (left) and cluster (right) over the same per-sample UMAP -- both shown
+together since the cluster identity is already visible alongside the label.
+
+```{r results='asis'}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  cat("### ", sid, "\n\n")
+  d <- sample_data[[sid]]
+  g_lab <- plot_umap_cluster(
+    d$int_dt[, .(cell_id, UMAP1, UMAP2)],
+    d$int_dt[, .(cell_id, cluster = label, centroid_group = as.character(label), centroid_label = as.character(label))],
+    name = "cell label"
+  ) + theme(legend.position = "none")
+  g_clu <- plot_umap_cluster(
+    d$int_dt[, .(cell_id, UMAP1, UMAP2)],
+    d$int_dt[, .(cell_id, cluster)],
+    name = "cluster"
+  ) + theme(legend.position = "none")
+  print(g_lab + g_clu)
+  cat(sprintf("\n\n%d cells, %d clusters.\n\n", nrow(d$int_dt), uniqueN(d$int_dt$cluster)))
+}
+cat(":::\n\n")
+```
+
+## Cells annotated
+
+Cluster-level annotation summary (top label + mean prediction score per cluster).
+
+```{r results='asis'}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  cat("### ", sid, "\n\n")
+  print(knitr::kable(sample_data[[sid]]$m_summ[order(cluster)],
+                      caption = sprintf("%s cluster summary", method_label)))
+  cat("\n\n")
+}
+cat(":::\n\n")
+```
+
+## Session info
+
+<details>
+```{r session_info}
+sessionInfo()
+```
+</details>

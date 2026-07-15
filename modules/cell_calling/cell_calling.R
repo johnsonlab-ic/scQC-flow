@@ -50,6 +50,7 @@ DAMAGED_CAP   <- 0.70
 TAU           <- 0.80     # max posterior below this => ambiguous (fringe)
 SUB_CAP       <- 60000L   # barcodes used to FIT the GMM (scoring uses all candidates)
 MIN_SEED      <- 50L      # drop a GMM component if its seed quadrant is smaller
+GMM_PRIOR_DOF <- 2000     # strength of the covariance-regularising prior (see fit below)
 
 # Seed quadrants — EM INITIALISATION ONLY (anchors component identity) ----------
 # TWO-component scheme: the GMM separates only ambient vs nuclei (2 ellipses).
@@ -115,12 +116,42 @@ run_cell_calling <- function() {
   d2seed <- sapply(seq_len(G), function(j) (Xfit[, 1] - sm[j, 1])^2 + (Xfit[, 2] - sm[j, 2])^2)
   z_init <- matrix(0, nrow(Xfit), G)
   z_init[cbind(seq_len(nrow(Xfit)), max.col(-d2seed))] <- 1
-  fit <- me(modelName = "VVV", data = Xfit, z = z_init)
+  # Conjugate (inverse-Wishart) prior on the component covariances. An unconstrained
+  # VVV fit lets the nuclei ellipse balloon on quality-heterogeneous samples (splice-
+  # axis sd ~0.7 vs ~0.3 on clean ones), which (a) spuriously collapses the ambient/
+  # nuclei separability metric even when the component means are well separated and
+  # (b) over-calls nuclei. The prior shrinks covariances toward
+  # diag(0.3^2 log10-UMI, 0.4^2 logit-splice); dof sets its strength (weak vs the ~60k
+  # fit points, but enough to rein in the broad nuclei cloud). Clean samples are
+  # essentially unchanged; degraded samples get tighter, more conservative nuclei calls.
+  gmm_prior <- priorControl(scale = diag(c(0.09, 0.16)) * GMM_PRIOR_DOF,
+                            dof = GMM_PRIOR_DOF, shrinkage = 0)
+  fit <- me(modelName = "VVV", data = Xfit, z = z_init, prior = gmm_prior)
   if (is.null(fit$parameters$mean)) stop("GMM EM failed")
   par <- fit$parameters
   for (j in seq_len(G))
     message(sprintf("  %-8s x=%.2f y=%.2f pi=%.3f",
                     use_pops[j], par$mean[1, j], par$mean[2, j], par$pro[j]))
+
+  # --- Separability of ambient vs nuclei (sample-quality signal) --------------
+  # Bhattacharyya distance between the two fitted 2-D Gaussians; higher = better
+  # separated. Collapses on degraded/soup-dominated samples (see dev/cellcalling).
+  .bhattacharyya <- function(mu1, S1, mu2, S2) {
+    dmu <- mu1 - mu2
+    S   <- (S1 + S2) / 2
+    0.125 * as.numeric(t(dmu) %*% solve(S) %*% dmu) +
+      0.5 * log(det(S) / sqrt(det(S1) * det(S2)))
+  }
+  sep_bhatt <- NA_real_; sep_splice_gap <- NA_real_; sep_umi_gap <- NA_real_
+  ai <- match("ambient", use_pops); ni <- match("nuclei", use_pops)
+  if (!is.na(ai) && !is.na(ni)) {
+    sep_bhatt      <- .bhattacharyya(par$mean[, ai], par$variance$sigma[, , ai],
+                                     par$mean[, ni], par$variance$sigma[, , ni])
+    sep_splice_gap <- abs(par$mean[2, ai] - par$mean[2, ni])   # logit-splice axis
+    sep_umi_gap    <- abs(par$mean[1, ai] - par$mean[1, ni])   # log10-UMI axis
+    message(sprintf("  separability: bhattacharyya=%.3f splice_gap=%.3f umi_gap=%.3f",
+                    sep_bhatt, sep_splice_gap, sep_umi_gap))
+  }
 
   # Score ALL candidates analytically -----------------------------------------
   Xall <- as.matrix(cand[, .(x, y)])
@@ -207,6 +238,9 @@ run_cell_calling <- function() {
     n_is_empty = sum(dt$is_empty), n_is_cell = sum(dt$is_cell),
     cell_floor_umi = as.integer(round(cell_floor)),
     damaged_splice_cut = round(damaged_cut, 4),
+    bhattacharyya = round(sep_bhatt, 3),
+    splice_gap_logit = round(sep_splice_gap, 3),
+    umi_gap_log10 = round(sep_umi_gap, 3),
     include_damaged_in_empty = include_damaged, gmm_G = G,
     gmm_components = paste(use_pops, collapse = "|"))
   fwrite(summ, sprintf("cell_calling_summary_%s.csv", sample_id))
@@ -220,7 +254,9 @@ run_cell_calling <- function() {
   writeLines(c(
     sprintf("CC_N_CELL=%d", sum(dt$is_cell)),
     sprintf("CC_N_EMPTY=%d", sum(dt$is_empty)),
-    sprintf("CC_DAMAGED_SPLICE_CUT=%.4f", damaged_cut)),
+    sprintf("CC_DAMAGED_SPLICE_CUT=%.4f", damaged_cut),
+    sprintf("CC_BHATTACHARYYA=%.4f", sep_bhatt),
+    sprintf("CC_SPLICE_GAP=%.4f", sep_splice_gap)),
     sprintf("cell_calling_%s.env", sample_id))
   message("Done: ", sample_id)
 }

@@ -8,21 +8,9 @@ include { HVG               } from './workflows/workflows'
 include { INTEGRATION       } from './workflows/workflows'
 include { ANNOTATION        } from './workflows/workflows'
 include { ANNOTATION_METHODS } from './workflows/workflows'
+include { PER_SAMPLE_ANNOTATION_WF } from './workflows/workflows'
 include { CELLSWEEP_WF      } from './workflows/workflows'
 include { ZOOMS             } from './workflows/workflows'
-
-// Second-pass (post-CellSweep) re-runs HVG -> integration -> annotation on the
-// corrected counts. Aliased so they are distinct process instances from pass 1
-// (a process can be invoked only once per run); publishDir for the *_P2 aliases
-// is redirected to outputDir/pass2/* via withName selectors in nextflow.config.
-include { CELLSWEEP_TO_H5    } from './modules/second_pass/second_pass.nf'
-include { LABEL_PASS2_REPORT } from './modules/second_pass/second_pass.nf'
-include { HVG_SELECTION as HVG_SELECTION_P2 } from './modules/hvg/hvg.nf'
-include { HVG_REPORT as HVG_REPORT_P2 } from './modules/reports/reports.nf'
-include { RUN_INTEGRATION as RUN_INTEGRATION_P2 } from './modules/integration/integration.nf'
-include { INTEGRATION_REPORT as INTEGRATION_REPORT_P2 } from './modules/reports/reports.nf'
-include { ANNOTATION as ANNOTATION_P2 } from './workflows/workflows'
-include { ANNOTATION_METHODS as ANNOTATION_METHODS_P2 } from './workflows/workflows'
 include { REPORT_SITE       } from './modules/reports/reports'
 include { EXPORT_SCANPY     } from './modules/export/export_sc'
 include { EXPORT_SEURAT     } from './modules/export/export_sc'
@@ -60,9 +48,14 @@ def helpMessage() {
                             Publish large simpleaf mapping directories to
                             outputDir/mapping (default: false)
         --run_ambient       Run ambient RNA cleanup stage (default: true)
-        --ambient_method    Ambient method (default: decontx). Accepted: decontx, cellbender
-        --cellbender_env_name Preinstalled conda env name used to run CellBender (default: cellbender)
-        --cellbender_mig_device MIG UUID for CellBender GPU slice (e.g. MIG-xxxx); empty = auto-detect
+        --ambient_method    Ambient method (default: none). Accepted: none, cellsweep
+                            'cellsweep' runs a per-sample normalize->HVG->PCA->Leiden->
+                            XGBoost annotation pass ahead of pooling, then per-sample
+                            CellSweep decontamination, before the single shared
+                            HVG/integration/annotation pass.
+        --cellsweep_annotation_method_id  Which params.annotation_methods entry (engine:
+                            xgboost) supplies per-sample cell-type labels for CellSweep.
+                            Defaults to the sole configured xgboost method if omitted.
         --run_qc            Run cell-level QC (default: true; requires --run_ambient)
         --run_hvg           Run HVG selection (default: true; requires --run_qc)
         --run_integration   Run Harmony integration (default: true; requires --run_hvg)
@@ -106,81 +99,6 @@ def helpMessage() {
             --chemistry       3v4 \\
             --outputDir       results/
     """
-}
-
-// =============================================================================
-// SECOND_PASS — re-run HVG -> integration -> annotation on CellSweep-corrected
-// counts (QC singlets with alpha_hat < cell_calling_alpha_max). Uses the *_P2
-// aliased components so it runs in the same pipeline run as pass 1.
-// =============================================================================
-workflow SECOND_PASS {
-
-    take:
-    adapter_in_ch      // tuple(sampleId, <sid>_cellsweep.h5ad, pass1 qc_metrics csv)
-    de_table           // path edger_dt.csv.gz  (pass-1; HVG report diagnostic only)
-    pb_empties         // path pb_empties.rds   (pass-1; HVG report diagnostic only)
-    annotation_methods // normalized annotation method specs
-
-    main:
-
-    CELLSWEEP_TO_H5(
-        adapter_in_ch,
-        channel.value(file("${projectDir}/modules/second_pass/cellsweep_to_h5.py"))
-    )
-
-    cc_h5   = CELLSWEEP_TO_H5.out.h5_files
-    cc_qc   = CELLSWEEP_TO_H5.out.qc_metrics
-    no_file = channel.value(file("${projectDir}/templates/NO_FILE"))
-
-    HVG_SELECTION_P2(
-        cc_h5.map { _id, h5 -> h5 }.collect(),
-        cc_qc.map { _id, csv -> csv }.collect(),
-        channel.value(file(params.genome_gtf)),
-        no_file,                      // no ambient-gene exclusion: counts already corrected
-        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
-    )
-
-    HVG_REPORT_P2(
-        HVG_SELECTION_P2.out.hvg_stats,
-        de_table,                     // pass-1 ambient genes vs pass-2 HVGs (diagnostic)
-        pb_empties,
-        channel.value(file("${projectDir}/modules/reports/hvg_report.qmd")),
-        channel.value(file("${projectDir}/modules/hvg/hvg_plots.R"))
-    )
-
-    RUN_INTEGRATION_P2(
-        HVG_SELECTION_P2.out.hvg_counts,
-        HVG_SELECTION_P2.out.dbl_hvg_counts,
-        cc_qc.map { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
-    )
-
-    INTEGRATION_REPORT_P2(
-        RUN_INTEGRATION_P2.out.integration_dt,
-        RUN_INTEGRATION_P2.out.dbl_sweep,
-        cc_qc.map { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/reports/integration_report.qmd")),
-        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
-    )
-
-    pass2_reports = HVG_REPORT_P2.out.html.mix(INTEGRATION_REPORT_P2.out.html)
-
-    if (params.run_annotation) {
-        ANNOTATION_P2(cc_h5, RUN_INTEGRATION_P2.out.integration_dt)
-        pass2_reports = pass2_reports.mix(ANNOTATION_P2.out.report)
-    }
-    if (annotation_methods) {
-        ANNOTATION_METHODS_P2(cc_h5, RUN_INTEGRATION_P2.out.integration_dt, annotation_methods)
-        pass2_reports = pass2_reports.mix(ANNOTATION_METHODS_P2.out.report)
-    }
-
-    // tag the pass-2 downstream reports as *_pass2 so they coexist with the
-    // pass-1 reports of the same stage in the combined report site
-    LABEL_PASS2_REPORT(pass2_reports)
-
-    emit:
-    report_pages   = LABEL_PASS2_REPORT.out.html
-    integration_dt = RUN_INTEGRATION_P2.out.integration_dt
 }
 
 // =============================================================================
@@ -229,9 +147,9 @@ workflow {
     if (params.run_annotation && !params.annotation_marker_csv) {
         error "--annotation_marker_csv is required when --run_annotation is true"
     }
-    def ambientMethod = (params.ambient_method ?: 'decontx').toString().trim().toLowerCase()
-    if (!(ambientMethod in ['decontx', 'cellbender'])) {
-        error "--ambient_method must be one of: decontx, cellbender"
+    def ambientMethod = (params.ambient_method ?: 'none').toString().trim().toLowerCase()
+    if (!(ambientMethod in ['none', 'cellsweep'])) {
+        error "--ambient_method must be one of: none, cellsweep"
     }
     if (params.run_qc && !params.run_ambient) {
         error "--run_qc requires --run_ambient"
@@ -245,8 +163,8 @@ workflow {
     if (params.run_annotation && !params.run_integration) {
         error "--run_annotation requires --run_integration"
     }
-    if (params.run_cellsweep && !params.run_integration) {
-        error "--run_cellsweep requires --run_integration (needs cluster labels)"
+    if (ambientMethod == 'cellsweep' && !params.run_integration) {
+        error "--ambient_method cellsweep requires --run_integration"
     }
 
     def rawAnnotationMethods = params.annotation_methods ?: []
@@ -324,11 +242,28 @@ workflow {
     if (annotationMethodIds.toSet().size() != annotationMethodIds.size()) {
         error "Annotation method ids must be unique: ${annotationMethodIds}"
     }
-    if (params.run_cellsweep && !normalizedAnnotationMethods) {
-        error "--run_cellsweep requires an xgboost annotation method (CellSweep groups cells by cluster-level xgboost labels). Configure params.annotation_methods."
-    }
     if (normalizedAnnotationMethods && !params.run_integration) {
         error "params.annotation_methods requires --run_integration"
+    }
+
+    // Resolve which xgboost annotation_methods entry feeds PER_SAMPLE_ANNOTATION_WF /
+    // CellSweep's per-cell "celltype" grouping, with its cluster_col pinned to
+    // cellsweep_celltype_col (the per-sample Leiden resolution).
+    def cellsweepXgbSpec = null
+    if (ambientMethod == 'cellsweep') {
+        def xgbMethods = normalizedAnnotationMethods.findAll { spec -> spec.engine == 'xgboost' }
+        def requestedId = (params.cellsweep_annotation_method_id ?: '').toString().trim()
+        if (requestedId) {
+            cellsweepXgbSpec = xgbMethods.find { spec -> spec.id == requestedId }
+            if (!cellsweepXgbSpec) {
+                error "--cellsweep_annotation_method_id '${requestedId}' does not match any xgboost entry in params.annotation_methods"
+            }
+        } else if (xgbMethods.size() == 1) {
+            cellsweepXgbSpec = xgbMethods[0]
+        } else {
+            error "--ambient_method cellsweep requires exactly one xgboost annotation_methods entry, or --cellsweep_annotation_method_id to disambiguate (found: ${xgbMethods.collect { spec -> spec.id }})"
+        }
+        cellsweepXgbSpec = cellsweepXgbSpec + [cluster_col: params.cellsweep_celltype_col]
     }
 
     def exportMode = (params.export ?: 'none').toString().trim().toLowerCase()
@@ -412,8 +347,6 @@ workflow {
 
             def integrationLeidenRaw = rawSpec.integration_leiden_res ?: zoomConfig.default_integration_leiden_res ?: params.integration_leiden_res
             def integrationLeiden = integrationLeidenRaw instanceof Collection ? integrationLeidenRaw.collect { value -> value.toString() }.join(' ') : integrationLeidenRaw.toString()
-            def integrationLeidenVals = integrationLeiden.tokenize(' ').findAll { value -> value?.trim() }
-            def finestIntegrationRes = integrationLeidenVals ? integrationLeidenVals.max { a, b -> (new BigDecimal(a)) <=> (new BigDecimal(b)) } : '0.5'
 
             def normalizedSpec = [
                 name: zoomName,
@@ -427,7 +360,7 @@ workflow {
                 integration_dbl_res: (rawSpec.integration_dbl_res ?: zoomConfig.default_integration_dbl_res ?: params.integration_dbl_res) as BigDecimal,
                 integration_dbl_cl_prop: (rawSpec.integration_dbl_cl_prop ?: zoomConfig.default_integration_dbl_cl_prop ?: params.integration_dbl_cl_prop) as BigDecimal,
                 exclude_mito: rawSpec.containsKey('exclude_mito') ? rawSpec.exclude_mito : (zoomConfig.containsKey('default_exclude_mito') ? zoomConfig.default_exclude_mito : params.exclude_mito),
-                marker_sel_res: (rawSpec.marker_sel_res ?: zoomConfig.default_marker_sel_res ?: finestIntegrationRes).toString(),
+                marker_sel_res: (rawSpec.marker_sel_res ?: zoomConfig.default_marker_sel_res ?: '0.2').toString(),
                 marker_min_cl_size: (rawSpec.marker_min_cl_size ?: zoomConfig.default_marker_min_cl_size ?: 100) as Integer,
                 marker_min_cells: (rawSpec.marker_min_cells ?: zoomConfig.default_marker_min_cells ?: 10) as Integer,
                 marker_top_n: (rawSpec.marker_top_n ?: zoomConfig.default_marker_top_n ?: 10) as Integer,
@@ -469,7 +402,7 @@ workflow {
     genome_gtf     : ${params.genome_gtf}
     chemistry      : ${params.chemistry}
     run_ambient    : ${params.run_ambient}
-    ambient_method : ${ambientMethod}
+    ambient_method : ${ambientMethod}${ambientMethod == 'cellsweep' ? " (annotation: ${cellsweepXgbSpec.id})" : ''}
     run_qc         : ${params.run_qc}
     run_hvg        : ${params.run_hvg}
     run_integration: ${params.run_integration}
@@ -526,6 +459,7 @@ workflow {
                 hvg: params.run_ambient && params.run_qc && params.run_hvg,
                 integration: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration,
                 annotation: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && (params.run_annotation || normalizedAnnotationMethods),
+                cellsweep: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && ambientMethod == 'cellsweep',
                 export: params.run_ambient && params.run_qc && params.run_hvg && params.run_integration && exportMode != 'none',
                 zooms: normalizedZoomSpecs.size() > 0,
             ],
@@ -550,13 +484,11 @@ workflow {
                     annotation_methods: normalizedAnnotationMethods.collect { spec -> spec.id },
                     export: exportMode,
                 ],
-                cellbender: [
-                    env_name: params.cellbender_env_name,
-                    mig_device: params.cellbender_mig_device,
-                    expected_cells_override: params.cellbender_expected_cells,
-                    total_droplets_override: params.cellbender_total_droplets_included,
-                    low_count_override: params.cellbender_low_count_threshold,
-                ],
+                cellsweep: ambientMethod == 'cellsweep' ? [
+                    annotation_method_id: cellsweepXgbSpec.id,
+                    celltype_col: params.cellsweep_celltype_col,
+                    n_empties: params.cellsweep_n_empties,
+                ] : null,
                 metadata: [
                     metadata_csv: params.metadata_csv,
                     metadata_id_col: params.metadata_id_col,
@@ -633,7 +565,10 @@ workflow {
     // 1. Mapping (always runs)
     // ------------------------------------------------------------------
     MAPPING(samples_ch)
-    def report_pages = MAPPING.out.report
+    // knee mode renders mapping diagnostics as the first section of the combined
+    // KNEE_REPORT instead of its own separate page — see AMBIENT workflow
+    def mapping_report_merged = params.run_ambient && params.cell_caller in ['knee', 'gmm']
+    def report_pages = mapping_report_merged ? channel.empty() : MAPPING.out.report
 
     // ------------------------------------------------------------------
     // 2. Ambient cleanup (opt-in via --run_ambient)
@@ -641,7 +576,8 @@ workflow {
     if (params.run_ambient) {
         AMBIENT(
             MAPPING.out.h5_files,
-            MAPPING.out.knee_data
+            MAPPING.out.knee_data,
+            MAPPING.out.alevinfry_stats
         )
         report_pages = report_pages.mix(AMBIENT.out.report)
 
@@ -654,13 +590,55 @@ workflow {
 
             // ----------------------------------------------------------
             // 4. HVG selection (opt-in via --run_hvg, requires qc)
+            //
+            // ambient_method == 'cellsweep': per-sample annotation -> per-sample
+            // CellSweep decontamination run first; HVG/INTEGRATION/ANNOTATION*
+            // below then feed on the corrected counts instead of AMBIENT's.
+            // ambient_method == 'none': HVG/INTEGRATION/ANNOTATION* feed on
+            // AMBIENT's counts directly, unchanged from before.
             // ----------------------------------------------------------
             if (params.run_hvg) {
+                def hvg_h5_ch        = AMBIENT.out.h5_files
+                def hvg_qc_ch        = QC.out.qc_metrics
+                def hvg_de_table_ch  = AMBIENT.out.de_table
+                def hvg_pb_empties_ch = AMBIENT.out.pb_empties
+
+                if (ambientMethod == 'cellsweep') {
+                    PER_SAMPLE_ANNOTATION_WF(
+                        AMBIENT.out.h5_files,
+                        QC.out.qc_metrics,
+                        AMBIENT.out.de_table,
+                        cellsweepXgbSpec
+                    )
+                    report_pages = report_pages.mix(PER_SAMPLE_ANNOTATION_WF.out.report)
+
+                    CELLSWEEP_WF(
+                        AMBIENT.out.h5_files,
+                        MAPPING.out.h5_files,
+                        AMBIENT.out.empties,
+                        PER_SAMPLE_ANNOTATION_WF.out.integration_dt,
+                        PER_SAMPLE_ANNOTATION_WF.out.cluster_summary,
+                        PER_SAMPLE_ANNOTATION_WF.out.annotation_cells,
+                        AMBIENT.out.labels,
+                        QC.out.qc_metrics,
+                        cellsweepXgbSpec.id,
+                        params.cellsweep_celltype_col
+                    )
+                    report_pages = report_pages.mix(CELLSWEEP_WF.out.report)
+
+                    hvg_h5_ch         = CELLSWEEP_WF.out.h5_files
+                    hvg_qc_ch         = CELLSWEEP_WF.out.qc_metrics
+                    // Counts are CellSweep-corrected, but the caller-independent
+                    // ambient-gene (is_ambient) list from AMBIENT_DE is still used to
+                    // exclude soup genes from HVG selection and to render the HVG
+                    // ambient diagnostics — so keep AMBIENT's de_table / pb_empties.
+                }
+
                 HVG(
-                    AMBIENT.out.h5_files,
-                    QC.out.qc_metrics,
-                    AMBIENT.out.de_table,
-                    AMBIENT.out.pb_empties
+                    hvg_h5_ch,
+                    hvg_qc_ch,
+                    hvg_de_table_ch,
+                    hvg_pb_empties_ch
                 )
                 report_pages = report_pages.mix(HVG.out.report)
 
@@ -674,14 +652,14 @@ workflow {
                     INTEGRATION(
                         HVG.out.hvg_counts,
                         HVG.out.dbl_hvg_counts,
-                        QC.out.qc_metrics
+                        hvg_qc_ch
                     )
                     landing_integration_ch = INTEGRATION.out.integration_dt
                     report_pages = report_pages.mix(INTEGRATION.out.report)
 
                     if (params.run_annotation) {
                         ANNOTATION(
-                            AMBIENT.out.h5_files,
+                            hvg_h5_ch,
                             INTEGRATION.out.integration_dt
                         )
                         annotation_cell_labels_ch = ANNOTATION.out.cell_labels
@@ -692,7 +670,7 @@ workflow {
 
                     if (normalizedAnnotationMethods) {
                         ANNOTATION_METHODS(
-                            AMBIENT.out.h5_files,
+                            hvg_h5_ch,
                             INTEGRATION.out.integration_dt,
                             normalizedAnnotationMethods
                         )
@@ -700,28 +678,6 @@ workflow {
                         annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION_METHODS.out.export_metadata)
                         hasAnnotationExportMetadata = true
                         report_pages = report_pages.mix(ANNOTATION_METHODS.out.report)
-                    }
-
-                    // CellSweep decontamination — groups cells by xgboost cluster-
-                    // level labels (requires annotation_methods), then a SECOND PASS
-                    // re-runs HVG -> integration -> annotation on the corrected counts.
-                    if (params.run_cellsweep) {
-                        CELLSWEEP_WF(
-                            AMBIENT.out.h5_files,
-                            MAPPING.out.h5_files,
-                            AMBIENT.out.empties,
-                            INTEGRATION.out.integration_dt,
-                            ANNOTATION_METHODS.out.cluster_summary
-                        )
-                        report_pages = report_pages.mix(CELLSWEEP_WF.out.report)
-
-                        SECOND_PASS(
-                            CELLSWEEP_WF.out.h5ad.join(QC.out.qc_metrics),
-                            AMBIENT.out.de_table,
-                            AMBIENT.out.pb_empties,
-                            normalizedAnnotationMethods
-                        )
-                        report_pages = report_pages.mix(SECOND_PASS.out.report_pages)
                     }
 
                     def annotation_export_input_ch = hasAnnotationExportMetadata
@@ -733,8 +689,9 @@ workflow {
                             channel.fromList(normalizedZoomSpecs),
                             MAPPING.out.h5_files,
                             MAPPING.out.knee_data,
-                            AMBIENT.out.h5_files,
-                            QC.out.qc_metrics,
+                            hvg_h5_ch,
+                            AMBIENT.out.empties,
+                            hvg_qc_ch,
                             INTEGRATION.out.integration_dt,
                             annotation_cell_labels_ch,
                             annotation_method_cell_labels_ch
@@ -753,7 +710,7 @@ workflow {
                         if (exportMode in ['anndata', 'both']) {
                             EXPORT_SCANPY_ZOOM(
                                 ZOOMS.out.zoom_int,
-                                AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+                                hvg_h5_ch.map { _id, h5 -> h5 }.collect(),
                                 annotation_export_input_ch,
                                 channel.value(file(params.genome_gtf)),
                                 channel.value(file("${projectDir}/modules/export/export_anndata.py"))
@@ -763,7 +720,7 @@ workflow {
                         if (exportMode in ['seurat', 'both']) {
                             EXPORT_SEURAT_ZOOM(
                                 ZOOMS.out.zoom_int,
-                                AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
+                                hvg_h5_ch.map { _id, h5 -> h5 }.collect(),
                                 annotation_export_input_ch,
                                 channel.value(file(params.genome_gtf)),
                                 channel.value(file("${projectDir}/modules/export/export_seurat.R")),
@@ -774,8 +731,8 @@ workflow {
 
                     if (exportMode in ['anndata', 'both']) {
                         EXPORT_SCANPY(
-                            AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
-                            QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+                            hvg_h5_ch.map { _id, h5 -> h5 }.collect(),
+                            hvg_qc_ch.map { _id, csv -> csv }.collect(),
                             INTEGRATION.out.integration_dt,
                             annotation_export_input_ch,
                             channel.value(file(params.genome_gtf)),
@@ -785,7 +742,7 @@ workflow {
 
                     if (exportMode != 'none') {
                         EXPORT_CELL_METADATA(
-                            QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+                            hvg_qc_ch.map { _id, csv -> csv }.collect(),
                             INTEGRATION.out.integration_dt,
                             annotation_export_input_ch,
                             channel.value(file("${projectDir}/modules/export/export_cell_metadata.R")),
@@ -795,8 +752,8 @@ workflow {
 
                     if (exportMode in ['seurat', 'both']) {
                         EXPORT_SEURAT(
-                            AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect(),
-                            QC.out.qc_metrics.map { _id, csv -> csv }.collect(),
+                            hvg_h5_ch.map { _id, h5 -> h5 }.collect(),
+                            hvg_qc_ch.map { _id, csv -> csv }.collect(),
                             INTEGRATION.out.integration_dt,
                             annotation_export_input_ch,
                             channel.value(file(params.genome_gtf)),
@@ -822,8 +779,6 @@ workflow {
         landingPayload,
         landing_integration_ch,
         channel.value(file("${projectDir}/modules/reports/build_report_site.py")),
-        channel.value(file("${projectDir}/modules/reports/site.css")),
-        channel.value(file("${projectDir}/modules/reports/site.js")),
         traceFileCh
     )
 }

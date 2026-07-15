@@ -16,6 +16,7 @@ suppressPackageStartupMessages({
   library(data.table)
   library(parallel)
   library(strex)
+  library(jsonlite)
 })
 
 # ---------------------------------------------------------------------------
@@ -25,28 +26,30 @@ suppressPackageStartupMessages({
 run_barcode_estimation <- function() {
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 5) {
-  stop("Usage: barcode_estimation.R <sampleId> <quantDir> <h5Out> <kneeOut> <ambientEnvOut>")
+if (length(args) != 6) {
+  stop("Usage: barcode_estimation.R <sampleId> <quantDir> <h5Out> <kneeOut> <ambientEnvOut> <statsOut>")
 }
 
 sample_id  <- args[1]
-quant_dir  <- args[2]
+quant_dir  <- args[2]   # top-level simpleaf output dir: contains af_map/ and af_quant/
 h5_out     <- args[3]
 knee_out   <- args[4]
 ambient_env_out <- args[5]
+stats_out  <- args[6]
 
 message("Sample:   ", sample_id)
 message("Quant:    ", quant_dir)
 message("H5 out:   ", h5_out)
 message("Knee out: ", knee_out)
 message("Params:   ", ambient_env_out)
+message("Stats out:", stats_out)
 
 # ---------------------------------------------------------------------------
 # Load alevin-fry output (S, U, A modes)
 # ---------------------------------------------------------------------------
 
 sce <- loadFry(
-  quant_dir,
+  file.path(quant_dir, "af_quant"),
   outputFormat = list(S = c("S"), U = c("U"), A = c("A"))
 )
 
@@ -112,6 +115,37 @@ writeLines(c(
   sprintf("SHIN2=%s", amb$shin2)
 ), ambient_env_out)
 message("Written ambient params: ", ambient_env_out)
+
+# ---------------------------------------------------------------------------
+# Read-level + per-barcode stats from piscem/alevin-fry
+# (mirrors dev/sn_report_review_2026-07-03/scripts/extract_alevinfry_stats.R)
+# ---------------------------------------------------------------------------
+
+mi <- fromJSON(file.path(quant_dir, "af_map", "map_info.json"))
+fd <- fread(file.path(quant_dir, "af_quant", "featureDump.txt"))
+
+total_mapped <- sum(fd$MappedReads)
+total_dedup  <- sum(fd$DeduplicatedReads)
+
+# UMI floor (200) matches the hard "definite empty" floor used elsewhere in
+# the pipeline -- keeps the above-floor summary from being swamped by the
+# millions of background barcodes with 1-2 genes.
+fd_above <- fd[DeduplicatedReads >= 200]
+
+stats_dt <- data.table(
+  sample_id              = sample_id,
+  num_reads              = as.integer(mi$num_reads),
+  num_mapped             = as.integer(mi$num_mapped),
+  percent_mapped         = as.numeric(mi$percent_mapped),
+  runtime_seconds        = as.numeric(mi$runtime_seconds),
+  n_barcodes_detected    = nrow(fd),
+  n_barcodes_above_floor = nrow(fd_above),
+  saturation             = 1 - total_dedup / total_mapped,
+  median_genes_per_bc    = median(fd_above$NumGenesExpressed, na.rm = TRUE),
+  median_mean_by_max     = median(fd_above$MeanByMax, na.rm = TRUE)
+)
+fwrite(stats_dt, file = stats_out)
+message("Written alevin-fry stats: ", stats_out)
 }
 
 
@@ -169,9 +203,12 @@ calc_ambient_params <- function(split_mat, run,
   shin1_idx  <- which.min(abs(knee_df$total - shin1))[1]
   shin1_x    <- knee_df[shin1_idx, rank]
 
-  empty_start <- copy(knee_df)[, n := .I] %>%
-    .[rank %between% c(shin1_x, total_included), n] %>%
-    log10() %>% mean() %>% (function(x) 10^x)()
+  # Plateau starts immediately where the cell cutoff ends (shin1_x), not at
+  # the geometric mean of [shin1_x, total_included]. The geometric mean left
+  # an unclaimed rank band (neither cell nor ambient) between the cell
+  # cutoff and the ambient plateau on every sample -- see
+  # dev/sn_report_review_2026-07-03/ for the investigation.
+  empty_start <- shin1_x
 
   empty_end <- copy(knee_df)[total == knee2, unique(rank)]
 

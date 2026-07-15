@@ -1,5 +1,5 @@
 ---
-title: "Cell calling diagnostics (splice-aware GMM)"
+title: "Mapping + cell calling (GMM)"
 format:
   html:
     embed-resources: true
@@ -22,15 +22,18 @@ execute:
 </style>
 ```
 
-This report documents per-sample cell selection — which barcodes are passed
-downstream as cells (`is_cell`) and which define the ambient/empty profile
-(`is_empty`) for decontamination. Selection replaces decontX's rank-based call
-with a splice-aware Gaussian mixture plus hard biological guardrails.
+Read mapping (`piscem`/`alevin-fry`) and cell calling for one sample batch,
+both reported together since cell calling is only ever interpreted against how
+cleanly its input reads mapped. This report documents per-sample cell
+selection — which barcodes are passed downstream as cells (`is_cell`) and
+which define the ambient/empty profile (`is_empty`) for decontamination.
+Selection replaces decontX's rank-based call with a splice-aware Gaussian
+mixture plus hard biological guardrails (see Methods below).
 
 ```{r setup}
 knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 110)
 suppressPackageStartupMessages({
-  library(data.table); library(ggplot2); library(patchwork); library(DT)
+  library(data.table); library(ggplot2); library(patchwork); library(DT); library(magrittr)
 })
 
 ps <- 10
@@ -58,6 +61,125 @@ RNKB <- log10(c(1,10,100,1e3,1e4,1e5,1e6)); RNKL <- c("1","10","100","1k","10k",
 ell <- function(mu,sig,lev=0.95,n=120){ r<-sqrt(qchisq(lev,2)); th<-seq(0,2*pi,length.out=n)
   e<-eigen(sig,symmetric=TRUE); L<-sqrt(pmax(e$values,0))
   xy<-t(mu+e$vectors%*%(r*rbind(L[1]*cos(th),L[2]*sin(th)))); data.table(x=xy[,1],y=xy[,2]) }
+
+af_sample_stats <- rbindlist(lapply(
+  list.files(".", pattern = "^alevinfry_stats_.+\\.csv$", full.names = TRUE), fread), fill = TRUE)
+af_sample_stats[, `:=`(
+  short_id       = sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", sample_id)),
+  reads_m        = round(num_reads / 1e6, 1),
+  percent_mapped = round(percent_mapped, 1),
+  saturation_pct = round(100 * saturation, 1),
+  barcodes_k     = round(n_barcodes_above_floor / 1e3, 1),
+  runtime_min    = round(runtime_seconds / 60, 1)
+)]
+setorder(af_sample_stats, -sample_id)
+af_sample_stats[, short_id := factor(short_id, levels = short_id)]
+```
+
+```{r mapping-helpers}
+# One boxed, horizontal-bar-with-numbers panel per metric, sharing the sample
+# axis (facet_grid + coord_flip).
+plot_metric_bars <- function(df, sample_var, metric_cols, metric_labs, fill = "#2c8a3d") {
+  plot_dt <- df[, c(sample_var, metric_cols), with = FALSE] %>%
+    melt(id.vars = sample_var, variable.name = "metric", value.name = "value") %>%
+    .[, metric := factor(metric_labs[metric], levels = metric_labs)]
+
+  ggplot(plot_dt, aes(x = .data[[sample_var]], y = value)) +
+    geom_col(fill = fill, width = 0.75) +
+    geom_text(aes(label = value), hjust = -0.15, size = 2.6) +
+    facet_grid(. ~ metric, scales = "free_x") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.35)), n.breaks = 4) +
+    coord_flip() +
+    theme_bw(base_size = 9) +
+    theme(
+      panel.border     = element_rect(colour = "grey35", fill = NA),
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = "grey90", colour = "grey35"),
+      strip.text       = element_text(face = "bold", size = 7.5)
+    ) +
+    labs(x = NULL, y = NULL)
+}
+
+# Splits samples into <=max_per_page pages, tabbing if there's more than one.
+paginate_and_plot <- function(df, sample_var, max_per_page, plot_fn) {
+  ids    <- levels(df[[sample_var]])
+  groups <- split(ids, ceiling(seq_along(ids) / max_per_page))
+
+  if (length(groups) == 1) {
+    print(plot_fn(df))
+  } else {
+    cat("::: {.panel-tabset}\n\n")
+    for (i in seq_along(groups)) {
+      g <- groups[[i]]
+      cat(sprintf("### Samples %d–%d\n\n",
+                  (i - 1) * max_per_page + 1, (i - 1) * max_per_page + length(g)))
+      page_dt <- df[get(sample_var) %in% g]
+      page_dt[, (sample_var) := droplevels(get(sample_var))]
+      print(plot_fn(page_dt))
+      cat("\n\n")
+    }
+    cat(":::\n\n")
+  }
+}
+
+mapping_metric_cols <- c("reads_m", "percent_mapped", "saturation_pct",
+                          "barcodes_k", "median_genes_per_bc", "runtime_min")
+mapping_metric_labs <- c(
+  reads_m             = "reads (M)",
+  percent_mapped      = "mapped (%)",
+  saturation_pct      = "saturation (%)",
+  barcodes_k          = "barcodes ≥200 reads (k)",
+  median_genes_per_bc = "median genes/bc",
+  runtime_min         = "runtime (min)"
+)
+```
+
+## Sample-quality flag (GMM separability)
+
+The cell caller can only draw an ambient↔nuclei boundary if the two populations are
+actually separated in (log UMI, logit-splice). On degraded samples the two clouds merge,
+the boundary collapses, and everything downstream (CellSweep α̂, QC, integration) inherits
+the ambiguity. We quantify separability directly from the fitted 2-component GMM as the
+**Bhattacharyya distance** between the ambient and nuclei Gaussians (higher = better
+separated), alongside the raw **splice gap** (logit-splice mean difference) and **UMI gap**
+(log10-UMI mean difference). This is a *soft flag only* — no sample is dropped; it marks
+where the cell calls (and everything below) should be trusted less.
+
+```{r sample-quality-flag, results='asis'}
+warn_thr <- suppressWarnings(as.numeric(Sys.getenv("CC_BHATTACHARYYA_WARN", "2.5")))
+fail_thr <- suppressWarnings(as.numeric(Sys.getenv("CC_BHATTACHARYYA_FAIL", "2.0")))
+if (is.na(warn_thr)) warn_thr <- 2.5
+if (is.na(fail_thr)) fail_thr <- 2.0
+
+sq <- summary_dt[, intersect(c("sample_id","bhattacharyya","splice_gap_logit","umi_gap_log10"),
+                             names(summary_dt)), with = FALSE]
+if ("bhattacharyya" %in% names(sq)) {
+  sq[, status := fifelse(is.na(bhattacharyya), "n/a",
+                  fifelse(bhattacharyya < fail_thr, "🔴 FAIL",
+                  fifelse(bhattacharyya < warn_thr, "🟠 WARN", "🟢 PASS")))]
+  setorder(sq, bhattacharyya)
+  n_fail <- sum(sq$status == "🔴 FAIL"); n_warn <- sum(sq$status == "🟠 WARN")
+  cat(sprintf("**%d sample(s) FAIL** (Bhattacharyya < %.2f) and **%d WARN** (< %.2f) of %d — thresholds are provisional and set by `--cc_bhattacharyya_fail` / `--cc_bhattacharyya_warn`.\n\n",
+              n_fail, fail_thr, n_warn, warn_thr, nrow(sq)))
+  print(knitr::kable(sq, caption = "Per-sample GMM separability, worst-first. Bhattacharyya = distance between the fitted ambient and nuclei Gaussians (higher = cleaner separation); splice/UMI gaps are the raw component-mean differences on each axis."))
+  cat("\n\n")
+} else {
+  cat("_No `bhattacharyya` column in the cell-calling summaries — re-run cell calling to populate the separability metric._\n\n")
+}
+```
+
+## Sequencing & mapping
+
+Read-level and per-barcode stats straight from `piscem`/`alevin-fry`
+(`af_map/map_info.json`, `af_quant/featureDump.txt`), independent of cell
+calling -- these answer "did this sample sequence and map cleanly", not
+"which barcodes are cells" (see below for that).
+`median_genes_per_bc` is restricted to barcodes with >=200 deduplicated reads
+so it isn't swamped by the empty-droplet background.
+
+```{r af_metrics_panel, fig.width=8, fig.height=40*0.16+0.6, results='asis'}
+paginate_and_plot(af_sample_stats, "short_id", 40, function(d)
+  plot_metric_bars(d, "short_id", mapping_metric_cols, mapping_metric_labs))
 ```
 
 ## Methods
@@ -152,7 +274,11 @@ ggplot(long[population!="empty"], aes(sample_id, n, fill=population)) +
 
 ```{r per-sample, results='asis', fig.width=9, fig.height=7}
 for (sid in sids) {
-  cat("\n\n### ", sid, "\n\n")
+  bh <- suppressWarnings(as.numeric(summary_dt[sample_id == sid, bhattacharyya][1]))
+  st <- if (length(bh) == 0 || is.na(bh)) "n/a" else
+        if (bh < fail_thr) "FAIL" else if (bh < warn_thr) "WARN" else "PASS"
+  cat(sprintf("\n\n### %s  —  separability %s (Bhattacharyya %s)\n\n",
+              sid, st, ifelse(is.na(bh), "n/a", sprintf("%.2f", bh))))
   dt <- fread(label_fs[[sid]]); g <- readRDS(gmm_fs[[sid]])
   dt[, lx := log10(total+ps)]; dt[, ly := qlogis((spliced+1)/(total+2))]
   dt[, population := factor(population, levels=names(pop_cols))]
@@ -181,6 +307,12 @@ for (sid in sids) {
     guides(colour=guide_legend(override.aes=list(size=1.5,alpha=1))) +
     theme_classic(base_size=7) + theme(legend.key.size=unit(0.4,"lines")) +
     labs(title="GMM prediction: ambient vs nuclei (2 ellipses; 50% solid / 95% dashed)",
+         subtitle=sprintf("separability: Bhattacharyya=%s  |  splice gap=%s  |  UMI gap=%s",
+                          ifelse(is.na(bh), "n/a", sprintf("%.2f", bh)),
+                          ifelse(nrow(summary_dt[sample_id==sid])==0, "n/a",
+                                 sprintf("%.2f", summary_dt[sample_id==sid, splice_gap_logit][1])),
+                          ifelse(nrow(summary_dt[sample_id==sid])==0, "n/a",
+                                 sprintf("%.2f", summary_dt[sample_id==sid, umi_gap_log10][1]))),
          x="total UMIs (log)", y="spliced fraction")
 
   # Panel 3: final populations (empty/ambient/damaged/nuclei) with the two rules drawn
@@ -218,3 +350,11 @@ for (sid in sids) {
 ```
 
 :::
+
+## Session info
+
+<details>
+```{r session_info}
+sessionInfo()
+```
+</details>

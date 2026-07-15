@@ -109,8 +109,7 @@ process PREPARE_ANNOTATION_QUERY {
     container "ghcr.io/johnsonlab-ic/landmark-sc_image"
 
     input:
-    tuple val(sample_id), path(h5_file)
-    path integration_csv
+    tuple val(sample_id), path(h5_file), path(integration_csv)
     path script
     path utils_r
 

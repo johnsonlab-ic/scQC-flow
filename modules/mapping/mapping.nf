@@ -142,6 +142,7 @@ process BARCODE_ESTIMATION {
     output:
     tuple val(sampleId), path("af_counts_mat.h5"), emit: h5_files
     tuple val(sampleId), path("knee_plot_data_${sampleId}.csv"), emit: knee_data
+    tuple val(sampleId), path("alevinfry_stats_${sampleId}.csv"), emit: alevinfry_stats
     tuple val(sampleId), env('CB_TOTAL_DROPLETS_INCLUDED'), env('CB_EXPECTED_CELLS'), env('CB_LOW_COUNT_THRESHOLD'), env('KNEE1'), env('SHIN1'), env('KNEE2'), env('SHIN2'), emit: ambient_params
 
     script:
@@ -150,10 +151,11 @@ process BARCODE_ESTIMATION {
 
     Rscript ${script} \
         "${sampleId}" \
-        "${quant_dir}/af_quant" \
+        "${quant_dir}" \
         "af_counts_mat.h5" \
         "knee_plot_data_${sampleId}.csv" \
-        "ambient_params_${sampleId}.env"
+        "ambient_params_${sampleId}.env" \
+        "alevinfry_stats_${sampleId}.csv"
 
     source "ambient_params_${sampleId}.env"
     export CB_TOTAL_DROPLETS_INCLUDED

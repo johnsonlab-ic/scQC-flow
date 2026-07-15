@@ -62,6 +62,7 @@ process ZOOM_AMBIENT_DE {
     path raw_h5_files
     path knee_csvs
     path filt_h5_files
+    path empty_bc_csvs
     path genome_gtf
     path script
 

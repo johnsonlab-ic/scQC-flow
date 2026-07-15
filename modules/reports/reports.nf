@@ -85,10 +85,11 @@ process CELL_CALLING_REPORT {
     publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    path summary_csvs   // cell_calling_summary_*.csv     — per-sample counts + cuts
-    path label_csvs     // cell_calling_labels_*.csv.gz   — per-barcode posteriors + population
-    path gmm_rds        // cell_calling_gmm_*.rds         — fitted GMM params + cuts
-    path report_qmd     // cell_calling_report.qmd
+    path alevinfry_stats_csvs // alevinfry_stats_*.csv         — read mapping + per-barcode stats from piscem/alevin-fry
+    path summary_csvs         // cell_calling_summary_*.csv     — per-sample counts + cuts
+    path label_csvs           // cell_calling_labels_*.csv.gz   — per-barcode posteriors + population
+    path gmm_rds              // cell_calling_gmm_*.rds         — fitted GMM params + cuts
+    path report_qmd           // cell_calling_report.qmd
 
     output:
     path "cell_calling_report.html", emit: html
@@ -97,6 +98,8 @@ process CELL_CALLING_REPORT {
     script:
     """
     export HOME="\$PWD"
+    export CC_BHATTACHARYYA_WARN="${params.cc_bhattacharyya_warn}"
+    export CC_BHATTACHARYYA_FAIL="${params.cc_bhattacharyya_fail}"
     quarto render "${report_qmd}" --output cell_calling_report.html
     """
 }
@@ -108,9 +111,11 @@ process KNEE_REPORT {
     publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    path summary_csvs   // knee_summary_*.csv
-    path label_csvs     // knee_labels_*.csv.gz
-    path report_qmd     // knee_report.qmd
+    path knee_data_csvs      // knee_plot_data_*.csv
+    path alevinfry_stats_csvs // alevinfry_stats_*.csv — read mapping + per-barcode stats from piscem/alevin-fry
+    path summary_csvs        // knee_summary_*.csv
+    path label_csvs          // knee_labels_*.csv.gz
+    path report_qmd          // knee_report.qmd
 
     output:
     path "knee_report.html", emit: html
@@ -152,9 +157,15 @@ process CELLSWEEP_REPORT {
     publishDir "${params.outputDir}/cellsweep", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    path alpha_csvs       // <sid>_alpha_hat.csv.gz from CELLSWEEP
-    path integration_dt   // integration_dt.csv.gz (UMAP + clusters)
-    path report_qmd       // cellsweep_report.qmd
+    path label_csvs                            // <caller>_labels_*.csv.gz from AMBIENT.labels
+    path qc_metrics_csvs, stageAs: 'pre_qc/*'   // qc_metrics_*.csv.gz (pre-CellSweep) from QC.qc_metrics
+    path alpha_csvs                             // <sid>_alpha_hat.csv.gz from CELLSWEEP
+    path annotation_cells_csvs                  // annotation_cells_<method_id>_<sid>.csv.gz from PER_SAMPLE_ANNOTATION_WF
+    path corrected_qc_csvs, stageAs: 'post_qc/*' // qc_metrics_*.csv.gz (post-CellSweep, has alpha_hat) from CELLSWEEP_TO_H5
+    path report_qmd                             // cellsweep_report.qmd
+    path plots_r                                // integration_plots.R
+    val  method_id
+    val  cluster_col
 
     output:
     path "cellsweep_report.html", emit: html
@@ -163,6 +174,8 @@ process CELLSWEEP_REPORT {
     script:
     """
     export HOME="\$PWD"
+    export ANNOTATION_METHOD_ID='${method_id}'
+    export ANNOTATION_CLUSTER_COL='${cluster_col}'
     quarto render "${report_qmd}" --output cellsweep_report.html
     """
 }
@@ -216,8 +229,8 @@ process HVG_REPORT {
 
     input:
     path hvg_stats_csv     // hvg_stats.csv.gz — per-gene HVG stats
-    path de_table_gz       // edger_dt.csv.gz — ambient DE results
-    path pb_empties_rds    // pb_empties.rds — pseudobulk empty SummarizedExperiment
+    path de_table_gz, stageAs: 'de_in/*'    // edger_dt.csv.gz (or NO_FILE placeholder) — ambient DE results
+    path pb_empties_rds, stageAs: 'pb_in/*' // pb_empties.rds (or NO_FILE placeholder) — pseudobulk empty SummarizedExperiment
     path report_qmd        // hvg_report.qmd
     path plots_r           // hvg_plots.R — plotting helpers sourced by the report
 
@@ -333,6 +346,44 @@ process ANNOTATION_METHOD_REPORT {
     """
 }
 
+process PER_SAMPLE_ANNOTATION_REPORT {
+    label     "process_reports"
+    tag       "per_sample_annotation_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/per_sample_annotation", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path cells_csvs   // annotation_cells_<method_id>_<sid>.csv.gz, one per sample
+    path summary_csvs // annotation_cluster_summary_<method_id>_<sid>.csv.gz, one per sample
+    path qc_metrics_csvs // qc_metrics_<sid>.csv.gz (pre-CellSweep, all cells) from QC.qc_metrics
+    path report_qmd   // per_sample_annotation_report.qmd
+    path plots_r      // integration_plots.R
+    path qc_plots_r   // qc_plots.R
+    val  method_id
+    val  cluster_col
+
+    output:
+    path "per_sample_annotation_report.html", emit: html
+    path "plots/**",                          optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    export ANNOTATION_METHOD_ID='${method_id}'
+    export ANNOTATION_CLUSTER_COL='${cluster_col}'
+    export HARD_MIN_COUNTS="${params.qc_hard_min_counts}"
+    export HARD_MIN_FEATS="${params.qc_hard_min_feats}"
+    export HARD_MAX_MITO="${params.qc_hard_max_mito}"
+    export MIN_COUNTS="${params.qc_min_counts}"
+    export MIN_FEATS="${params.qc_min_feats}"
+    export MAX_MITO="${params.qc_max_mito}"
+    export MIN_MITO="${params.qc_min_mito}"
+    export MAX_SPLICE="${params.qc_max_splice}"
+    export MIN_SPLICE="${params.qc_min_splice}"
+    quarto render "${report_qmd}" --output per_sample_annotation_report.html
+    """
+}
+
 process REPORT_SITE {
     label     "process_reports"
     tag       "report_site"
@@ -345,8 +396,6 @@ process REPORT_SITE {
     val landing_payload_json
     path integration_csv
     path builder_script
-    path site_css
-    path site_js
     path trace_file
 
     output:
@@ -447,8 +496,6 @@ PY
     python3 "${builder_script}" \
         --payload landing_page_payload.json \
         --outdir site \
-        --css "${site_css}" \
-        --js "${site_js}" \
         "\${report_html_files[@]}"
     """
 }

@@ -16,6 +16,10 @@ include { KNEE_CALLING      } from '../modules/knee/knee.nf'
 include { KNEE_REPORT       } from '../modules/reports/reports.nf'
 include { CELLSWEEP         } from '../modules/cellsweep/cellsweep.nf'
 include { CELLSWEEP_REPORT  } from '../modules/reports/reports.nf'
+include { CELLSWEEP_TO_H5   } from '../modules/second_pass/second_pass.nf'
+include { HVG_SELECTION_PER_SAMPLE } from '../modules/hvg/hvg.nf'
+include { RUN_INTEGRATION_PER_SAMPLE } from '../modules/integration/integration.nf'
+include { PER_SAMPLE_ANNOTATION_REPORT } from '../modules/reports/reports.nf'
 include { STAGE_RAW_H5      } from '../modules/ambient_de/ambient_de.nf'
 include { AMBIENT_DE as AMBIENT_DE_PROC } from '../modules/ambient_de/ambient_de.nf'
 include { PREPARE_SAMPLE_METADATA } from '../modules/metadata/metadata.nf'
@@ -141,10 +145,11 @@ workflow MAPPING {
     )
 
     emit:
-    h5_files       = BARCODE_ESTIMATION.out.h5_files
-    knee_data      = BARCODE_ESTIMATION.out.knee_data
-    ambient_params = BARCODE_ESTIMATION.out.ambient_params
-    report         = MAPPING_REPORT.out.html
+    h5_files        = BARCODE_ESTIMATION.out.h5_files
+    knee_data       = BARCODE_ESTIMATION.out.knee_data
+    ambient_params  = BARCODE_ESTIMATION.out.ambient_params
+    alevinfry_stats = BARCODE_ESTIMATION.out.alevinfry_stats
+    report          = MAPPING_REPORT.out.html
 }
 
 // =============================================================================
@@ -162,8 +167,9 @@ workflow MAPPING {
 workflow AMBIENT {
 
     take:
-    h5_ch       // tuple(sampleId, h5_file)   from MAPPING.h5_files
-    knee_ch     // tuple(sampleId, knee_csv)  from MAPPING.knee_data
+    h5_ch             // tuple(sampleId, h5_file)      from MAPPING.h5_files
+    knee_ch           // tuple(sampleId, knee_csv)      from MAPPING.knee_data
+    alevinfry_stats_ch // tuple(sampleId, stats_csv)    from MAPPING.alevinfry_stats
 
     main:
 
@@ -182,6 +188,7 @@ workflow AMBIENT {
         cc_h5       = EMPTYDROPS_CALLING.out.h5_files
         cc_barcodes = EMPTYDROPS_CALLING.out.barcodes
         cc_empties  = EMPTYDROPS_CALLING.out.empties
+        cc_labels   = EMPTYDROPS_CALLING.out.labels
         cc_report   = EMPTYDROPS_REPORT.out.html
     } else if (params.cell_caller == 'knee') {
         KNEE_CALLING(
@@ -189,6 +196,8 @@ workflow AMBIENT {
             channel.value(file("${projectDir}/modules/knee/knee_calling.R"))
         )
         KNEE_REPORT(
+            knee_ch.map { _id, csv -> csv }.collect(),
+            alevinfry_stats_ch.map { _id, csv -> csv }.collect(),
             KNEE_CALLING.out.summaries.map { _id, csv -> csv }.collect(),
             KNEE_CALLING.out.labels.map    { _id, csv -> csv }.collect(),
             channel.value(file("${projectDir}/modules/reports/knee_report.qmd"))
@@ -196,6 +205,7 @@ workflow AMBIENT {
         cc_h5       = KNEE_CALLING.out.h5_files
         cc_barcodes = KNEE_CALLING.out.barcodes
         cc_empties  = KNEE_CALLING.out.empties
+        cc_labels   = KNEE_CALLING.out.labels
         cc_report   = KNEE_REPORT.out.html
     } else {
         CELL_CALLING(
@@ -203,6 +213,7 @@ workflow AMBIENT {
             channel.value(file("${projectDir}/modules/cell_calling/cell_calling.R"))
         )
         CELL_CALLING_REPORT(
+            alevinfry_stats_ch.map { _id, csv -> csv }.collect(),
             CELL_CALLING.out.summaries.map { _id, csv -> csv }.collect(),
             CELL_CALLING.out.labels.map    { _id, csv -> csv }.collect(),
             CELL_CALLING.out.gmm.map       { _id, rds -> rds }.collect(),
@@ -211,6 +222,7 @@ workflow AMBIENT {
         cc_h5       = CELL_CALLING.out.h5_files
         cc_barcodes = CELL_CALLING.out.barcodes
         cc_empties  = CELL_CALLING.out.empties
+        cc_labels   = CELL_CALLING.out.labels
         cc_report   = CELL_CALLING_REPORT.out.html
     }
 
@@ -229,50 +241,139 @@ workflow AMBIENT {
     h5_files   = cc_h5
     barcodes   = cc_barcodes
     empties    = cc_empties
+    labels     = cc_labels
     report     = cc_report
     de_table   = AMBIENT_DE_PROC.out.de_table
     pb_empties = AMBIENT_DE_PROC.out.pb_empties
 }
 
 // =============================================================================
-// CELLSWEEP  (post-annotation decontamination refinement)
+// PER_SAMPLE_ANNOTATION  (workflow_improvement.md step 4)
 //
-// Per sample: is_cell counts + raw H5 (for the is_empty ambient profile) +
-// integration cluster labels -> CellSweep EM -> decontaminated counts + alpha_hat.
-// Runs after INTEGRATION (needs cluster labels). See modules/cellsweep/.
+// Per sample, ahead of any cross-sample pooling: normalize -> HVG -> PCA ->
+// Leiden(cellsweep_celltype_col resolution) -> XGBoost annotation. Feeds
+// CellSweep's per-cell "celltype" grouping. Runs only when
+// params.ambient_method == 'cellsweep'.
+// =============================================================================
+
+workflow PER_SAMPLE_ANNOTATION_WF {
+
+    take:
+    h5_ch         // tuple(sampleId, filt_counts.h5)   from AMBIENT.h5_files
+    qc_metrics_ch // tuple(sampleId, qc_metrics.csv.gz) from QC.qc_metrics
+    de_table      // path edger_dt.csv.gz               from AMBIENT.de_table
+    xgb_spec      // normalized xgboost annotation method spec (cluster_col already set)
+
+    main:
+    hvg_input_ch = h5_ch.join(qc_metrics_ch)   // tuple(sid, h5, qc_csv)
+
+    HVG_SELECTION_PER_SAMPLE(
+        hvg_input_ch,
+        channel.value(file(params.genome_gtf)),
+        de_table,
+        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
+    )
+
+    integration_input_ch = HVG_SELECTION_PER_SAMPLE.out.hvg_counts
+        .join(HVG_SELECTION_PER_SAMPLE.out.dbl_hvg_counts)
+        .join(qc_metrics_ch)   // tuple(sid, hvg_counts, dbl_hvg_counts, qc_csv)
+
+    RUN_INTEGRATION_PER_SAMPLE(
+        integration_input_ch,
+        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
+    )
+
+    query_input_ch = h5_ch.join(RUN_INTEGRATION_PER_SAMPLE.out.integration_dt)   // tuple(sid, h5, integration_dt)
+
+    PREPARE_ANNOTATION_QUERY(
+        query_input_ch,
+        channel.value(file("${projectDir}/modules/annotation/prepare_annotation_query.R")),
+        channel.value(file("${projectDir}/modules/export/export_utils.R"))
+    )
+
+    def spec_b64 = groovy.json.JsonOutput.toJson(xgb_spec).bytes.encodeBase64().toString()
+    xgb_run_inputs_ch = PREPARE_ANNOTATION_QUERY.out.query.map { sample_id, query_rds ->
+        tuple(xgb_spec.id.toString(), spec_b64, sample_id, query_rds, file(xgb_spec.model_rds.toString()), file(xgb_spec.class_csv.toString()))
+    }
+
+    RUN_XGBOOST_REFERENCE_ANNOTATION(
+        xgb_run_inputs_ch,
+        channel.value(file("${projectDir}/modules/annotation/run_xgboost_reference_annotation.R"))
+    )
+
+    PER_SAMPLE_ANNOTATION_REPORT(
+        RUN_XGBOOST_REFERENCE_ANNOTATION.out.result.map { _mid, _sb64, _sid, cells_csv, _cl, _exp -> cells_csv }.collect(),
+        RUN_XGBOOST_REFERENCE_ANNOTATION.out.result.map { _mid, _sb64, _sid, _cells, cluster_csv, _exp -> cluster_csv }.collect(),
+        qc_metrics_ch.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/per_sample_annotation_report.qmd")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R")),
+        channel.value(file("${projectDir}/modules/qc/qc_plots.R")),
+        xgb_spec.id.toString(),
+        xgb_spec.cluster_col.toString()
+    )
+
+    emit:
+    integration_dt   = RUN_INTEGRATION_PER_SAMPLE.out.integration_dt
+    cluster_summary  = RUN_XGBOOST_REFERENCE_ANNOTATION.out.result.map { _mid, _sb64, sample_id, _cells, cluster_csv, _exp -> tuple(sample_id, cluster_csv) }
+    annotation_cells = RUN_XGBOOST_REFERENCE_ANNOTATION.out.result.map { _mid, _sb64, sample_id, cells_csv, _cl, _exp -> tuple(sample_id, cells_csv) }
+    report           = PER_SAMPLE_ANNOTATION_REPORT.out.html
+}
+
+// =============================================================================
+// CELLSWEEP  (per-sample ambient decontamination)
+//
+// Per sample: is_cell counts + raw H5 (for the is_empty ambient profile) + that
+// sample's own PER_SAMPLE_ANNOTATION_WF cluster labels -> CellSweep EM ->
+// decontaminated counts + alpha_hat -> converted back to the filt_counts.h5 /
+// qc_metrics.csv.gz contract the shared HVG/INTEGRATION/ANNOTATION* workflows
+// expect. Fully self-contained: callers just swap AMBIENT.h5_files/QC.qc_metrics
+// for CELLSWEEP_WF.h5_files/qc_metrics downstream.
 // =============================================================================
 
 workflow CELLSWEEP_WF {
 
     take:
-    filt_ch        // tuple(sampleId, filt_counts.h5)  from AMBIENT.h5_files
-    raw_ch         // tuple(sampleId, af_counts_mat.h5) from MAPPING.h5_files
-    empties_ch     // tuple(sampleId, empty_barcodes.csv) from AMBIENT.empties
-    integration_dt // path integration_dt.csv.gz       from INTEGRATION
-    cluster_ann    // path xgboost cluster summary csv  from ANNOTATION_METHODS
+    filt_ch           // tuple(sampleId, filt_counts.h5)    from AMBIENT.h5_files
+    raw_ch            // tuple(sampleId, af_counts_mat.h5)  from MAPPING.h5_files
+    empties_ch        // tuple(sampleId, empty_barcodes.csv) from AMBIENT.empties
+    integration_dt_ch // tuple(sampleId, integration_dt.csv.gz)   from PER_SAMPLE_ANNOTATION_WF.integration_dt
+    cluster_ann_ch    // tuple(sampleId, cluster_summary.csv.gz)  from PER_SAMPLE_ANNOTATION_WF.cluster_summary
+    annotation_cells_ch // tuple(sampleId, annotation_cells.csv.gz) from PER_SAMPLE_ANNOTATION_WF.annotation_cells
+    labels_ch         // tuple(sampleId, <caller>_labels.csv.gz) from AMBIENT.labels
+    qc_metrics_ch     // tuple(sampleId, qc_metrics.csv.gz) from QC.qc_metrics
+    xgb_method_id     // val — id of the xgboost annotation method used by PER_SAMPLE_ANNOTATION_WF
+    xgb_cluster_col   // val — its cluster_col (params.cellsweep_celltype_col)
 
     main:
-    int_v   = integration_dt.first()                     // value channel, reused per sample
-    ann_v   = cluster_ann.first()                        // value channel, reused per sample
-    in_ch   = filt_ch.join(raw_ch).join(empties_ch)      // tuple(sid, filt, raw, empty)
+    in_ch = filt_ch.join(raw_ch).join(empties_ch).join(integration_dt_ch).join(cluster_ann_ch)
 
     CELLSWEEP(
         in_ch,
-        int_v,
-        ann_v,
         channel.value(file("${projectDir}/modules/cellsweep/cellsweep_run_sample.py"))
     )
 
+    CELLSWEEP_TO_H5(
+        CELLSWEEP.out.h5ad.join(qc_metrics_ch),
+        channel.value(file("${projectDir}/modules/second_pass/cellsweep_to_h5.py"))
+    )
+
     CELLSWEEP_REPORT(
-        CELLSWEEP.out.alpha.map { _id, f -> f }.collect(),
-        int_v,
-        channel.value(file("${projectDir}/modules/reports/cellsweep_report.qmd"))
+        labels_ch.map            { _id, csv -> csv }.collect(),
+        qc_metrics_ch.map        { _id, csv -> csv }.collect(),
+        CELLSWEEP.out.alpha.map  { _id, csv -> csv }.collect(),
+        annotation_cells_ch.map  { _id, csv -> csv }.collect(),
+        CELLSWEEP_TO_H5.out.qc_metrics.map { _id, csv -> csv }.collect(),
+        channel.value(file("${projectDir}/modules/reports/cellsweep_report.qmd")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R")),
+        xgb_method_id,
+        xgb_cluster_col
     )
 
     emit:
-    alpha  = CELLSWEEP.out.alpha
-    h5ad   = CELLSWEEP.out.h5ad
-    report = CELLSWEEP_REPORT.out.html
+    alpha      = CELLSWEEP.out.alpha
+    h5_files   = CELLSWEEP_TO_H5.out.h5_files    // tuple(sampleId, filt_counts.h5) — corrected counts
+    qc_metrics = CELLSWEEP_TO_H5.out.qc_metrics  // tuple(sampleId, qc_metrics.csv.gz) — carries alpha_hat
+    report     = CELLSWEEP_REPORT.out.html
 }
 
 // =============================================================================
@@ -520,8 +621,7 @@ workflow ANNOTATION_METHODS {
     main:
 
     PREPARE_ANNOTATION_QUERY(
-        h5_ch,
-        integration_dt_ch,
+        h5_ch.combine(integration_dt_ch),
         channel.value(file("${projectDir}/modules/annotation/prepare_annotation_query.R")),
         channel.value(file("${projectDir}/modules/export/export_utils.R"))
     )
@@ -613,6 +713,7 @@ workflow ZOOMS {
     raw_h5_ch
     knee_ch
     h5_ch
+    empty_bc_ch
     qc_metrics_ch
     integration_dt_ch
     annotation_cell_labels_ch
@@ -641,6 +742,7 @@ workflow ZOOMS {
         STAGE_ZOOM_RAW_H5.out.h5.collect(),
         knee_ch.map { _id, csv -> csv }.collect(),
         h5_ch.map { _id, h5 -> h5 }.collect(),
+        empty_bc_ch.map { _id, csv -> csv }.collect(),
         channel.value(file(params.genome_gtf)),
         channel.value(file("${projectDir}/modules/ambient_de/ambient_de.R"))
     )

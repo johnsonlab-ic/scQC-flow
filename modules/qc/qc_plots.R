@@ -25,8 +25,12 @@ log_brks    <- c(1e1, 3e1, 1e2, 3e2, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5) %>% log10
 log_labs    <- c("10", "30", "100", "300", "1k", "3k", "10k", "30k", "100k", "300k")
 mito_brks   <- c(1e-5, 1e-4, 1e-3, 1e-2, 0.10, 0.50, 0.90, 0.99, 0.999) %>% qlogis
 mito_labs   <- c("0.001%", "0.01%", "0.1%", "1%", "10%", "50%", "90%", "99%", "99.9%")
-splice_brks <- c(1e-4, 1e-3, 1e-2, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.90, 0.99, 0.999) %>% qlogis
-splice_labs <- c("0.01%", "0.1%", "1%", "5%", "10%", "20%", "30%", "40%", "50%", "90%", "99%", "99.9%")
+# Breaks concentrated where spliced-pct. actually sits for called cells
+# (~5-40%, see dev/sn_report_review_2026-07-03/); the old breaks ran up to
+# 99.9% which left the real data crammed against a big empty gap before a
+# lone 90% tick.
+splice_brks <- c(0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.70, 0.90) %>% qlogis
+splice_labs <- c("1%", "5%", "10%", "15%", "20%", "25%", "30%", "40%", "50%", "70%", "90%")
 
 # ---------------------------------------------------------------------------
 # Build cuts data.table from threshold parameters
@@ -183,6 +187,89 @@ plot_qc_ranges_marginals <- function(qc_input, b_lvls, qc_names, qc_lu, cuts_dt,
     labs(x = NULL, y = NULL)
 
   g <- g_n + g_violin + plot_layout(widths = c(1, 5))
+  return(g)
+}
+
+# ---------------------------------------------------------------------------
+# Single-sample vertical split violin, pre-QC (all cells) vs post-QC (cells
+# passing keep, i.e. hard + soft thresholds + MAD filter + singlet), one
+# panel per QC metric. post-QC is a subset of pre-QC, shown side by side so
+# the shift in each metric's distribution after filtering is visible
+# directly. Labels match the "N pre-QC / N post-QC" terminology already used
+# in the qc_summary_kv table below the plot.
+# ---------------------------------------------------------------------------
+plot_qc_split_violin <- function(qc_all_dt, sid, qc_names, qc_lu, cuts_dt, hard_cuts_dt = NULL) {
+  tmp_names <- intersect(setdiff(qc_names, "n_cells"), colnames(qc_all_dt))
+
+  base_melt <- copy(qc_all_dt)[batch_var == sid] %>%
+    melt(measure = tmp_names, val = "qc_val", var = "qc_var") %>%
+    .[, qc_full := qc_lu[as.character(qc_var)]] %>%
+    .[, qc_var  := factor(qc_var, levels = tmp_names)] %>%
+    .[, qc_full := fct_reorder(qc_full, as.integer(qc_var))]
+
+  qc_melt <- rbind(
+    copy(base_melt)[, status := "pre-QC"],
+    base_melt[keep == TRUE][, status := "post-QC"]
+  )
+  qc_melt[, status := factor(status, levels = c("pre-QC", "post-QC"))]
+
+  n_by_status <- qc_melt[, .(n = uniqueN(cell_id)), by = status]
+  status_labs <- setNames(
+    sprintf("%s\n(n=%s)", n_by_status$status, format(n_by_status$n, big.mark = ",")),
+    n_by_status$status
+  )
+
+  mk_hlines <- function(dt) {
+    if (is.null(dt)) return(NULL)
+    dt[batch_var == sid & qc_var %in% tmp_names] %>% copy %>%
+      .[, qc_full := qc_lu[qc_var]] %>%
+      .[, qc_var  := factor(qc_var, levels = tmp_names)] %>%
+      .[, qc_full := fct_reorder(qc_full, as.integer(qc_var))]
+  }
+  soft_dt <- mk_hlines(cuts_dt)
+  hard_dt <- mk_hlines(hard_cuts_dt)
+
+  hlines_dt <- rbind(
+    if (!is.null(soft_dt) && nrow(soft_dt) > 0)
+      rbind(soft_dt[is.finite(min), .(qc_full, yint = min)],
+            soft_dt[is.finite(max), .(qc_full, yint = max)])[, threshold := "soft"]
+    else NULL,
+    if (!is.null(hard_dt) && nrow(hard_dt) > 0)
+      rbind(hard_dt[is.finite(min), .(qc_full, yint = min)],
+            hard_dt[is.finite(max), .(qc_full, yint = max)])[, threshold := "hard"]
+    else NULL
+  )
+  if (!is.null(hlines_dt)) hlines_dt[, threshold := factor(threshold, levels = c("soft", "hard"))]
+
+  g <- ggplot(qc_melt[!is.na(qc_val)], aes(x = status, y = qc_val, fill = status)) +
+    geom_violin(colour = NA, kernel = "rectangular", adjust = 0.3,
+                scale = "width", width = 0.8) +
+    (if (!is.null(hlines_dt))
+      geom_hline(data = hlines_dt, aes(yintercept = yint, linetype = threshold),
+                 colour = "grey20", linewidth = 0.4) else NULL) +
+    scale_fill_manual(
+      values = c(`pre-QC` = "grey45", `post-QC` = "steelblue4"),
+      guide = "none"
+    ) +
+    scale_linetype_manual(
+      name = NULL, values = c(soft = "dashed", hard = "dotted"),
+      labels = c(soft = "soft threshold", hard = "hard threshold"),
+      drop = FALSE
+    ) +
+    scale_x_discrete(labels = status_labs) +
+    facet_wrap(~ qc_full, scales = "free_y", nrow = 1) +
+    facetted_pos_scales(y = list(
+      qc_full == "no. of UMIs"  ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
+      qc_full == "no. of genes" ~ scale_y_continuous(breaks = log_brks, labels = log_labs),
+      qc_full == "mito. pct."   ~ scale_y_continuous(breaks = mito_brks, labels = mito_labs),
+      qc_full == "spliced pct." ~ scale_y_continuous(breaks = splice_brks, labels = splice_labs)
+    )) +
+    theme_classic() +
+    theme(strip.background = element_rect(fill = "white"),
+          axis.text.x = element_text(size = 8.5),
+          legend.position = "bottom") +
+    labs(x = NULL, y = NULL)
+
   return(g)
 }
 
@@ -411,7 +498,10 @@ calc_qc_summary <- function(qc_dt, kept_dt, cuts_dt, qc_lu, mad_filter = FALSE) 
 }
 
 # ---------------------------------------------------------------------------
-# UpSet plot of exclusion reasons (mirrors scprocess plot_upset_of_exclusions)
+# UpSet plot of exclusion reasons (mirrors scprocess plot_upset_of_exclusions,
+# extended with a MAD-adaptive-filter set per metric -- production only
+# breaks out doublet/hard/soft-threshold reasons, so cells removed by the MAD
+# filter alone were previously invisible in this plot).
 # ---------------------------------------------------------------------------
 plot_upset_of_exclusions <- function(qc_tmp, qc_names, qc_lu, cuts_dt) {
   var_lu  <- c(
@@ -450,8 +540,26 @@ plot_upset_of_exclusions <- function(qc_tmp, qc_names, qc_lu, cuts_dt) {
     exc_cells[sapply(exc_cells, length) > 0]
   }) %>% do.call(c, .)
 
+  # MAD-adaptive exclusions among cells passing hard + soft (flat) thresholds
+  mad_lo_cols <- paste0("mad_lo_", cut_vars)
+  mad_hi_cols <- paste0("mad_hi_", cut_vars)
+  mad_ls <- list()
+  if (all(c(mad_lo_cols, mad_hi_cols) %in% colnames(qc_tmp)) && "keep_flat" %in% colnames(qc_tmp)) {
+    flat_pass <- qc_tmp[keep_flat == TRUE]
+    mad_ls <- lapply(cut_vars, function(cc) {
+      lo_col <- paste0("mad_lo_", cc)
+      hi_col <- paste0("mad_hi_", cc)
+      exc_cells <- list(
+        low  = flat_pass[get(cc) + eps < get(lo_col)]$cell_id,
+        high = flat_pass[get(cc) - eps > get(hi_col)]$cell_id
+      )
+      names(exc_cells) <- paste0("mad_", c("low", "high"), "_", var_lu[[cc]])
+      exc_cells[sapply(exc_cells, length) > 0]
+    }) %>% do.call(c, .)
+  }
+
   ok_cells <- qc_tmp[keep == TRUE]$cell_id
-  upset_ls <- c(extra_ls, tmp_ls, list(passed_qc = ok_cells))
+  upset_ls <- c(extra_ls, tmp_ls, mad_ls, list(passed_qc = ok_cells))
 
   upset_dt <- names(upset_ls) %>%
     lapply(function(nn) data.table(set = nn, cell_id = upset_ls[[nn]])) %>%
@@ -460,5 +568,5 @@ plot_upset_of_exclusions <- function(qc_tmp, qc_names, qc_lu, cuts_dt) {
     dcast(cell_id ~ set, value.var = "dummy", fill = 0)
 
   upset(upset_dt, sets = colnames(upset_dt)[-1], order.by = "freq",
-        mb.ratio = c(0.7, 0.3), sets.bar.color = "#FB8072")
+        mb.ratio = c(0.6, 0.4), sets.bar.color = "#FB8072")
 }

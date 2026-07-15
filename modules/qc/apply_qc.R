@@ -167,6 +167,14 @@ run_apply_qc <- function() {
     logit_spliced   = qlogis(splice_frac)
   )
 
+  # degradation axes (not used in keep thresholds — retained for QC/reporting):
+  #   intronic_frac = unspliced / (spliced + unspliced) — nuclear integrity; drops
+  #                   with RNA degradation (soup is spliced, real nuclei intron-rich)
+  #   complexity    = log10(genes) / log10(UMIs) — novelty; low = degraded/low-info
+  qc_dt[, intronic_frac := fifelse((total_spliced + total_unspliced) > 0,
+                                   total_unspliced / (total_spliced + total_unspliced), NA_real_)]
+  qc_dt[, complexity    := log10(detected + 1) / log10(sum + 1)]
+
   qc_dt  <- qc_dt[sum > 0]
   n_total <- nrow(qc_dt)
   message("Total cells after zero removal: ", n_total)
@@ -313,7 +321,9 @@ run_apply_qc <- function() {
     n_mad_rm_splice = n_mad_rm_splice,
     median_counts   = round(median(qc_dt[keep == TRUE, sum]), 0),
     median_feats    = round(median(qc_dt[keep == TRUE, detected]), 0),
-    median_mito_pct = round(median(qc_dt[keep == TRUE, mito_pct]) * 100, 2)
+    median_mito_pct = round(median(qc_dt[keep == TRUE, mito_pct]) * 100, 2),
+    median_intronic   = round(median(qc_dt[keep == TRUE, intronic_frac], na.rm = TRUE), 3),
+    median_complexity = round(median(qc_dt[keep == TRUE, complexity]), 3)
   )
   fwrite(summary_dt, sprintf("qc_summary_%s.csv", current_sample_id))
   message("Written summary: ", sprintf("qc_summary_%s.csv", current_sample_id))

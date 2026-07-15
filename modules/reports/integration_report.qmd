@@ -88,10 +88,12 @@ if (nrow(qc_dt) > 0 && all(c("sample_id", "cell_id") %in% names(qc_dt))) {
 }
 
 feature_sources <- list(
-  list(key = "ncount_rna",   source = "sum",         label = "nCount RNA"),
-  list(key = "nfeature_rna", source = "detected",    label = "nFeature RNA"),
-  list(key = "splice_frac",  source = "splice_frac", label = "splice fraction"),
-  list(key = "mito_pct",     source = "mito_pct",    label = "mitochondrial content")
+  list(key = "ncount_rna",   source = "sum",           label = "nCount RNA"),
+  list(key = "nfeature_rna", source = "detected",      label = "nFeature RNA"),
+  list(key = "splice_frac",  source = "splice_frac",   label = "splice fraction"),
+  list(key = "mito_pct",     source = "mito_pct",      label = "mitochondrial content"),
+  list(key = "complexity",   source = "complexity",    label = "complexity (log genes / log UMIs)"),
+  list(key = "intronic_frac",source = "intronic_frac", label = "intronic fraction")
 )
 
 qc_names <- c("log_counts", "log_feats", "logit_mito", "logit_spliced")
@@ -110,7 +112,7 @@ if (length(present_leiden) == 0) {
 int_dt_pass2 <- int_dt[!is.na(UMAP1)]
 
 if (nrow(qc_dt) > 0) {
-  feature_cols <- unique(unlist(lapply(feature_sources, `[[`, "source")))
+  feature_cols <- unique(c(unlist(lapply(feature_sources, `[[`, "source")), "alpha_hat"))
   present_feature_cols <- feature_cols[feature_cols %in% names(qc_dt)]
   if (length(present_feature_cols) > 0) {
     feature_dt <- unique(qc_dt[, c("cell_id", present_feature_cols), with = FALSE], by = "cell_id")
@@ -174,6 +176,15 @@ if (has_doublets) {
   n_singlets <- sum(!int_dt$is_dbl, na.rm = TRUE)
 }
 
+# Two-pass doublet diagnostics only apply when doublets were actually carried into
+# integration (non-CellSweep path). CellSweep removes doublets in per-sample QC, so
+# n_doublets == 0 there and the doublet sections are suppressed in favour of the
+# α̂ (ambient-fraction) section.
+show_doublets <- isTRUE(has_doublets) && isTRUE(n_doublets > 0) &&
+  "dbl_prop" %in% names(int_dt_pass2)
+show_alpha <- "alpha_hat" %in% names(int_dt_pass2) &&
+  any(is.finite(int_dt_pass2$alpha_hat))
+
 # Determine embedding type from column names
 int_embedding <- if (any(grepl("^hmny_pca", names(int_dt)))) "harmony" else "pca"
 int_txt <- if (int_embedding == "harmony") "with `Harmony` " else ""
@@ -182,17 +193,17 @@ int_txt <- if (int_embedding == "harmony") "with `Harmony` " else ""
 Cells that passed quality control filtering were integrated `r int_txt`together with doublets identified using `scDblFinder`. Clustering of cells at a high resolution is then performed. Cells that appear in clusters which are enriched in doublets are excluded from further analysis.
 
 * **Cells:** `r format(n_cells, big.mark = ",")`
-`r if (has_doublets) sprintf("* **Singlets:** %s", format(n_singlets, big.mark = ","))`
-`r if (has_doublets) sprintf("* **Doublets:** %s (%.1f%%)", format(n_doublets, big.mark = ","), 100 * n_doublets / (n_doublets + n_singlets))`
+`r if (show_doublets) sprintf("* **Singlets:** %s", format(n_singlets, big.mark = ","))`
+`r if (show_doublets) sprintf("* **Doublets:** %s (%.1f%%)", format(n_doublets, big.mark = ","), 100 * n_doublets / (n_doublets + n_singlets))`
 * **Samples:** `r data.table::uniqueN(int_dt$sample_id)`
 * **Metadata vars retained in integration output:** `r if (length(metadata_vars) > 0) paste(metadata_vars, collapse = ", ") else "none"`
 * **Leiden resolutions:** `r paste(leiden_res, collapse = ", ")`
 
-## Doublets over UMAP
+```{r hdr_dbl_umap, eval=show_doublets, results='asis', echo=FALSE}
+cat("## Doublets over UMAP\n\nThe plot displays a binned UMAP with the proportion of doublets as well as the number of doublets in each bin.\n\n")
+```
 
-The plot displays a binned UMAP with the proportion of doublets as well as the number of doublets in each bin.
-
-```{r plot_doublet_integration, fig.height = 5, fig.width = 11}
+```{r plot_doublet_integration, fig.height = 5, fig.width = 11, eval=show_doublets}
 if (has_doublets && n_doublets > 0) {
   g_dbl <- plot_umap_doublets(int_dt)
   # Use pass-1 embedding for density (all cells incl. doublets) when available
@@ -208,11 +219,11 @@ if (has_doublets && n_doublets > 0) {
 }
 ```
 
-## Doublet proportions in clusters
+```{r hdr_dbl_clusters, eval=show_doublets, results='asis', echo=FALSE}
+cat(sprintf("## Doublet proportions in clusters\n\nThe plot shows the proportion of doublets for each cluster in relation to the total number of cells in that cluster. Clusters with a doublet proportion exceeding %s%% are excluded from further analysis.\n\n", dbl_cl_prop*100))
+```
 
-The plot shows the proportion of doublets for each cluster in relation to the total number of cells in that cluster. Clusters with a doublet proportion exceeding `r dbl_cl_prop*100`% are excluded from further analysis.
-
-```{r plot_doublet_clusters, fig.height = 4, fig.width = 6, results='asis'}
+```{r plot_doublet_clusters, fig.height = 4, fig.width = 6, results='asis', eval=show_doublets}
 has_dbl_cluster_col <- "dbl_cluster" %in% names(int_dt)
 if (has_doublets && n_doublets > 0 && has_dbl_cluster_col) {
   # Two-pass format: dbl_cluster and dbl_prop are precomputed per cell
@@ -225,11 +236,11 @@ if (has_doublets && n_doublets > 0 && has_dbl_cluster_col) {
 }
 ```
 
-## Doublet proportion sweep
+```{r hdr_dbl_sweep, eval=show_doublets, results='asis', echo=FALSE}
+cat("## Doublet proportion sweep\n\nPass-1 Leiden clustering is repeated at multiple resolutions. The plot below shows the distribution of doublet proportions across all clusters at each resolution, with the removal threshold marked in red. Clusters that are stably elevated above the threshold across resolutions are more likely to represent genuine doublet-enriched populations.\n\n")
+```
 
-Pass-1 Leiden clustering is repeated at multiple resolutions. The plot below shows the distribution of doublet proportions across all clusters at each resolution, with the removal threshold marked in red. Clusters that are stably elevated above the threshold across resolutions are more likely to represent genuine doublet-enriched populations.
-
-```{r load_dbl_sweep}
+```{r load_dbl_sweep, eval=show_doublets}
 sweep_f <- "dbl_sweep.csv.gz"
 has_sweep <- file.exists(sweep_f)
 if (has_sweep) {
@@ -238,7 +249,7 @@ if (has_sweep) {
 }
 ```
 
-```{r plot_dbl_sweep, fig.height = 5, fig.width = 9}
+```{r plot_dbl_sweep, fig.height = 5, fig.width = 9, eval=show_doublets}
 if (has_sweep && exists("sweep_dt") && nrow(sweep_dt) > 0) {
   ggplot(sweep_dt, aes(x = resolution, y = dbl_prop)) +
     geom_hline(yintercept = dbl_cl_prop, colour = "red", linetype = "dashed", linewidth = 0.7) +
@@ -260,11 +271,11 @@ if (has_sweep && exists("sweep_dt") && nrow(sweep_dt) > 0) {
 }
 ```
 
-## Doublet proportion on UMAP
+```{r hdr_dbl_umap_overlay, eval=show_doublets, results='asis', echo=FALSE}
+cat("## Doublet proportion on UMAP\n\nLeft: cells coloured by the mean pass-1 `dbl_prop` of their pass-2 cluster — shows which regions of the embedding are enriched for cells from high-doublet pass-1 clusters. Right: cluster assignments for reference (same colours as downstream sections).\n\n")
+```
 
-Left: cells coloured by the mean pass-1 `dbl_prop` of their pass-2 cluster — shows which regions of the embedding are enriched for cells from high-doublet pass-1 clusters. Right: cluster assignments for reference (same colours as downstream sections).
-
-```{r plot_dbl_umap_overlay, fig.height = 7, fig.width = 9, results='asis'}
+```{r plot_dbl_umap_overlay, fig.height = 7, fig.width = 9, results='asis', eval=show_doublets}
 if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
   int_dt_pass2[, dbl_prop := as.numeric(dbl_prop)]
 
@@ -344,11 +355,11 @@ if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
 }
 ```
 
-## Doublet proportion per cluster
+```{r hdr_dbl_lollipop, eval=show_doublets, results='asis', echo=FALSE}
+cat("## Doublet proportion per cluster\n\nFor each pass-2 cluster the mean `dbl_prop` of its constituent cells is shown. Clusters flagged as outliers satisfy **both** conditions: IQR outlier (> Q3 + 1.5 × IQR) and mean `dbl_prop` > 15%. The combined criterion prevents spurious flags at higher resolutions where natural spread is wider.\n\n")
+```
 
-For each pass-2 cluster the mean `dbl_prop` of its constituent cells is shown. Clusters flagged as outliers satisfy **both** conditions: IQR outlier (> Q3 + 1.5 × IQR) and mean `dbl_prop` > 15%. The combined criterion prevents spurious flags at higher resolutions where natural spread is wider.
-
-```{r plot_dbl_lollipop, fig.height = 6, fig.width = 6, results='asis'}
+```{r plot_dbl_lollipop, fig.height = 6, fig.width = 6, results='asis', eval=show_doublets}
 if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
 
   make_dbl_lollipop <- function(cl_col) {
@@ -407,11 +418,73 @@ if (length(present_leiden) > 0 && "dbl_prop" %in% names(int_dt_pass2)) {
 }
 ```
 
+```{r hdr_alpha, eval=show_alpha, results='asis', echo=FALSE}
+cat("## CellSweep ambient fraction (α̂)\n\nEach cell's CellSweep-estimated ambient fraction α̂ (0 = no soup, 1 = pure soup; cells with α̂ ≥ the CellSweep cutoff were already removed upstream). **Left:** cells coloured by the mean α̂ of their cluster — regions/clusters enriched for high-ambient cells. **Right:** per-cell α̂ over the UMAP. One tab per resolution.\n\n")
+```
+
+```{r plot_alpha_umap, fig.height = 7, fig.width = 9, results='asis', eval=show_alpha}
+int_dt_pass2[, alpha_hat := as.numeric(alpha_hat)]
+alpha_hi <- as.numeric(quantile(int_dt_pass2$alpha_hat, 0.99, na.rm = TRUE))
+
+make_alpha_umap <- function(cl_col) {
+  base_dt <- int_dt_pass2[, .(
+    cell_id,
+    UMAP1s  = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2s  = rescale(UMAP2, to = c(0.05, 0.95)),
+    cluster = get(cl_col),
+    alpha_hat
+  )]
+  cl_labs <- base_dt[!is.na(cluster) & cluster != "", .(
+    mean_alpha = mean(alpha_hat, na.rm = TRUE),
+    lx = median(UMAP1s), ly = median(UMAP2s)
+  ), by = cluster]
+  cl_labs[, lab := sprintf("%s\n%.2f", cluster, mean_alpha)]
+  base_dt <- merge(base_dt, cl_labs[, .(cluster, mean_alpha)], by = "cluster", all.x = TRUE)
+
+  set.seed(42)
+  plot_cells <- base_dt[sample(.N, min(.N, 200000))][sample(.N, .N)]
+
+  base_theme <- theme_bw() +
+    theme(panel.grid = element_blank(), aspect.ratio = 1,
+          legend.title.position = "left", legend.position = "bottom",
+          axis.ticks = element_blank(), axis.text = element_blank())
+
+  g_mean <- ggplot(plot_cells, aes(UMAP1s, UMAP2s, colour = mean_alpha)) +
+    geom_point(size = 0.1) +
+    geom_text_repel(data = cl_labs, aes(lx, ly, label = lab), inherit.aes = FALSE,
+                    colour = "grey20", size = 3, seed = 1, min.segment.length = 0,
+                    max.overlaps = Inf, box.padding = 0.3, segment.color = "grey55") +
+    scale_colour_gradientn(colours = qc_feature_palette, limits = c(0, alpha_hi),
+                           oob = squish, name = "Mean α̂\n(cluster)") +
+    scale_x_continuous(limits = c(0, 1)) + scale_y_continuous(limits = c(0, 1)) +
+    base_theme + labs(x = "UMAP 1", y = "UMAP 2",
+                      caption = "Labels: cluster / mean α̂")
+
+  g_cell <- ggplot(plot_cells, aes(UMAP1s, UMAP2s, colour = alpha_hat)) +
+    geom_point(size = 0.1) +
+    scale_colour_gradientn(colours = qc_feature_palette, limits = c(0, alpha_hi),
+                           oob = squish, name = "α̂\n(per cell)") +
+    scale_x_continuous(limits = c(0, 1)) + scale_y_continuous(limits = c(0, 1)) +
+    base_theme + labs(x = "UMAP 1", y = "UMAP 2")
+
+  g_mean + g_cell
+}
+
+cat('::: {.panel-tabset}\n\n')
+for (cl_col in present_leiden) {
+  res_val <- sub('^RNA_snn_res\\.', '', cl_col); res_val <- sub('^leiden_', '', res_val)
+  cat("### ", res_val, "\n\n")
+  print(make_alpha_umap(cl_col))
+  cat("\n\n")
+}
+cat(':::\n\n')
+```
+
 ## Clusters over UMAP
 
 Clustering of data is performed at different resolution values. For each value the clusters are displayed over a UMAP together with a plot showing the density of cells.
 
-After removing doublets and doublet-enriched cluster cells, there were **`r if (has_doublets) format(n_singlets, big.mark = ",") else format(n_cells, big.mark = ",")` cells used for pass-2 integration**.
+`r if (show_doublets) sprintf("After removing doublets and doublet-enriched cluster cells, there were **%s cells used for pass-2 integration**.", format(n_singlets, big.mark = ",")) else sprintf("**%s cells** were used for integration (doublets were removed upstream in per-sample QC).", format(n_cells, big.mark = ","))`
 
 ```{r plot_clusters_integration, fig.height = 7, fig.width = 9, results='asis'}
 if (length(present_leiden) > 0) {
@@ -557,6 +630,47 @@ if (length(feature_vars) > 0) {
   cat(':::\n\n')
 } else {
   cat("No QC feature variables were available for UMAP plotting.\n\n")
+}
+```
+
+## Cluster degradation flag
+
+Degraded / low-information cells (low UMI **and** low complexity, with a soup-shifted
+i.e. low intronic fraction) tend to collect into their own clusters — the "hairball"
+signature — rather than distributing evenly. For each cluster we show the median
+**complexity** (log genes / log UMIs), **intronic fraction**, **nCount** and cell count.
+Clusters whose median complexity is a low outlier (below median − 1.5 × MAD across
+clusters) are flagged as *likely low-quality*. This is **annotation only** — nothing is
+filtered here; it flags clusters to scrutinise downstream.
+
+```{r cluster_degradation, results='asis'}
+deg_cols <- intersect(c("complexity", "intronic_frac", "sum"), names(int_dt_pass2))
+if (length(present_leiden) > 0 && "complexity" %in% deg_cols) {
+  cat('::: {.panel-tabset}\n\n')
+  for (cl_col in present_leiden) {
+    res_val <- sub('^RNA_snn_res\\.', '', cl_col); res_val <- sub('^leiden_', '', res_val)
+    cat("### ", res_val, "\n\n")
+    d <- int_dt_pass2[!is.na(get(cl_col))]
+    tbl <- d[, .(
+      n_cells        = .N,
+      med_complexity = round(median(complexity, na.rm = TRUE), 3),
+      med_intronic   = if ("intronic_frac" %in% deg_cols) round(median(intronic_frac, na.rm = TRUE), 3) else NA_real_,
+      med_nCount     = if ("sum" %in% deg_cols) round(median(sum, na.rm = TRUE), 0) else NA_real_
+    ), by = .(cluster = get(cl_col))]
+    med_c <- median(tbl$med_complexity, na.rm = TRUE)
+    mad_c <- mad(tbl$med_complexity, na.rm = TRUE)
+    tbl[, low_quality_flag := fifelse(mad_c > 0 & med_complexity < med_c - 1.5 * mad_c, "LOW-QUALITY", "")]
+    setorder(tbl, med_complexity)
+    n_flag <- sum(tbl$low_quality_flag == "LOW-QUALITY")
+    cat(sprintf("%d of %d clusters flagged low-quality (complexity < %.3f).\n\n",
+                n_flag, nrow(tbl), med_c - 1.5 * mad_c))
+    print(knitr::kable(tbl, caption = sprintf(
+      "res %s — per-cluster degradation summary (sorted by complexity, worst first).", res_val)))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+} else {
+  cat("Complexity / intronic axes not available in QC inputs — re-run QC to populate them.\n\n")
 }
 ```
 

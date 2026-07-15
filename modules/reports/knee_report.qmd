@@ -1,54 +1,170 @@
 ---
-title: "Cell calling — classic knee/shin (decontX-style selection)"
+title: "Mapping + cell calling (knee/shin)"
 format:
   html:
     toc: true
     toc-depth: 2
-    code-fold: true
     embed-resources: true
 execute:
+  echo: false
   warning: false
   message: false
+  cache: false
 ---
 
 ```{=html}
 <style>.quarto-figure img,.cell-output-display img,img.img-fluid{max-width:min(100%,860px);height:auto}</style>
 ```
 
-Cells are called by the **classic barcode-rank (knee/shin)** method that originally
-fed decontX (decontX itself is not run here): cells are the top `expected_cells`
-barcodes by UMI rank, and empty droplets are the barcodes in the empty plateau
-(`in_empty_plateau`). Splice-blind. Downstream decontamination is CellSweep.
+Read mapping (`piscem`/`alevin-fry`) and cell calling for one sample batch,
+both reported together since cell calling is only ever interpreted against how
+cleanly its input reads mapped. Cells are called by the **classic barcode-rank
+(knee/shin)** method that originally fed decontX (decontX itself is not run
+here -- the same selection is replicated exactly, matching scprocess's own
+`call_cells_and_empties()`, then decontX's correction step is skipped since
+CellSweep runs downstream instead). Three buckets:
+
+- **cell** -- top `expected_cells` barcodes by UMI rank
+- **ambient** -- `in_empty_plateau` barcodes (from knee/shin estimation); this is
+  the background CellSweep uses for decontamination
+- **excluded** -- everything else, never used for anything
+
+Splice-blind. See the CellSweep-inputs report (rendered later, right before CellSweep
+runs) for how the `cell` bucket further splits into QC-kept vs QC-removed.
 
 ```{r setup}
-knitr::opts_chunk$set(fig.path='plots/', dev='png', dpi=110)
-suppressPackageStartupMessages({library(data.table); library(ggplot2)})
+knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 110)
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(patchwork)
+  library(magrittr)
+})
 ps <- 10
+```
+
+```{r load_data}
+stats_fs <- list.files(".", pattern = "^alevinfry_stats_.+\\.csv$", full.names = TRUE)
+af_sample_stats <- rbindlist(lapply(stats_fs, fread), fill = TRUE)
+af_sample_stats[, `:=`(
+  short_id       = sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", sample_id)),
+  reads_m        = round(num_reads / 1e6, 1),
+  percent_mapped = round(percent_mapped, 1),
+  saturation_pct = round(100 * saturation, 1),
+  barcodes_k     = round(n_barcodes_above_floor / 1e3, 1),
+  runtime_min    = round(runtime_seconds / 60, 1)
+)]
+setorder(af_sample_stats, -sample_id)
+af_sample_stats[, short_id := factor(short_id, levels = short_id)]
+
 sum_fs <- list.files(".", pattern="^knee_summary_.+\\.csv$", full.names=TRUE)
 lab_fs <- list.files(".", pattern="^knee_labels_.+\\.csv\\.gz$", full.names=TRUE)
 names(lab_fs) <- sub("\\.csv\\.gz$","",sub("^.*/knee_labels_","",lab_fs))
 sids <- sort(names(lab_fs))
 summ <- rbindlist(lapply(sum_fs, fread), fill=TRUE)
-pop_cols <- c(cell="#2c8a3d", ambiguous="#1a6aa8", empty="grey70")
+summ[, short_id := sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", sample_id))]
+setorder(summ, -sample_id)
+summ[, short_id := factor(short_id, levels = short_id)]
+
+pop_cols <- c(cell="grey80", ambient="#FB8072", excluded="grey30")
 LOGB <- log10(ps + c(0,10,30,100,300,1000,3000,1e4,3e4,1e5,3e5))
 LOGL <- c("0","10","30","100","300","1k","3k","10k","30k","100k","300k")
 PCTB <- qlogis(c(0.001,0.003,0.01,0.03,0.1,0.5,0.9,0.97,0.99,0.997,0.999))
 PCTL <- c("0.1%","0.3%","1%","3%","10%","50%","90%","97%","99%","99.7%","99.9%")
 ```
 
-## Cells called per sample
+```{r helpers}
+# One boxed, horizontal-bar-with-numbers panel per metric, sharing the sample
+# axis (facet_grid + coord_flip).
+plot_metric_bars <- function(df, sample_var, metric_cols, metric_labs, fill = "#2c8a3d") {
+  plot_dt <- df[, c(sample_var, metric_cols), with = FALSE] %>%
+    melt(id.vars = sample_var, variable.name = "metric", value.name = "value") %>%
+    .[, metric := factor(metric_labs[metric], levels = metric_labs)]
 
-```{r counts}
-show <- c("sample_id","n_total","n_cell","n_empty","n_ambiguous","expected_cells","knee1","shin1","knee2","shin2")
-knitr::kable(summ[, intersect(show, names(summ)), with=FALSE],
-             caption="Knee/shin calls per sample (is_cell = rank<=expected_cells; is_empty = in_empty_plateau).")
+  ggplot(plot_dt, aes(x = .data[[sample_var]], y = value)) +
+    geom_col(fill = fill, width = 0.75) +
+    geom_text(aes(label = value), hjust = -0.15, size = 2.6) +
+    facet_grid(. ~ metric, scales = "free_x") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.35)), n.breaks = 4) +
+    coord_flip() +
+    theme_bw(base_size = 9) +
+    theme(
+      panel.border     = element_rect(colour = "grey35", fill = NA),
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = "grey90", colour = "grey35"),
+      strip.text       = element_text(face = "bold", size = 7.5)
+    ) +
+    labs(x = NULL, y = NULL)
+}
+
+# Splits samples into <=max_per_page pages, tabbing if there's more than one.
+paginate_and_plot <- function(df, sample_var, max_per_page, plot_fn) {
+  ids    <- levels(df[[sample_var]])
+  groups <- split(ids, ceiling(seq_along(ids) / max_per_page))
+
+  if (length(groups) == 1) {
+    print(plot_fn(df))
+  } else {
+    cat("::: {.panel-tabset}\n\n")
+    for (i in seq_along(groups)) {
+      g <- groups[[i]]
+      cat(sprintf("### Samples %d–%d\n\n",
+                  (i - 1) * max_per_page + 1, (i - 1) * max_per_page + length(g)))
+      page_dt <- df[get(sample_var) %in% g]
+      page_dt[, (sample_var) := droplevels(get(sample_var))]
+      print(plot_fn(page_dt))
+      cat("\n\n")
+    }
+    cat(":::\n\n")
+  }
+}
+
+mapping_metric_cols <- c("reads_m", "percent_mapped", "saturation_pct",
+                          "barcodes_k", "median_genes_per_bc", "runtime_min")
+mapping_metric_labs <- c(
+  reads_m             = "reads (M)",
+  percent_mapped      = "mapped (%)",
+  saturation_pct      = "saturation (%)",
+  barcodes_k          = "barcodes ≥200 reads (k)",
+  median_genes_per_bc = "median genes/bc",
+  runtime_min         = "runtime (min)"
+)
+
+knee_row1_cols <- c("n_total", "n_cell", "n_empty", "n_excluded", "expected_cells")
+knee_row1_labs <- c(n_total="total barcodes", n_cell="cell", n_empty="ambient",
+                     n_excluded="excluded", expected_cells="expected_cells")
+knee_row2_cols <- c("total_droplets_included", "knee1", "shin1", "knee2", "shin2")
+knee_row2_labs <- c(total_droplets_included="total_droplets_included", knee1="knee1",
+                     shin1="shin1", knee2="knee2", shin2="shin2")
+
+plot_knee_summary_page <- function(df) {
+  plot_metric_bars(df, "short_id", knee_row1_cols, knee_row1_labs) /
+    plot_metric_bars(df, "short_id", knee_row2_cols, knee_row2_labs)
+}
 ```
 
-```{r bar, fig.width=7, fig.height=3.2}
-ggplot(summ, aes(sub("_snRNAseq$","",sub("^LM[0-9]+_","",sample_id)), n_cell)) +
-  geom_col(fill="#2c8a3d") + theme_classic(base_size=9) +
-  theme(axis.text.x=element_text(angle=40,hjust=1)) +
-  labs(title="Knee/shin cells per sample", x=NULL, y="cells (rank<=expected_cells)")
+## Sequencing & mapping
+
+Read-level and per-barcode stats straight from `piscem`/`alevin-fry`
+(`af_map/map_info.json`, `af_quant/featureDump.txt`), independent of cell
+calling -- these answer "did this sample sequence and map cleanly", not
+"which barcodes are cells" (see below for that).
+`median_genes_per_bc` is restricted to barcodes with >=200 deduplicated reads
+so it isn't swamped by the empty-droplet background.
+
+```{r af_metrics_panel, fig.width=8, fig.height=40*0.16+0.6, results='asis'}
+paginate_and_plot(af_sample_stats, "short_id", 40, function(d)
+  plot_metric_bars(d, "short_id", mapping_metric_cols, mapping_metric_labs))
+```
+
+## Cells called per sample
+
+Top row: population counts (cell = top `expected_cells` by rank; ambient =
+`in_empty_plateau`; excluded = everything else). Bottom row: the underlying
+DropletUtils barcode-rank parameters those counts are derived from.
+
+```{r counts, fig.width=9, fig.height=20*0.16*2+1.4, results='asis'}
+paginate_and_plot(summ, "short_id", 20, plot_knee_summary_page)
 ```
 
 ## Per-sample: UMI × splice by call
@@ -60,9 +176,8 @@ for (sid in sids) {
   d <- fread(lab_fs[[sid]])
   d[, lx := log10(total+ps)]; d[, ly := qlogis((spliced+1)/(total+2))]
   d[, population := factor(population, levels=names(pop_cols))]
-  pl <- rbind(d[population=="empty"][sample(.N, min(.N, 30000))], d[population!="empty"])
-  p <- ggplot(pl[order(population)], aes(lx, ly, colour=population)) +
-    geom_point(size=0.25, alpha=0.45) +
+  p <- ggplot(d[total>0][order(population)], aes(lx, ly, colour=population)) +
+    geom_point(size=0.1) +
     scale_colour_manual(values=pop_cols, drop=FALSE) +
     scale_x_continuous(breaks=LOGB, labels=LOGL) + scale_y_continuous(breaks=PCTB, labels=PCTL) +
     guides(colour=guide_legend(override.aes=list(size=2,alpha=1))) +
@@ -72,3 +187,11 @@ for (sid in sids) {
 }
 cat(":::\n")
 ```
+
+## Session info
+
+<details>
+```{r session_info}
+sessionInfo()
+```
+</details>

@@ -12,9 +12,7 @@ process CELLSWEEP {
     publishDir "${params.outputDir}/cellsweep", mode: params.publish_mode_nonreport, overwrite: true
 
     input:
-    tuple val(sampleId), path(filt_h5), path(raw_h5), path(empty_csv)
-    path  integration_dt
-    path  cluster_annotation_csv
+    tuple val(sampleId), path(filt_h5), path(raw_h5), path(empty_csv), path(integration_dt), path(cluster_annotation_csv)
     path  script
 
     output:
@@ -23,7 +21,7 @@ process CELLSWEEP {
 
     script:
     def n_emp = params.cellsweep_n_empties     ?: 30000
-    def ctcol = params.cellsweep_celltype_col  ?: 'RNA_snn_res.0.5'
+    def ctcol = params.cellsweep_celltype_col  ?: 'RNA_snn_res.0.2'
     """
     # writable HOME + numba cache (task runs as a UID with no home dir; scanpy/numba
     # imported by cellsweep otherwise fail with 'no locator available' cache errors)

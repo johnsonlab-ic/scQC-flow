@@ -48,7 +48,8 @@ def main():
     p.add_argument("--celltype_col", default="RNA_snn_res.0.5",
                    help="integration cluster column whose xgboost cluster-level label is the CellSweep celltype")
     p.add_argument("--cluster_annotation_csv", required=True,
-                   help="xgboost cluster summary (cols: cluster_col, cluster, top_label); "
+                   help="xgboost cluster summary (cols: cluster, top_label), already scoped "
+                        "to the single --celltype_col resolution used for this sample; "
                         "celltype = top_label of each cell's --celltype_col cluster")
     p.add_argument("--keep_h5ad", action="store_true",
                    help="keep the (large) decontaminated h5ad; default drops it, keeps alpha_hat CSV")
@@ -60,7 +61,6 @@ def main():
     # --- cells: post-QC singlet nuclei from integration; celltype = xgboost
     #     cluster-level annotation (each cell's Leiden cluster -> its top_label) ---
     ann = pd.read_csv(a.cluster_annotation_csv)
-    ann = ann[ann["cluster_col"].astype(str) == a.celltype_col]
     cl2lab = dict(zip(ann["cluster"].astype(str), ann["top_label"].astype(str)))
     if not cl2lab:
         raise SystemExit(f"no cluster labels for cluster_col={a.celltype_col} in {a.cluster_annotation_csv}")

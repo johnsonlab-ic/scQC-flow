@@ -156,13 +156,18 @@ for (i in seq_along(sample_ids)) {
 
   message("=== ", sid, " ===")
 
-  # --- Empties pseudobulk (is_empty set from CELL_CALLING) ---
+  # --- Empties pseudobulk (caller-independent: knee empty plateau) ---
+  # scprocess (.get_one_empty_pb) defines empties as in_empty_plateau==TRUE from the
+  # knee data — a low-UMI plateau that is stable across cell-callers and sample
+  # quality. This is deliberately NOT the cell-caller's is_empty set (which extends
+  # to the GMM cell_floor and drifts on bad samples).
   raw_mat   <- .get_h5_mx(raw_f)
-  emp_f     <- grep(sid, empty_bc_files, value = TRUE, fixed = TRUE)[1]
-  if (is.na(emp_f)) stop("No empty_barcodes CSV for sample: ", sid)
-  empty_bcs <- intersect(fread(emp_f, header = FALSE)$V1, colnames(raw_mat))
-  message("  Empty barcodes: ", length(empty_bcs))
-  if (length(empty_bcs) == 0L) stop("No empty barcodes found for sample: ", sid)
+  knee_dt   <- fread(knee_f)
+  if (!"in_empty_plateau" %in% names(knee_dt))
+    stop("knee CSV lacks in_empty_plateau column: ", knee_f)
+  empty_bcs <- intersect(knee_dt[in_empty_plateau == TRUE, barcode], colnames(raw_mat))
+  message("  Empty-plateau barcodes: ", length(empty_bcs))
+  if (length(empty_bcs) == 0L) stop("No empty-plateau barcodes for sample: ", sid)
 
   raw_sua   <- .sum_sua(raw_mat[, empty_bcs, drop = FALSE])
   empty_cols[[sid]] <- Matrix::rowSums(raw_sua)

@@ -51,3 +51,50 @@ process RUN_INTEGRATION {
         --dbl_sweep_csv   dbl_sweep.csv.gz
     """
 }
+
+// Per-sample flavor for PER_SAMPLE_ANNOTATION_WF (workflow_improvement.md): single-batch
+// PCA -> Leiden(0.2) -> UMAP ahead of any cross-sample pooling. --singlet_only skips Harmony
+// (nothing to correct for with n_batches=1).
+process RUN_INTEGRATION_PER_SAMPLE {
+    label     "process_high"
+    tag       "$sampleId"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/per_sample_annotation/${sampleId}", mode: params.publish_mode_nonreport, overwrite: true
+
+    input:
+    tuple val(sampleId), path(hvg_counts), path(dbl_hvg_counts), path(qc_csv)
+    path script
+
+    output:
+    tuple val(sampleId), path("integration_dt_${sampleId}.csv.gz"), emit: integration_dt
+
+    script:
+    def dbl_h5_arg = dbl_hvg_counts.name != 'NO_FILE' ? "--dbl_hvg_h5 '${dbl_hvg_counts}'" : ""
+    def excl_mito  = params.exclude_mito ? "--exclude_mito" : ""
+    """
+    set -euo pipefail
+    export MPLCONFIGDIR="\$PWD/.mplconfig"
+    export NUMBA_CACHE_DIR="\$PWD/.numba"
+    export PYTHONUNBUFFERED=1
+    export OPENBLAS_NUM_THREADS=1
+    export MKL_NUM_THREADS=${task.cpus}
+    export OMP_NUM_THREADS=${task.cpus}
+    export NUMEXPR_MAX_THREADS=${task.cpus}
+
+    python3 -u ${script} \
+        --hvg_h5          ${hvg_counts} \
+        ${dbl_h5_arg} \
+        ${excl_mito} \
+        --n_dims          ${params.integration_n_dims} \
+        --cluster_seed    ${params.integration_cluster_seed} \
+        --dbl_res         ${params.integration_dbl_res} \
+        --dbl_cl_prop     ${params.integration_dbl_cl_prop} \
+        --theta           ${params.integration_theta} \
+        --leiden_res      '${params.cellsweep_celltype_col.replaceFirst(/^RNA_snn_res\./, '')}' \
+        --n_neighbors     ${params.integration_n_neighbors} \
+        --singlet_only \
+        --qc_pattern      '${qc_csv}' \
+        --out_csv         integration_dt_${sampleId}.csv.gz \
+        --dbl_sweep_csv   dbl_sweep_${sampleId}.csv.gz
+    """
+}
