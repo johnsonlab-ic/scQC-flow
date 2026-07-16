@@ -69,7 +69,7 @@ load_input <- function(sid) {
 
 # --- CellSweep-output alpha_hat + annotation per cell ---
 load_output <- function(sid) {
-  al <- fread(alpha_fs[[sid]])
+  al <- fread(alpha_fs[[sid]])                       # barcode, celltype, alpha_hat
   al[, cell_id := paste(sid, barcode, sep = "_")]
   ann <- fread(ann_fs[[sid]])
   merge(al, ann[, .(cell_id, cluster, label, UMAP1, UMAP2)], by = "cell_id")
@@ -79,7 +79,6 @@ sample_data <- setNames(lapply(sids, function(sid) {
   list(input = load_input(sid), output = load_output(sid))
 }), sids)
 
-all_input  <- rbindlist(lapply(sids, function(sid) sample_data[[sid]]$input[, .(sample_id = sid, status, total, spliced)]))
 all_output <- rbindlist(setNames(lapply(sids, function(sid) sample_data[[sid]]$output), sids), idcol = "sample_id")
 
 short_id_of <- function(x) sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", x))
@@ -88,19 +87,10 @@ short_id_levels <- sort(unique(all_output$short_id), decreasing = TRUE)
 all_output[, short_id := factor(short_id, levels = short_id_levels)]
 
 # --- Per-cell QC metrics at 3 stages, for the nUMI/nGene/splice/mito violins ---
-# 1) post-QC input               -- pre-CellSweep qc_metrics, keep==TRUE (CellSweep's input)
-# 2) post-CellSweep              -- corrected qc_metrics (recomputed on corrected counts)
-# 3) post-CellSweep, low-ambient -- (2) restricted to alpha_hat <= alpha_thresh
 load_stage_metrics <- function(sid) {
   m_cols <- c("cell_id", "sum", "detected", "mito_pct", "total_spliced", "total_unspliced")
-
-  pre  <- fread(pre_qc_fs[[sid]])
-  pre  <- pre[keep == TRUE, ..m_cols]
-
-  post <- fread(post_qc_fs[[sid]])
-  post_cols <- c(m_cols, "alpha_hat")
-  post <- post[, ..post_cols]
-
+  pre  <- fread(pre_qc_fs[[sid]]); pre <- pre[keep == TRUE, ..m_cols]
+  post <- fread(post_qc_fs[[sid]]); post <- post[, c(m_cols, "alpha_hat"), with = FALSE]
   rbind(
     pre[,  .(sample_id = sid, stage = "post-QC input", sum, detected, mito_pct, total_spliced, total_unspliced)],
     post[, .(sample_id = sid, stage = "post-CellSweep", sum, detected, mito_pct, total_spliced, total_unspliced)],
@@ -120,23 +110,6 @@ stage_dt[, `:=`(
 )]
 
 stage_cols <- c("post-QC input" = "grey60", "post-CellSweep" = "#2c8a3d", "post-CellSweep, low-ambient" = "#1965B0")
-```
-
-```{r violin-helpers}
-# Single-metric horizontal violin, one column per sample -- qc_report's g_violin style.
-plot_metric_violin <- function(df, sample_var, value_var, facet_label,
-                                fill = "grey40", breaks = waiver(), labels = waiver()) {
-  plot_dt <- copy(df)[, facet := facet_label]
-  ggplot(plot_dt[!is.na(get(value_var))],
-         aes(x = .data[[sample_var]], y = .data[[value_var]])) +
-    geom_violin(colour = NA, fill = fill, kernel = "rectangular",
-                adjust = 0.1, scale = "width", width = 0.8) +
-    facet_grid(. ~ facet, scales = "free", space = "free_y") +
-    scale_y_continuous(breaks = breaks, labels = labels) +
-    coord_flip() +
-    theme_classic(base_size = 9) +
-    labs(x = NULL, y = NULL)
-}
 
 umis_brks   <- log10(c(1e0,1e1,3e1,1e2,3e2,1e3,3e3,1e4,3e4,1e5,3e5,1e6))
 umis_labs   <- c("1","10","30","100","300","1k","3k","10k","30k","100k","300k","1M")
@@ -147,8 +120,6 @@ splice_labs <- c("1%","3%","10%","30%","50%","70%","90%","97%","99%")
 mito_brks   <- qlogis(c(0.001,0.003,0.01,0.03,0.1,0.3,0.5,0.7,0.9))
 mito_labs   <- c("0.1%","0.3%","1%","3%","10%","30%","50%","70%","90%")
 
-# 4-metric x 3-stage violin -- facet_grid(metric ~ .) with facetted_pos_scales
-# (per-facet y axes), fill = stage.
 plot_stage_metric_violins <- function(df, sample_var = "short_id") {
   plot_dt <- melt(df, id.vars = c(sample_var, "stage"),
                    measure.vars = c("log_umis", "log_genes", "splice_logit", "mito_logit"),
@@ -183,28 +154,7 @@ plot_stage_metric_violins <- function(df, sample_var = "short_id") {
 
 ## Overview
 
-CellSweep-input composition per sample, excluding the (non-informative)
-`excluded` bucket -- percentages are of `cell, QC-kept` + `cell, QC-removed` +
-`ambient` only.
-
-```{r bar, fig.width=8, fig.height=0.16*length(sids)+1}
-comp_dt <- all_input[status != "excluded"]
-comp_dt[, status := factor(status, levels = c("cell, QC-kept", "cell, QC-removed", "ambient"))]
-comp_dt <- comp_dt[, .N, by = .(sample_id, status)]
-comp_dt[, pct := 100 * N / sum(N), by = sample_id]
-comp_dt[, short_id := sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", sample_id))]
-setorder(comp_dt, -sample_id)
-comp_dt[, short_id := factor(short_id, levels = unique(short_id))]
-
-ggplot(comp_dt, aes(short_id, pct, fill = status)) +
-  geom_col(position = "stack", width = 0.75) +
-  geom_text(aes(label = sprintf("%.0f%%", pct)), position = position_stack(vjust = 0.5), size = 2.5) +
-  scale_fill_manual(values = pop_cols, drop = FALSE) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0))) +
-  coord_flip() +
-  theme_classic(base_size = 9) +
-  labs(title = "CellSweep-input composition per sample", x = NULL, y = "% of barcodes", fill = NULL)
-```
+α̂ (`alpha_hat`) distribution across all CellSweep-output cells, pooled over samples.
 
 ```{r hist-global, fig.width=7, fig.height=3.5}
 ggplot(all_output, aes(alpha_hat)) +
@@ -219,10 +169,11 @@ ggplot(all_output, aes(alpha_hat)) +
 
 ## Per-sample
 
-Each tab covers one sample end to end: what fed CellSweep (input composition +
-ambient background), then what came out (α̂ diagnostics).
+Each tab covers one sample end to end: what fed CellSweep (input scatter), then what
+came out — α̂ over the UMAP, the annotation, α̂ per cell type, and which input cells the
+α̂ > `r alpha_thresh` trim removes (shown on the same nUMI × splice axes as the input).
 
-```{r results='asis', fig.width=11, fig.height=4.5}
+```{r results='asis', fig.width=11, fig.height=4.6}
 cat("::: {.panel-tabset}\n\n")
 for (sid in sids) {
   cat("### ", sid, "\n\n")
@@ -246,7 +197,7 @@ for (sid in sids) {
 
   p_al <- ggplot(m, aes(UMAP1, UMAP2, colour = alpha_hat)) +
     geom_point(size = 0.3, alpha = 0.6) +
-    scale_colour_viridis_c(limits = c(0, quantile(m$alpha_hat, 0.99)), name = expression(hat(alpha))) +
+    scale_colour_viridis_c(limits = c(0, 1), name = expression(hat(alpha))) +
     theme_classic(base_size = 9) +
     labs(title = "alpha_hat on UMAP")
 
@@ -269,33 +220,36 @@ for (sid in sids) {
   print(p_al | p_ann)
   cat("\n\n")
 
-  p_box <- ggplot(m, aes(factor(cluster), alpha_hat)) +
-    geom_boxplot(outlier.size = 0.2, fill = "#69b3a2") +
+  # alpha_hat by CELL TYPE — violins coloured by cell type, ordered by median
+  ct_ord  <- m[, .(md = median(alpha_hat)), by = label][order(md), label]
+  m[, label_f := factor(label, levels = ct_ord)]
+  ct_cols <- make_plot_palette(sort(unique(m$label)))
+  p_box <- ggplot(m, aes(label_f, alpha_hat, fill = label_f)) +
+    geom_violin(colour = NA, scale = "width") +
+    geom_hline(yintercept = alpha_thresh, linetype = "dashed", colour = "red") +
+    scale_fill_manual(values = ct_cols) +
+    coord_flip() +
     theme_classic(base_size = 9) +
-    theme(axis.text.x = element_text(angle = 90, size = 7)) +
-    labs(title = "alpha_hat by cluster", x = "cluster", y = "alpha_hat")
+    theme(legend.position = "none") +
+    labs(title = "alpha_hat by cell type", x = NULL, y = "alpha_hat")
 
-  p_hist <- ggplot(m, aes(alpha_hat)) +
-    geom_histogram(bins = 50, fill = "#4477aa") +
-    geom_vline(xintercept = alpha_thresh, linetype = "dashed", colour = "red") +
-    theme_classic(base_size = 9) +
-    labs(title = sprintf("alpha_hat distribution (%s removed at %.1f)",
-                          format(nrow(gone), big.mark = ","), alpha_thresh),
-         x = "alpha_hat", y = "cells")
+  # same droplet landscape as the Input scatter (all populations), with the cells
+  # the alpha filter removes (alpha_hat > 0.5) overlaid in red
+  rmv <- merge(d[, .(barcode, lx, ly)], m[, .(barcode, alpha_hat)], by = "barcode")
+  gone_rm <- rmv[alpha_hat > alpha_thresh]
+  p_rm <- ggplot() +
+    geom_point(data = pl, aes(lx, ly), colour = "grey80", size = 0.25, alpha = 0.5) +
+    geom_point(data = gone_rm, aes(lx, ly), colour = "#c0392b", size = 0.5, alpha = 0.9) +
+    scale_x_continuous(breaks = LOGB, labels = LOGL) + scale_y_continuous(breaks = PCTB, labels = PCTL) +
+    theme_classic(base_size = 8) +
+    labs(title = sprintf("cells removed by alpha filter (red = %s cells, α̂ > %.1f)",
+                         format(nrow(gone_rm), big.mark = ","), alpha_thresh),
+         x = "total UMIs (log)", y = "spliced fraction")
 
-  print(p_box | p_hist)
+  print(p_box | p_rm)
   cat("\n\n")
 }
 cat(":::\n\n")
-```
-
-## Ambient fraction summary
-
-Per-sample distribution of α̂ across all CellSweep-output cells (shown graphically rather
-than as a per-sample summary table).
-
-```{r alpha-violin, fig.width=7, fig.height=0.16*length(sids)+1}
-plot_metric_violin(all_output, "short_id", "alpha_hat", facet_label = "alpha score")
 ```
 
 ## QC metrics across CellSweep stages
@@ -305,7 +259,7 @@ at three stages: **post-QC input** (CellSweep's input, i.e. all QC-kept cells),
 **post-CellSweep** (all cells after ambient correction), and **post-CellSweep,
 low-ambient** (the subset with α̂ ≤ `r alpha_thresh`).
 
-```{r stage-violins, fig.width=11, fig.height=0.28*length(sids)+1.4, results='asis'}
+```{r stage-violins, fig.width=11, fig.height=0.55*length(sids)+2, results='asis'}
 max_per_page <- 40
 sid_levels   <- levels(stage_dt$short_id)
 groups       <- split(sid_levels, ceiling(seq_along(sid_levels) / max_per_page))

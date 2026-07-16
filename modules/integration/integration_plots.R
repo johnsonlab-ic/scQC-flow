@@ -414,8 +414,9 @@ plot_clusters_annotated_by_densities <- function(int_dt, var_name, bins = 120) {
   ggplot(dens_dt, aes(x = x, y = y, fill = prop)) +
     geom_raster() +
     facet_wrap(~ value, ncol = min(3, length(vals))) +
-    scale_fill_distiller(palette = "RdYlBu", limits = c(0, 1), direction = -1,
-      breaks = pretty_breaks()) +
+    scale_fill_gradientn(
+      colours = c("#fff7ec", "#fdd49e", "#fdbb84", "#ef6548", "#990000"),
+      limits = c(0, 1), breaks = pretty_breaks(), na.value = "grey85") +
     scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
     scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
     labs(fill = "proportion in bin") +

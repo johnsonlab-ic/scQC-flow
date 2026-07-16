@@ -92,8 +92,7 @@ feature_sources <- list(
   list(key = "nfeature_rna", source = "detected",      label = "nFeature RNA"),
   list(key = "splice_frac",  source = "splice_frac",   label = "splice fraction"),
   list(key = "mito_pct",     source = "mito_pct",      label = "mitochondrial content"),
-  list(key = "complexity",   source = "complexity",    label = "complexity (log genes / log UMIs)"),
-  list(key = "intronic_frac",source = "intronic_frac", label = "intronic fraction")
+  list(key = "complexity",   source = "complexity",    label = "complexity (log genes / log UMIs)")
 )
 
 qc_names <- c("log_counts", "log_feats", "logit_mito", "logit_spliced")
@@ -424,7 +423,6 @@ cat("## CellSweep ambient fraction (α̂)\n\nEach cell's CellSweep-estimated amb
 
 ```{r plot_alpha_umap, fig.height = 7, fig.width = 9, results='asis', eval=show_alpha}
 int_dt_pass2[, alpha_hat := as.numeric(alpha_hat)]
-alpha_hi <- as.numeric(quantile(int_dt_pass2$alpha_hat, 0.99, na.rm = TRUE))
 
 make_alpha_umap <- function(cl_col) {
   base_dt <- int_dt_pass2[, .(
@@ -454,7 +452,7 @@ make_alpha_umap <- function(cl_col) {
     geom_text_repel(data = cl_labs, aes(lx, ly, label = lab), inherit.aes = FALSE,
                     colour = "grey20", size = 3, seed = 1, min.segment.length = 0,
                     max.overlaps = Inf, box.padding = 0.3, segment.color = "grey55") +
-    scale_colour_gradientn(colours = qc_feature_palette, limits = c(0, alpha_hi),
+    scale_colour_gradientn(colours = qc_feature_palette, limits = c(0, 1),
                            oob = squish, name = "Mean α̂\n(cluster)") +
     scale_x_continuous(limits = c(0, 1)) + scale_y_continuous(limits = c(0, 1)) +
     base_theme + labs(x = "UMAP 1", y = "UMAP 2",
@@ -462,7 +460,7 @@ make_alpha_umap <- function(cl_col) {
 
   g_cell <- ggplot(plot_cells, aes(UMAP1s, UMAP2s, colour = alpha_hat)) +
     geom_point(size = 0.1) +
-    scale_colour_gradientn(colours = qc_feature_palette, limits = c(0, alpha_hi),
+    scale_colour_gradientn(colours = qc_feature_palette, limits = c(0, 1),
                            oob = squish, name = "α̂\n(per cell)") +
     scale_x_continuous(limits = c(0, 1)) + scale_y_continuous(limits = c(0, 1)) +
     base_theme + labs(x = "UMAP 1", y = "UMAP 2")
@@ -636,15 +634,15 @@ if (length(feature_vars) > 0) {
 ## Cluster degradation flag
 
 Degraded / low-information cells (low UMI **and** low complexity, with a soup-shifted
-i.e. low intronic fraction) tend to collect into their own clusters — the "hairball"
+i.e. high spliced fraction) tend to collect into their own clusters — the "hairball"
 signature — rather than distributing evenly. For each cluster we show the median
-**complexity** (log genes / log UMIs), **intronic fraction**, **nCount** and cell count.
+**complexity** (log genes / log UMIs), **spliced fraction**, **nCount** and cell count.
 Clusters whose median complexity is a low outlier (below median − 1.5 × MAD across
 clusters) are flagged as *likely low-quality*. This is **annotation only** — nothing is
 filtered here; it flags clusters to scrutinise downstream.
 
 ```{r cluster_degradation, results='asis'}
-deg_cols <- intersect(c("complexity", "intronic_frac", "sum"), names(int_dt_pass2))
+deg_cols <- intersect(c("complexity", "splice_frac", "sum"), names(int_dt_pass2))
 if (length(present_leiden) > 0 && "complexity" %in% deg_cols) {
   cat('::: {.panel-tabset}\n\n')
   for (cl_col in present_leiden) {
@@ -654,7 +652,7 @@ if (length(present_leiden) > 0 && "complexity" %in% deg_cols) {
     tbl <- d[, .(
       n_cells        = .N,
       med_complexity = round(median(complexity, na.rm = TRUE), 3),
-      med_intronic   = if ("intronic_frac" %in% deg_cols) round(median(intronic_frac, na.rm = TRUE), 3) else NA_real_,
+      med_splice     = if ("splice_frac" %in% deg_cols) round(median(splice_frac, na.rm = TRUE), 3) else NA_real_,
       med_nCount     = if ("sum" %in% deg_cols) round(median(sum, na.rm = TRUE), 0) else NA_real_
     ), by = .(cluster = get(cl_col))]
     med_c <- median(tbl$med_complexity, na.rm = TRUE)
@@ -670,7 +668,7 @@ if (length(present_leiden) > 0 && "complexity" %in% deg_cols) {
   }
   cat(':::\n\n')
 } else {
-  cat("Complexity / intronic axes not available in QC inputs — re-run QC to populate them.\n\n")
+  cat("Complexity / splice axes not available in QC inputs — re-run QC to populate them.\n\n")
 }
 ```
 

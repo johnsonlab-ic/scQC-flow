@@ -79,6 +79,18 @@ if (nzchar(parent_csv_path) && file.exists(parent_csv_path)) {
   parent_umap_dt <- NULL
 }
 
+# Parent cluster-level annotation (cell_id, cluster, label, label_score) at the
+# annotation resolution — used to highlight the SELECTED CLUSTERS on the parent UMAP.
+parent_ann_path <- Sys.getenv("PARENT_ANNOTATION_CELL_LABELS", "")
+if (nzchar(parent_ann_path) && file.exists(parent_ann_path) && basename(parent_ann_path) != "NO_FILE") {
+  parent_ann_dt <- fread(parent_ann_path)
+  parent_ann_dt[, cell_id := as.character(cell_id)]
+  parent_ann_dt[, cluster := as.character(cluster)]
+} else {
+  parent_ann_dt <- NULL
+}
+annotation_sel_res <- Sys.getenv("ANNOTATION_SEL_RES", "0.2")
+
 if (!"splice_frac" %in% names(qc_dt) && all(c("total_spliced", "total_unspliced") %in% names(qc_dt))) {
   qc_dt[, splice_frac := (total_spliced + 1) / (total_spliced + total_unspliced + 2)]
 } else if (!"splice_frac" %in% names(qc_dt) && "logit_spliced" %in% names(qc_dt)) {
@@ -173,69 +185,59 @@ Zoom `r zoom_name` re-runs HVG selection and integration on a selected subset of
 * **Samples retained:** `r uniqueN(int_dt_pass2$sample_id)`
 * **Marker resolution:** `r marker_sel_res`
 
-```{r selection_umap, fig.height = 4, fig.width = 4}
-sel_tbl <- selection_dt[, .(n_cells = .N), by = .(sample_id)][order(-n_cells)]
+## Selected cells
 
-if (!is.null(parent_umap_dt)) {
-  # Build parent-space overview: all cells grey, selected cells coloured
-  selected_vals <- unique(selection_dt[, .(cell_id, zoom_value)])
+The zoom subset is defined at the **cluster** level on the full-dataset analysis
+(resolution `r annotation_sel_res`): whole clusters whose annotation matched the
+target are taken, not individual cells. Below the **selected clusters** are highlighted
+on the full-dataset UMAP (coloured, labelled with the cluster's annotation and mean
+confidence score); every other cell is greyed out.
 
-  overview_dt <- copy(parent_umap_dt)
-  overview_dt <- merge(overview_dt, selected_vals, by = "cell_id", all.x = TRUE)
-  overview_dt[, zoom_value := as.character(zoom_value)]
-  overview_dt[is.na(zoom_value), zoom_value := "other"]
+```{r selection_umap, fig.height = 5.5, fig.width = 6}
+p1 <- NULL
+if (!is.null(parent_umap_dt) && !is.null(parent_ann_dt)) {
+  pdt <- merge(parent_umap_dt,
+               parent_ann_dt[, .(cell_id, cluster, label, label_score)],
+               by = "cell_id", all.x = TRUE)
+  sel_cells    <- unique(selection_dt$cell_id)
+  sel_clusters <- sort(unique(pdt[cell_id %in% sel_cells & !is.na(cluster), cluster]))
 
-  zoom_levels <- c(sort(unique(as.character(selection_dt$zoom_value))), "other")
-  overview_dt[, zoom_value := factor(zoom_value, levels = zoom_levels)]
-  overview_dt <- overview_dt[order(zoom_value == "other", decreasing = TRUE)]  # selected on top
+  pdt[, selected := !is.na(cluster) & cluster %in% sel_clusters]
+  cl_cols <- setNames(rep(nice_cols, length.out = length(sel_clusters)), sel_clusters)
 
-  zoom_cols <- setNames(rep(nice_cols, length.out = length(zoom_levels)), zoom_levels)
-  zoom_cols[["other"]] <- "grey88"
+  cl_lab <- pdt[selected == TRUE, .(
+    UMAP1 = median(UMAP1), UMAP2 = median(UMAP2),
+    label = label[1], score = mean(label_score, na.rm = TRUE)
+  ), by = cluster]
+  cl_lab[, txt := sprintf("%s: %s (%.2f)", cluster, label, score)]
 
-  size_map <- ifelse(overview_dt$zoom_value == "other", 0.08, 0.15)
-
-  p1 <- ggplot(overview_dt, aes(x = UMAP1, y = UMAP2, colour = zoom_value)) +
-    ggrastr::geom_point_rast(size = size_map, raster.dpi = 300) +
-    scale_colour_manual(values = zoom_cols, drop = FALSE) +
+  p1 <- ggplot() +
+    ggrastr::geom_point_rast(data = pdt[selected == FALSE],
+                             aes(UMAP1, UMAP2), colour = "grey88", size = 0.08, raster.dpi = 300) +
+    ggrastr::geom_point_rast(data = pdt[selected == TRUE],
+                             aes(UMAP1, UMAP2, colour = cluster), size = 0.18, raster.dpi = 300) +
+    scale_colour_manual(values = cl_cols, drop = FALSE, guide = "none") +
+    ggrepel::geom_text_repel(data = cl_lab, aes(UMAP1, UMAP2, label = txt),
+                             size = 3, seed = 1, min.segment.length = 0, max.overlaps = Inf,
+                             box.padding = 0.4, point.padding = 0.2, segment.color = "grey55") +
     theme_bw() +
-    theme(
-      panel.grid = element_blank(),
-      axis.ticks = element_blank(),
-      axis.text = element_blank(),
-      aspect.ratio = 1,
-      legend.position = "none"
-    ) +
-    labs(colour = "zoom value", title = "Selected cells over full-dataset UMAP")
-} else {
-  # Fallback: show selected cells over zoom UMAP
-  zoom_umap_dt <- merge(
-    int_dt_pass2[, .(cell_id, UMAP1, UMAP2)],
-    unique(selection_dt[, .(cell_id, zoom_value)]),
-    by = "cell_id",
-    all.x = TRUE
-  )
-  zoom_umap_dt[, is_selected := !is.na(zoom_value)]
-  zoom_umap_dt[, zoom_value := fifelse(is_selected, as.character(zoom_value), "other")]
-  zoom_umap_dt[, zoom_value := factor(zoom_value, levels = c(sort(unique(as.character(selection_dt$zoom_value))), "other"))]
-
-  zoom_cols <- setNames(rep(nice_cols, length.out = nlevels(zoom_umap_dt$zoom_value)), levels(zoom_umap_dt$zoom_value))
-  if ("other" %in% names(zoom_cols)) zoom_cols[["other"]] <- "grey85"
-
-  p1 <- ggplot(zoom_umap_dt, aes(x = UMAP1, y = UMAP2, colour = zoom_value)) +
-    ggrastr::geom_point_rast(size = 0.12, raster.dpi = 300) +
-    scale_colour_manual(values = zoom_cols, drop = FALSE) +
+    theme(panel.grid = element_blank(), axis.ticks = element_blank(),
+          axis.text = element_blank(), aspect.ratio = 1) +
+    labs(title = sprintf("Selected clusters (res %s) over full-dataset UMAP", annotation_sel_res),
+         x = "UMAP 1", y = "UMAP 2")
+} else if (!is.null(parent_umap_dt)) {
+  # Fallback (no parent annotation staged): selected cells over the parent UMAP
+  ov <- merge(parent_umap_dt, unique(selection_dt[, .(cell_id, zoom_value)]), by = "cell_id", all.x = TRUE)
+  ov[, sel := !is.na(zoom_value)]
+  p1 <- ggplot() +
+    ggrastr::geom_point_rast(data = ov[sel == FALSE], aes(UMAP1, UMAP2), colour = "grey88", size = 0.08, raster.dpi = 300) +
+    ggrastr::geom_point_rast(data = ov[sel == TRUE],  aes(UMAP1, UMAP2), colour = "#c0392b", size = 0.15, raster.dpi = 300) +
     theme_bw() +
-    theme(
-      panel.grid = element_blank(),
-      axis.ticks = element_blank(),
-      axis.text = element_blank(),
-      aspect.ratio = 1,
-      legend.position = "none"
-    ) +
-    labs(colour = "zoom value", title = "Selected cells over zoom UMAP")
+    theme(panel.grid = element_blank(), axis.ticks = element_blank(),
+          axis.text = element_blank(), aspect.ratio = 1) +
+    labs(title = "Selected cells over full-dataset UMAP", x = "UMAP 1", y = "UMAP 2")
 }
-
-print(p1)
+if (!is.null(p1)) print(p1)
 ```
 
 ## Selected cells per sample

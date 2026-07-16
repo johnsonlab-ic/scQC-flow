@@ -78,15 +78,6 @@ load_sample <- function(sid) {
 sample_data <- setNames(lapply(sids, load_sample), sids)
 ```
 
-```{r pca_plot_fn}
-# Same styling as plot_umap_cluster, applied to PC1/PC2 instead of UMAP1/UMAP2
-plot_pca_cluster <- function(dt) {
-  pdt <- copy(dt)[, .(cell_id, UMAP1 = pca_01, UMAP2 = pca_02)]
-  plot_umap_cluster(pdt, dt[, .(cell_id, cluster)], name = "cluster") +
-    labs(x = "PC1", y = "PC2")
-}
-```
-
 ## QC metrics
 
 Per-sample distributions (vertical violin, pre-QC vs post-QC per metric)
@@ -140,18 +131,6 @@ for (sid in sids) {
 cat(":::\n\n")
 ```
 
-## PCA
-
-```{r results='asis'}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
-  print(plot_pca_cluster(sample_data[[sid]]$int_dt))
-  cat("\n\n")
-}
-cat(":::\n\n")
-```
-
 ```{r results='asis'}
 cat(sprintf("## Annotation (%s)\n\n", method_label))
 ```
@@ -176,21 +155,6 @@ for (sid in sids) {
   ) + theme(legend.position = "none")
   print(g_lab + g_clu)
   cat(sprintf("\n\n%d cells, %d clusters.\n\n", nrow(d$int_dt), uniqueN(d$int_dt$cluster)))
-}
-cat(":::\n\n")
-```
-
-## Cells annotated
-
-Cluster-level annotation summary (top label + mean prediction score per cluster).
-
-```{r results='asis'}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
-  print(knitr::kable(sample_data[[sid]]$m_summ[order(cluster)],
-                      caption = sprintf("%s cluster summary", method_label)))
-  cat("\n\n")
 }
 cat(":::\n\n")
 ```
