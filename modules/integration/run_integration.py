@@ -193,17 +193,26 @@ def _get_hvg_mat(hvg_mat_f, dbl_hvg_mat_f):
 # Build cells_df from QC metrics
 # ---------------------------------------------------------------------------
 
-def _get_cells_df(qc_csv_files, bcs_passed, bcs_dbl, metadata_vars=None):
+def _get_cells_df(qc_csv_files, bcs_passed, bcs_dbl, metadata_vars=None, dbl_qc_files=None):
     """Build cells DataFrame matching matrix column order.
 
     Marks doublet cells with is_dbl_int column.
     Joins metadata if provided.
+
+    dbl_qc_files: optional separate QC source for doublets (e.g. apply_qc QC in the
+    CellSweep path, where the main QC carries singlets only). Only its doublet rows
+    (scdbl_class == 'doublet') are added, so re-injected doublet barcodes resolve.
     """
     # Load and concat QC CSVs
     qc_frames = [pd.read_csv(f) for f in qc_csv_files]
     all_coldata = pd.concat(qc_frames, ignore_index=True)
+    if dbl_qc_files:
+        ddf = pd.concat([pd.read_csv(f) for f in dbl_qc_files], ignore_index=True)
+        ddf = ddf[ddf['scdbl_class'] == 'doublet'].copy()
+        all_coldata = pd.concat([all_coldata, ddf], ignore_index=True)
     all_coldata['sample_id'] = all_coldata['sample_id'].astype(str)
     all_coldata['cell_id'] = all_coldata['cell_id'].astype(str)
+    all_coldata = all_coldata.drop_duplicates(subset=['sample_id', 'cell_id'], keep='first')
     # Prefix cell_id with sample_id to match barcodes written by hvg_selection.py
     all_coldata['cell_id'] = all_coldata['sample_id'] + '_' + all_coldata['cell_id']
 
@@ -514,7 +523,7 @@ def _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data):
 def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
                     n_dims, cluster_seed, dbl_res, dbl_cl_prop, theta, res_ls,
                     out_csv, dbl_sweep_csv='dbl_sweep.csv.gz', use_paga=False,
-                    chunk_size=0, n_neighbors=15):
+                    chunk_size=0, n_neighbors=15, dbl_qc_files=None):
     """Two-pass integration identical to scprocess."""
 
     _log('=== INTEGRATION (two-pass) ===')
@@ -544,7 +553,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
     with _timed_step('Loading cell metadata'):
         cells_df = _get_cells_df(
             qc_csv_files, bcs_passed, bcs_dbl,
-            metadata_vars=metadata_vars
+            metadata_vars=metadata_vars, dbl_qc_files=dbl_qc_files
         )
     _log(f'  cells_df: {len(cells_df):,} cells')
 
@@ -801,6 +810,8 @@ if __name__ == '__main__':
                         help='Number of neighbors for kNN graph (default 15; reduce to 10 for very large datasets)')
     parser.add_argument('--out_csv',         type=str, default='integration_dt.csv.gz')
     parser.add_argument('--dbl_sweep_csv',   type=str, default='dbl_sweep.csv.gz')
+    parser.add_argument('--dbl_qc_pattern',  type=str, default=None,
+                        help='separate QC source for doublet rows (CellSweep path; main QC is singlets-only)')
     args = parser.parse_args()
 
     # Parse list arguments
@@ -811,6 +822,7 @@ if __name__ == '__main__':
     qc_files = sorted(glob.glob(args.qc_pattern))
     if not qc_files:
         sys.exit(f"ERROR: no QC files matched pattern '{args.qc_pattern}'")
+    dbl_qc_files = sorted(glob.glob(args.dbl_qc_pattern)) if args.dbl_qc_pattern else None
 
     if args.singlet_only:
         run_zoom_integration(
@@ -845,4 +857,5 @@ if __name__ == '__main__':
             use_paga        = args.use_paga,
             chunk_size      = args.chunk_size,
             n_neighbors     = args.n_neighbors,
+            dbl_qc_files    = dbl_qc_files,
         )

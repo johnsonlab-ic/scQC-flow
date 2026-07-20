@@ -11,6 +11,7 @@ process RUN_INTEGRATION {
     path dbl_hvg_counts  // dbl_hvg_counts.h5 (doublets) from HVG_SELECTION
     path qc_csvs         // collected qc_metrics_*.csv.gz from QC
     path script          // run_integration.py
+    path dbl_qc_csvs, stageAs: 'dbl_qc/*'  // apply_qc QC (scdbl_class) for doublet rows (or NO_FILE)
 
     output:
     path "integration_dt.csv.gz", emit: integration_dt
@@ -19,6 +20,8 @@ process RUN_INTEGRATION {
     script:
     def meta_vars    = params.metadata_vars ? "--metadata_vars '${params.metadata_vars}'" : ""
     def dbl_h5_arg   = dbl_hvg_counts.name != 'NO_FILE' ? "--dbl_hvg_h5 '${dbl_hvg_counts}'" : ""
+    def has_dbl_qc   = dbl_qc_csvs instanceof List || dbl_qc_csvs.name != 'NO_FILE'
+    def dbl_qc_arg   = has_dbl_qc ? "--dbl_qc_pattern 'dbl_qc/qc_metrics_*.csv.gz'" : ""
     def excl_mito    = params.exclude_mito ? "--exclude_mito" : ""
     def paga_flag    = params.integration_use_paga ? "--use_paga" : ""
     def chunk_arg    = params.integration_chunk_size > 0 ? "--chunk_size ${params.integration_chunk_size}" : ""
@@ -46,6 +49,7 @@ process RUN_INTEGRATION {
         --leiden_res      '${params.integration_leiden_res}' \
         --n_neighbors     ${params.integration_n_neighbors} \
         ${chunk_arg} \
+        ${dbl_qc_arg} \
         --qc_pattern      'qc_metrics_*.csv.gz' \
         --out_csv         integration_dt.csv.gz \
         --dbl_sweep_csv   dbl_sweep.csv.gz

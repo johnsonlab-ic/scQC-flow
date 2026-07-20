@@ -472,6 +472,8 @@ workflow HVG {
     qc_metrics_ch // tuple(sampleId, csv_gz)        from QC.qc_metrics
     de_table      // path edger_dt.csv.gz           from AMBIENT.de_table
     pb_empties    // path pb_empties.rds            from AMBIENT.pb_empties
+    dbl_h5_files  // collected pre-CellSweep filt_counts_*.h5 for doublets (or NO_FILE)
+    dbl_qc_files  // collected apply_qc qc_metrics_*.csv.gz (scdbl_class) for doublets (or NO_FILE)
 
     main:
 
@@ -480,7 +482,9 @@ workflow HVG {
         qc_metrics_ch.map { _id, csv -> csv }.collect(),
         channel.value(file(params.genome_gtf)),
         de_table,
-        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py"))
+        channel.value(file("${projectDir}/modules/hvg/hvg_selection.py")),
+        dbl_h5_files,
+        dbl_qc_files
     )
 
     HVG_REPORT(
@@ -515,6 +519,7 @@ workflow INTEGRATION {
     hvg_counts_ch      // path  hvg_counts.h5 (singlets) from HVG
     dbl_hvg_counts_ch  // path  dbl_hvg_counts.h5 (doublets) from HVG
     qc_metrics_ch      // tuple(sampleId, csv_gz) from QC.qc_metrics
+    dbl_qc_files       // collected apply_qc qc_metrics for doublet rows (or NO_FILE)
 
     main:
 
@@ -522,7 +527,8 @@ workflow INTEGRATION {
         hvg_counts_ch,
         dbl_hvg_counts_ch,
         qc_metrics_ch.map { _id, csv -> csv }.collect(),
-        channel.value(file("${projectDir}/modules/integration/run_integration.py"))
+        channel.value(file("${projectDir}/modules/integration/run_integration.py")),
+        dbl_qc_files
     )
 
     INTEGRATION_REPORT(
@@ -771,6 +777,7 @@ workflow ZOOMS {
         RUN_ZOOM_MARKERS.out.zoom_markers,
         integration_dt_ch,
         annotation_cell_labels_ch.first(),
+        annotation_method_cell_labels_ch.collect(),
         channel.value(file("${projectDir}/modules/reports/zoom_report.qmd")),
         channel.value(file("${projectDir}/modules/integration/integration_plots.R")),
         channel.value(file("${projectDir}/modules/annotation/annotation_utils.R"))

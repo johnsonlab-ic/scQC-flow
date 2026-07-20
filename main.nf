@@ -602,6 +602,11 @@ workflow {
                 def hvg_qc_ch        = QC.out.qc_metrics
                 def hvg_de_table_ch  = AMBIENT.out.de_table
                 def hvg_pb_empties_ch = AMBIENT.out.pb_empties
+                // Doublet source for the integration two-pass. Standard path: NO_FILE
+                // (doublets come from the main h5). CellSweep path: pre-CellSweep h5 +
+                // apply_qc QC so doublets are re-injected for cluster-based removal.
+                def hvg_dbl_h5_ch    = channel.value(file("${projectDir}/templates/NO_FILE"))
+                def hvg_dbl_qc_ch    = channel.value(file("${projectDir}/templates/NO_FILE"))
 
                 if (ambientMethod == 'cellsweep') {
                     PER_SAMPLE_ANNOTATION_WF(
@@ -632,13 +637,19 @@ workflow {
                     // ambient-gene (is_ambient) list from AMBIENT_DE is still used to
                     // exclude soup genes from HVG selection and to render the HVG
                     // ambient diagnostics — so keep AMBIENT's de_table / pb_empties.
+                    // Re-inject doublets from the pre-CellSweep h5 + apply_qc QC so the
+                    // integration two-pass can remove doublet-enriched clusters.
+                    hvg_dbl_h5_ch     = AMBIENT.out.h5_files.map { _id, h5 -> h5 }.collect()
+                    hvg_dbl_qc_ch     = QC.out.qc_metrics.map { _id, csv -> csv }.collect()
                 }
 
                 HVG(
                     hvg_h5_ch,
                     hvg_qc_ch,
                     hvg_de_table_ch,
-                    hvg_pb_empties_ch
+                    hvg_pb_empties_ch,
+                    hvg_dbl_h5_ch,
+                    hvg_dbl_qc_ch
                 )
                 report_pages = report_pages.mix(HVG.out.report)
 
@@ -652,7 +663,8 @@ workflow {
                     INTEGRATION(
                         HVG.out.hvg_counts,
                         HVG.out.dbl_hvg_counts,
-                        hvg_qc_ch
+                        hvg_qc_ch,
+                        hvg_dbl_qc_ch
                     )
                     landing_integration_ch = INTEGRATION.out.integration_dt
                     report_pages = report_pages.mix(INTEGRATION.out.report)

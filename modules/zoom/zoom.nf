@@ -225,6 +225,7 @@ process ZOOM_REPORT {
     tuple val(zoom_name), val(spec_b64), path(zoom_qc_metrics), path(zoom_selection), path(zoom_integration_dt), path(zoom_marker_stats), path(zoom_marker_logcpms), path(zoom_marker_expression)
     path parent_integration_csv
     path parent_annotation_cell_labels
+    path method_annotation_csvs      // annotation_cells_<method>.csv.gz (per-cell labels+scores) for zoom annotation
     path report_qmd
     path integration_plots_r
     path annotation_utils_r
@@ -247,6 +248,7 @@ process ZOOM_REPORT {
     export PARENT_INTEGRATION_CSV='${parent_integration_csv}'
     export PARENT_ANNOTATION_CELL_LABELS='${parent_annotation_cell_labels}'
     export ANNOTATION_SEL_RES='${params.annotation_sel_res}'
+    export ZOOM_ANNOTATION_METHODS='${((spec.annotation_methods ?: []) as List).collect { it.toString() }.join(",").replace("'", "'\"'\"'")}'
     export ZOOM_NAME='${zoom_name}'
     export ZOOM_SOURCE='${zoomSource}'
     export ZOOM_VALUES='${zoomValues}'

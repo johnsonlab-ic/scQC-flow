@@ -132,6 +132,16 @@ def _load_cell_metadata(integration_csv, qc_pattern, annotation_pattern):
     int_df = pd.read_csv(integration_csv)
     int_df['cell_id'] = int_df['cell_id'].astype(str)
     int_df = int_df.drop_duplicates('cell_id').reset_index(drop=True)
+    # Export the final (pass-2) object only: cells that survived doublet / doublet-cluster
+    # removal have a non-NA pass-2 UMAP. Pass-1 doublets (NaN UMAP1) are excluded — they
+    # are removed from the analysis, and in the CellSweep path their counts live in a
+    # separate pre-CellSweep source, not the filtered H5 read here.
+    if 'UMAP1' in int_df.columns:
+        n0 = len(int_df)
+        int_df = int_df[int_df['UMAP1'].notna()].reset_index(drop=True)
+        if len(int_df) < n0:
+            print(f'Export: keeping {len(int_df)} pass-2 cells (dropped {n0 - len(int_df)} '
+                  f'doublet / removed-cluster cells)', flush=True)
 
     qc_df = _load_qc_metadata(qc_pattern)
     merged = int_df.merge(qc_df, on='cell_id', how='left', suffixes=('', '__qc'))

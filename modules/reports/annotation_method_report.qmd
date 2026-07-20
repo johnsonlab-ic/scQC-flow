@@ -329,7 +329,7 @@ if ("score" %in% names(cells_dt) && any(!is.na(cells_dt$score))) {
 
 Predicted label (left) and prediction score (right) over the same UMAP.
 
-```{r umap_label_score, fig.width=13, fig.height=5.5}
+```{r umap_label_score, fig.width=9, fig.height=7}
 if (all(c("UMAP1", "UMAP2") %in% names(cells_dt))) {
   g_lab <- plot_umap_cluster_consistent(
       cells_dt[, .(cell_id, UMAP1, UMAP2)],
@@ -340,17 +340,14 @@ if (all(c("UMAP1", "UMAP2") %in% names(cells_dt))) {
         centroid_label = as.character(label)
       )],
       name = 'cell label'
-    ) + theme(legend.position = 'none') + ggtitle('UMAP coloured by predicted label')
+    ) + theme(legend.position = 'none') + ggtitle('predicted label')
 
   if ("score" %in% names(cells_dt)) {
-    plot_dt <- copy(cells_dt)[!is.na(UMAP1) & !is.na(UMAP2)]
-    g_score <- ggplot(plot_dt, aes(x = UMAP1, y = UMAP2, colour = score)) +
-      ggrastr::geom_point_rast(size = 0.12, raster.dpi = 300) +
-      scale_colour_viridis_c(option = "C", na.value = "grey80") +
-      theme_bw() +
-      theme(panel.grid = element_blank(), aspect.ratio = 1,
-            axis.ticks = element_blank(), axis.text = element_blank()) +
-      labs(colour = "score", title = "UMAP coloured by prediction score")
+    g_score <- plot_umap_score_consistent(
+      cells_dt[, .(cell_id, UMAP1, UMAP2)],
+      cells_dt[, .(cell_id, score)],
+      name = 'score'
+    ) + ggtitle('prediction score')
     print(g_lab | g_score)
   } else {
     print(g_lab)

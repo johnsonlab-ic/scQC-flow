@@ -36,7 +36,7 @@ requested_metadata_vars <- requested_metadata_vars[nzchar(requested_metadata_var
 
 qc_feature_palette <- c("#fff7ec", "#fdd49e", "#fdbb84", "#ef6548", "#990000")
 
-plot_umap_qc_feature <- function(int_dt, var_name, label) {
+plot_umap_qc_feature <- function(int_dt, var_name, label, limits = NULL) {
   stopifnot(all(c("UMAP1", "UMAP2", var_name) %in% names(int_dt)))
 
   plot_dt <- copy(int_dt)[!is.na(get(var_name)), c("UMAP1", "UMAP2", var_name), with = FALSE]
@@ -48,7 +48,8 @@ plot_umap_qc_feature <- function(int_dt, var_name, label) {
     geom_point(size = 0.1) +
     scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
     scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
-    scale_colour_gradientn(colours = qc_feature_palette, na.value = "grey85") +
+    scale_colour_gradientn(colours = qc_feature_palette, na.value = "grey85",
+                           limits = limits, oob = scales::squish) +
     theme_bw() +
     theme(panel.grid = element_blank(), aspect.ratio = 1,
       legend.title.position = "left", legend.position = "bottom",
@@ -107,7 +108,8 @@ feature_sources <- list(
   list(key = "ncount_rna", source = "sum", label = "nCount RNA"),
   list(key = "nfeature_rna", source = "detected", label = "nFeature RNA"),
   list(key = "splice_frac", source = "splice_frac", label = "splice fraction"),
-  list(key = "mito_pct", source = "mito_pct", label = "mitochondrial content")
+  list(key = "mito_pct", source = "mito_pct", label = "mitochondrial content"),
+  list(key = "alpha_hat", source = "alpha_hat", label = "CellSweep α̂")
 )
 
 present_leiden <- grep("^(RNA_snn_res\\.|leiden_)", names(int_dt), value = TRUE)
@@ -194,22 +196,31 @@ on the full-dataset UMAP (coloured, labelled with the cluster's annotation and m
 confidence score); every other cell is greyed out.
 
 ```{r selection_umap, fig.height = 5.5, fig.width = 6}
+sel_tbl <- selection_dt[, .(n_cells = .N), by = .(sample_id)][order(-n_cells)]
 p1 <- NULL
 if (!is.null(parent_umap_dt) && !is.null(parent_ann_dt)) {
   pdt <- merge(parent_umap_dt,
                parent_ann_dt[, .(cell_id, cluster, label, label_score)],
                by = "cell_id", all.x = TRUE)
-  sel_cells    <- unique(selection_dt$cell_id)
-  sel_clusters <- sort(unique(pdt[cell_id %in% sel_cells & !is.na(cluster), cluster]))
+  # Selection is whole-cluster: a cluster is "selected" if the MAJORITY of its cells
+  # are in the selection (not merely if it contains any — that would sweep in clusters
+  # that only share a few boundary/misassigned cells with the target).
+  sel_cells <- unique(selection_dt$cell_id)
+  pdt[, is_sel_cell := cell_id %in% sel_cells]
+  cl_frac      <- pdt[!is.na(cluster), .(frac = mean(is_sel_cell)), by = cluster]
+  sel_clusters <- sort(cl_frac[frac > 0.5, cluster])
 
   pdt[, selected := !is.na(cluster) & cluster %in% sel_clusters]
   cl_cols <- setNames(rep(nice_cols, length.out = length(sel_clusters)), sel_clusters)
 
+  # Confidence = fraction of the cluster assigned to the selected type (0-1) — the
+  # cluster-level annotation confidence. (NOT the marker label_score, which is an
+  # enrichment statistic on a different scale.)
   cl_lab <- pdt[selected == TRUE, .(
-    UMAP1 = median(UMAP1), UMAP2 = median(UMAP2),
-    label = label[1], score = mean(label_score, na.rm = TRUE)
+    UMAP1 = median(UMAP1), UMAP2 = median(UMAP2), label = label[1]
   ), by = cluster]
-  cl_lab[, txt := sprintf("%s: %s (%.2f)", cluster, label, score)]
+  cl_lab <- merge(cl_lab, cl_frac, by = "cluster")
+  cl_lab[, txt := sprintf("%s: %s (%.2f)", cluster, label, frac)]
 
   p1 <- ggplot() +
     ggrastr::geom_point_rast(data = pdt[selected == FALSE],
@@ -331,7 +342,8 @@ if (length(feature_vars) > 0) {
   cat('::: {.panel-tabset}\n\n')
   for (spec in feature_vars) {
     cat("### ", spec$label, "\n\n")
-    print(plot_umap_qc_feature(int_dt_pass2, spec$source, spec$label))
+    lims <- if (spec$source == "alpha_hat") c(0, 1) else NULL
+    print(plot_umap_qc_feature(int_dt_pass2, spec$source, spec$label, limits = lims))
     cat("\n\n")
   }
   cat(':::\n\n')
@@ -433,6 +445,74 @@ for (sel_cl in marker_cl_ord) {
 }
 rm(top_marker_expr_dt)
 cat(':::\n\n')
+```
+
+```{r zoom_annotation, results='asis', fig.width=7, fig.height=5}
+# Re-annotate the zoom with the chosen reference method(s). xgboost predicts per cell
+# from expression (embedding-independent), so the pipeline's per-cell labels apply
+# directly to the zoom cells; we re-aggregate them on the zoom clusters here.
+zoom_ann_methods <- trimws(strsplit(Sys.getenv("ZOOM_ANNOTATION_METHODS", ""), ",")[[1]])
+zoom_ann_methods <- zoom_ann_methods[nzchar(zoom_ann_methods)]
+method_fs <- list.files(".", pattern = "^annotation_cells_.+\\.csv\\.gz$", full.names = TRUE)
+names(method_fs) <- sub("^annotation_cells_(.+)\\.csv\\.gz$", "\\1", basename(method_fs))
+if (length(zoom_ann_methods) > 0) method_fs <- method_fs[intersect(zoom_ann_methods, names(method_fs))]
+
+if (length(method_fs) > 0) {
+  cat("# Zoom re-annotation\n\n")
+  cat("Reference annotation(s) applied to the zoom cells. Per-cell xgboost labels are",
+      "embedding-independent (predicted from expression), re-aggregated on the zoom clusters.\n\n")
+  for (mid in names(method_fs)) {
+    mc <- fread(method_fs[[mid]])
+    if (!all(c("cell_id", "label") %in% names(mc))) next
+    mc <- mc[, .(cell_id, mlabel = label)]
+    z  <- merge(int_dt_pass2[, c("cell_id", "UMAP1", "UMAP2", present_leiden), with = FALSE],
+                mc, by = "cell_id")
+    if (nrow(z) == 0) next
+    cat(sprintf("## %s\n\n", mid))
+
+    # (1) cell-level label UMAP, then counts table (kable, as in 'Cell counts per cluster')
+    cat("### Cell-level annotation\n\n")
+    g_lab <- plot_umap_cluster(
+      z[, .(cell_id, UMAP1, UMAP2)],
+      z[, .(cell_id, cluster = mlabel,
+            centroid_group = as.character(mlabel), centroid_label = as.character(mlabel))],
+      name = "label") + theme(legend.position = "none") + ggtitle(sprintf("%s — cell labels", mid))
+    print(g_lab)
+    cat("\n\n")
+    cnt <- z[, .(cells = .N), by = .(label = mlabel)][order(-cells)]
+    cnt[, pct := round(100 * cells / sum(cells), 1)]
+    print(knitr::kable(cnt, caption = sprintf("%s — cells per label", mid)))
+    cat("\n\n")
+
+    # (2) cluster prediction summary: UMAP + confidence table per resolution
+    cat("### Cluster prediction summary\n\n")
+    cat("Per zoom cluster: top predicted label and confidence `cs` = fraction of the cluster",
+        "assigned to it. The table per resolution shows how many clusters/cell types are",
+        "confidently annotated.\n\n::: {.panel-tabset}\n\n")
+    for (cl in present_leiden) {
+      res_val <- sub("^(RNA_snn_res\\.|leiden_)", "", cl)
+      cat(sprintf("#### %s\n\n", res_val))
+      zz <- z[!is.na(get(cl)) & nzchar(as.character(get(cl)))]
+      if (nrow(zz) == 0) { cat("no cells.\n\n"); next }
+      cs <- zz[, {
+        tt <- sort(table(mlabel), decreasing = TRUE)
+        list(top_label = names(tt)[1], cs = round(as.numeric(tt[1]) / sum(tt), 2), n_cells = sum(tt))
+      }, by = .(cluster = as.character(get(cl)))]
+      setorder(cs, cluster)
+      cs_plot <- copy(cs)[, centroid_label := sprintf("%s: %.2f", top_label, cs)]
+      g <- plot_umap_cluster(
+        zz[, .(cell_id, UMAP1, UMAP2)],
+        merge(zz[, .(cell_id, cluster = as.character(get(cl)))],
+              cs_plot[, .(cluster, centroid_group = cluster, centroid_label)], by = "cluster"),
+        name = sprintf("cluster (res %s)", res_val)) + theme(legend.position = "none")
+      print(g)
+      cat("\n\n")
+      print(knitr::kable(cs, caption = sprintf("%s — cluster confidence at res %s", mid, res_val)))
+      cat("\n\n")
+    }
+    cat(":::\n\n")
+  }
+}
 ```
 
 ## Cell counts per cluster

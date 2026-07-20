@@ -289,7 +289,8 @@ def _rank_hvgs_multi_batch(per_sample_stats, ambient_genes, n_hvgs):
 # ---------------------------------------------------------------------------
 
 def run_hvg_selection(h5_files, qc_csv_files, n_top_genes, out_stats, out_h5,
-                      out_dbl_h5, gtf_path, edger_csv=None):
+                      out_dbl_h5, gtf_path, edger_csv=None,
+                      dbl_h5_files=None, dbl_qc_files=None):
     print("=== HVG_SELECTION (Seurat VST) ===")
     print(f"H5 files:    {h5_files}")
     print(f"QC CSVs:     {qc_csv_files}")
@@ -468,6 +469,50 @@ def run_hvg_selection(h5_files, qc_csv_files, n_top_genes, out_stats, out_h5,
 
         del hvg_summed
 
+    # Pass 2b: doublets from a SEPARATE source (pre-CellSweep h5 + apply_qc QC).
+    # Used in the CellSweep path where the main input carries singlets only, so the
+    # cluster-based two-pass doublet removal in integration can still run. Doublets
+    # are uncorrected — they exist only to define doublet-enriched clusters and are
+    # dropped in integration pass-2.
+    if dbl_h5_files and not doublet_hvg_mats:
+        dqc = pd.concat([pd.read_csv(f) for f in dbl_qc_files], ignore_index=True)
+        dqc['cell_id'] = dqc['cell_id'].astype(str)
+        dqc['sample_id'] = dqc['sample_id'].astype(str)
+        dqc_by = {str(s): g for s, g in dqc.groupby('sample_id')}
+        print("\n--- Pass 2b: doublets from separate pre-CellSweep source ---")
+        for h5f in sorted(dbl_h5_files):
+            sid = re.sub(r'^(?:.*/)?filt_counts_', '', h5f).replace('.h5', '')
+            qd = dqc_by.get(sid)
+            if qd is None:
+                continue
+            dcells = set(qd.loc[qd['scdbl_class'] == 'doublet', 'cell_id'])
+            if not dcells:
+                continue
+            mat, features, barcodes = _read_h5_csc(h5f)
+            summed, genes = _sum_sua(mat, features)
+            del mat
+            gsym = (np.array([sym_map.get(g, f"{g}_{g}") for g in genes])
+                    if sym_map is not None else genes)
+            # Align by gene ID (the doublet source may have a different gene ORDER than
+            # the singlet source, e.g. CellSweep h5 vs pre-CellSweep filt_counts), then
+            # reorder rows to the singlet HVG-gene order so the matrices concatenate.
+            gpos = {g: i for i, g in enumerate(gsym)}
+            missing = [g for g in hvg_genes if g not in gpos]
+            if missing:
+                raise ValueError(f"{len(missing)} HVG genes absent from doublet source "
+                                 f"{h5f} (e.g. {missing[:3]})")
+            row_idx = np.array([gpos[g] for g in hvg_genes])
+            summed_csr = summed.tocsr()
+            del summed
+            hvg_summed = summed_csr[row_idx, :]   # rows reordered to hvg_genes
+            del summed_csr
+            didx = np.array([i for i, bc in enumerate(barcodes) if bc in dcells])
+            if len(didx) > 0:
+                doublet_hvg_mats.append(hvg_summed[:, didx])
+                all_bcs_doublet.extend([f"{sid}_{bc}" for bc in barcodes[didx]])
+                print(f"  {sid}: {len(didx)} doublets (re-injected)")
+            del hvg_summed
+
     if not singlet_hvg_mats:
         raise ValueError("No singlet cells after pass 2.")
 
@@ -508,6 +553,11 @@ if __name__ == '__main__':
     parser.add_argument('--gtf',          type=str, default=None)
     parser.add_argument('--edger_csv',    type=str, default=None,
                         help='edger_dt.csv.gz from AMBIENT_DE (for ambient gene exclusion)')
+    parser.add_argument('--dbl_h5_pattern', type=str, default=None,
+                        help='separate h5 source for doublets (e.g. pre-CellSweep filt_counts); '
+                             'used when the main input carries singlets only')
+    parser.add_argument('--dbl_qc_pattern', type=str, default=None,
+                        help='qc_metrics with scdbl_class for the doublet source')
     args = parser.parse_args()
 
     h5_files  = sorted(glob.glob(args.h5_pattern))
@@ -518,6 +568,9 @@ if __name__ == '__main__':
     if not qc_files:
         sys.exit(f"ERROR: no QC CSV files matched pattern '{args.qc_pattern}'")
 
+    dbl_h5_files = sorted(glob.glob(args.dbl_h5_pattern)) if args.dbl_h5_pattern else None
+    dbl_qc_files = sorted(glob.glob(args.dbl_qc_pattern)) if args.dbl_qc_pattern else None
+
     run_hvg_selection(
         h5_files     = h5_files,
         qc_csv_files = qc_files,
@@ -527,4 +580,6 @@ if __name__ == '__main__':
         out_dbl_h5   = args.out_dbl_h5,
         gtf_path     = args.gtf,
         edger_csv    = args.edger_csv,
+        dbl_h5_files = dbl_h5_files,
+        dbl_qc_files = dbl_qc_files,
     )
