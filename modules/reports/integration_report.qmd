@@ -482,7 +482,7 @@ cat(':::\n\n')
 
 Clustering of data is performed at different resolution values. For each value the clusters are displayed over a UMAP together with a plot showing the density of cells.
 
-`r if (show_doublets) sprintf("After removing doublets and doublet-enriched cluster cells, there were **%s cells used for pass-2 integration**.", format(n_singlets, big.mark = ",")) else sprintf("**%s cells** were used for integration (doublets were removed upstream in per-sample QC).", format(n_cells, big.mark = ","))`
+`r if (show_doublets) sprintf("Pass-1 integrated %s cells (%s singlets + %s doublets). After removing the %s doublets **and** the %s singlets that fell in doublet-enriched clusters, **%s cells remained for pass-2 integration**.", format(n_cells, big.mark = ","), format(n_singlets, big.mark = ","), format(n_doublets, big.mark = ","), format(n_doublets, big.mark = ","), format(n_singlets - nrow(int_dt_pass2), big.mark = ","), format(nrow(int_dt_pass2), big.mark = ",")) else sprintf("**%s cells** were used for integration (doublets were removed upstream in per-sample QC).", format(n_cells, big.mark = ","))`
 
 ```{r plot_clusters_integration, fig.height = 7, fig.width = 9, results='asis'}
 if (length(present_leiden) > 0) {
