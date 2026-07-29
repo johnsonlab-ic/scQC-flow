@@ -11,6 +11,7 @@ process RUN_INTEGRATION {
     path dbl_hvg_counts  // dbl_hvg_counts.h5 (doublets) from HVG_SELECTION
     path qc_csvs         // collected qc_metrics_*.csv.gz from QC
     path script          // run_integration.py
+    path harmony2_script // harmony2_correct.R (used only when harmony_impl=harmony2)
     path dbl_qc_csvs, stageAs: 'dbl_qc/*'  // apply_qc QC (scdbl_class) for doublet rows (or NO_FILE)
 
     output:
@@ -25,7 +26,7 @@ process RUN_INTEGRATION {
     def excl_mito    = params.exclude_mito ? "--exclude_mito" : ""
     def paga_flag    = params.integration_use_paga ? "--use_paga" : ""
     def chunk_arg    = params.integration_chunk_size > 0 ? "--chunk_size ${params.integration_chunk_size}" : ""
-    def harmony_arg  = (params.harmony_impl ?: 'harmonypy') == 'harmony2' ? "--harmony_impl harmony2 --harmony2_script ${projectDir}/modules/integration/harmony2_correct.R --harmony2_lib ${params.harmony2_lib}" : ""
+    def harmony_arg  = (params.harmony_impl ?: 'harmonypy') == 'harmony2' ? "--harmony_impl harmony2 --harmony2_script ${harmony2_script}" : ""
     """
     set -euo pipefail
     export MPLCONFIGDIR="\$PWD/.mplconfig"

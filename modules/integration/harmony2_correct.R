@@ -5,9 +5,13 @@
 #        meta.csv.gz (batch columns), args: vars (comma-sep), theta, ncores
 #   out: corrected.bin (float64, row-major, n_cells x n_dims)
 suppressWarnings(suppressMessages({
-  .libPaths(c(Sys.getenv("HARMONY2_LIB", "/mnt/data/harmony2_Rlib"), .libPaths()))
+  # harmony >=2.0 is expected in the container image's default lib. HARMONY2_LIB is an optional
+  # override (e.g. an external prebuilt lib on images that don't yet bundle harmony2).
+  h2lib <- Sys.getenv("HARMONY2_LIB", "")
+  if (nzchar(h2lib)) .libPaths(c(h2lib, .libPaths()))
   library(harmony)
   library(data.table)
+  stopifnot(packageVersion("harmony") >= "2.0.0")
 }))
 
 a <- commandArgs(trailingOnly = TRUE)

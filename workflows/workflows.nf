@@ -528,6 +528,7 @@ workflow INTEGRATION {
         dbl_hvg_counts_ch,
         qc_metrics_ch.map { _id, csv -> csv }.collect(),
         channel.value(file("${projectDir}/modules/integration/run_integration.py")),
+        channel.value(file("${projectDir}/modules/integration/harmony2_correct.R")),
         dbl_qc_files
     )
 
