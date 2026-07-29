@@ -341,6 +341,7 @@ process ANNOTATION_METHOD_REPORT {
     export ANNOTATION_REFERENCE_LABEL_COL='${referenceLabelCol}'
     export ANNOTATION_CELLS_CSV='${cells_csv.name}'
     export ANNOTATION_CLUSTER_CSV='${cluster_csv.name}'
+    export ANNOTATION_FEATURE_RES='${params.annotation_sel_res}'
 
     quarto render ${report_qmd} --output annotation_report_${method_id}.html
     """

@@ -286,190 +286,135 @@ This report summarises one annotation run.
 * **Cluster score (`cs`):** within-cluster fraction assigned to the top predicted label
 * **Cluster summary source:** `r if (length(cluster_summary_missing_cols) > 0) "recomputed from per-cell predictions to cover all clustering resolutions" else "recomputed from per-cell predictions for report consistency"`
 
-## Label counts
+```{r cluster_level_prep}
+# Cluster-level annotation: each cell inherits its cluster's majority (top) predicted label.
+# These cluster-level calls -- not the per-cell predictions -- are what downstream analyses use.
+feature_res_env <- trimws(Sys.getenv("ANNOTATION_FEATURE_RES", "0.5"))
+feature_col <- cluster_cols[cluster_resolution_label(cluster_cols) == feature_res_env]
+if (length(feature_col) == 0) feature_col <- cluster_cols[max(1L, ceiling(length(cluster_cols) / 2))]
+feature_col <- feature_col[1]
+feature_res <- cluster_resolution_label(feature_col)
 
-```{r label_counts, fig.width=7, fig.height=5}
-label_counts_plot_dt <- copy(label_counts_dt)
-label_counts_plot_dt[, label := factor(label, levels = rev(label_levels))]
+# cell_id -> its cluster's top_label + cluster confidence (cs), for a given resolution column
+cluster_label_map <- function(cc) {
+  csum <- cluster_dt[cluster_col == cc, .(cluster = as.character(cluster),
+                                          cl_label = as.character(top_label), cs = as.numeric(cs))]
+  base <- cells_dt[!is.na(get(cc)) & nzchar(as.character(get(cc))),
+                   .(cell_id, cluster = as.character(get(cc)))]
+  base[csum, on = "cluster", nomatch = 0L]
+}
+```
 
-ggplot(label_counts_plot_dt, aes(x = label, y = N, fill = label)) +
+## Cluster-level annotation (res `r feature_res`)
+
+Each cell takes the majority predicted label of its cluster at the featured resolution
+(res `r feature_res`) — the cluster-level calls downstream analyses build on. Left: cells per
+cluster-level cell type. Right: the same labels over the UMAP.
+
+```{r cluster_level_headline, fig.width=10, fig.height=6}
+m_feat <- cluster_label_map(feature_col)
+m_feat[, cl_label := factor(cl_label, levels = label_levels)]
+
+lab_counts <- m_feat[, .(N = .N), by = cl_label][order(-N)]
+
+p1 <- ggplot(lab_counts, aes(x = factor(cl_label, levels = rev(levels(cl_label))), y = N, fill = cl_label)) +
   geom_col(width = 0.8, colour = "black", linewidth = 0.2, show.legend = FALSE) +
-  geom_text(
-    aes(label = comma(N)),
-    hjust = -0.05,
-    size = 3,
-    colour = 'black',
-    show.legend = FALSE
-  ) +
+  geom_text(aes(label = comma(N)), hjust = -0.05, size = 3, show.legend = FALSE) +
   coord_flip(clip = "off") +
   scale_fill_manual(values = label_cols, drop = FALSE) +
   scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
   theme_bw() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor = element_blank(),
-    strip.background = element_rect(fill = "white"),
-    plot.margin = margin(5.5, 30, 5.5, 5.5)
-  ) +
-  labs(x = NULL, y = "# cells", title = "Predicted label counts")
-```
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank(),
+        plot.margin = margin(5.5, 30, 5.5, 5.5)) +
+  labs(x = NULL, y = "# cells", title = sprintf("Cluster-level cell-type counts (res %s)", feature_res))
 
-## Prediction score distribution
-
-```{r score_density, fig.width=8, fig.height=4}
-if ("score" %in% names(cells_dt) && any(!is.na(cells_dt$score))) {
-  ggplot(cells_dt[!is.na(score)], aes(x = score)) +
-    geom_histogram(bins = 40, fill = "#7FCDBB", color = "white") +
-    theme_bw() +
-    labs(x = "prediction score", y = "cells", title = "Prediction score distribution")
-}
-```
-
-## UMAP by predicted label and score
-
-Predicted label (left) and prediction score (right) over the same UMAP.
-
-```{r umap_label_score, fig.width=9, fig.height=7}
 if (all(c("UMAP1", "UMAP2") %in% names(cells_dt))) {
-  g_lab <- plot_umap_cluster_consistent(
-      cells_dt[, .(cell_id, UMAP1, UMAP2)],
-      cells_dt[, .(
-        cell_id,
-        cluster = label,
-        centroid_group = as.character(label),
-        centroid_label = as.character(label)
-      )],
-      name = 'cell label'
-    ) + theme(legend.position = 'none') + ggtitle('predicted label')
-
-  if ("score" %in% names(cells_dt)) {
-    g_score <- plot_umap_score_consistent(
-      cells_dt[, .(cell_id, UMAP1, UMAP2)],
-      cells_dt[, .(cell_id, score)],
-      name = 'score'
-    ) + ggtitle('prediction score')
-    print(g_lab | g_score)
-  } else {
-    print(g_lab)
-  }
+  p2 <- plot_umap_cluster_consistent(
+    cells_dt[, .(cell_id, UMAP1, UMAP2)],
+    m_feat[, .(cell_id, cluster = cl_label,
+               centroid_group = as.character(cl_label), centroid_label = as.character(cl_label))],
+    name = "cell type"
+  ) + theme(legend.position = "none") + ggtitle(sprintf("cluster-level annotation (res %s)", feature_res))
+  print(p1 | p2)
+} else {
+  print(p1)
 }
 ```
 
-## Cluster Prediction Summary {.tabset}
+## Cluster-level predictions by resolution {.tabset}
 
-For each clustering resolution, the confidence score (`cs`) is calculated per cluster as the fraction of cells assigned to that cluster's most frequent predicted label: $cs = \frac{n(\text{top label in cluster})}{n(\text{cells in cluster})}$. A value of `1` means every cell in the cluster shares the same predicted label, while values closer to `0.5` indicate a more mixed or uncertain cluster. Each panel below is derived directly from the per-cell annotation table, which avoids stale or partial cluster-summary inputs and ensures that every clustering resolution in the annotation data is represented.
+For each clustering resolution: cluster-level cell-type annotation (left) and per-cluster confidence
+`cs` (right). `cs` is the fraction of a cluster's cells sharing its top predicted label
+($cs = \frac{n(\text{top label})}{n(\text{cluster})}$; 1 = unanimous, ~0.5 = mixed). Both derive from
+the per-cell predictions.
 
-```{r cluster_umaps, fig.width=7, fig.height=5, results='asis'}
+```{r cluster_pred_tabset, fig.width=10, fig.height=6, results='asis'}
 if (length(cluster_cols) > 0 && all(c("UMAP1", "UMAP2") %in% names(cells_dt)) && nrow(cluster_dt) > 0) {
   cat('::: {.panel-tabset}\n\n')
   for (cluster_col in cluster_cols) {
     res_val <- cluster_resolution_label(cluster_col)
-    this_cluster_col <- cluster_col
     cat(sprintf('### %s\n\n', res_val))
 
-    plot_dt <- cells_dt[
-      !is.na(UMAP1) & !is.na(UMAP2) & !is.na(get(cluster_col)) & nzchar(as.character(get(cluster_col))),
-      .(
-        UMAP1,
-        UMAP2,
-        cluster = as.character(get(cluster_col))
-      )
-    ]
-    if (nrow(plot_dt) == 0) {
-      cat('No cells had non-missing cluster assignments at this resolution.\n\n')
-      next
-    }
+    m <- cluster_label_map(cluster_col)
+    if (nrow(m) == 0) { cat('No cells with cluster assignments at this resolution.\n\n'); next }
+    m[, cl_label := factor(cl_label, levels = label_levels)]
 
-    cluster_levels <- order_cluster_ids(plot_dt$cluster)
-    cluster_labels_dt <- cluster_dt[cluster_dt$cluster_col == this_cluster_col]
-    cluster_labels_dt[, `:=`(
-      cluster = factor(cluster, levels = cluster_levels),
-      centroid_group = as.character(cluster),
-      centroid_label = sprintf('%s: %.2f', top_label, cs)
-    )]
+    p1 <- plot_umap_cluster_consistent(
+      cells_dt[, .(cell_id, UMAP1, UMAP2)],
+      m[, .(cell_id, cluster = cl_label,
+            centroid_group = as.character(cl_label), centroid_label = as.character(cl_label))],
+      name = 'cell type'
+    ) + theme(legend.position = 'none') + ggtitle(sprintf('annotation (res %s)', res_val))
 
-    print(
-      plot_umap_cluster_consistent(
-        cells_dt[, .(cell_id, UMAP1, UMAP2)],
-        cells_dt[
-          !is.na(get(cluster_col)) & nzchar(as.character(get(cluster_col))),
-          .(cell_id, cluster = factor(as.character(get(cluster_col)), levels = cluster_levels))
-        ][cluster_labels_dt[, .(cluster, centroid_group, centroid_label)], on = 'cluster'],
-        name = sprintf('cluster (res. %s)', res_val)
-      ) + theme(legend.position = 'none') + ggtitle(sprintf('res = %s', res_val))
-    )
+    p2 <- plot_umap_score_consistent(
+      cells_dt[, .(cell_id, UMAP1, UMAP2)],
+      m[, .(cell_id, score = cs, centroid_group = cluster,
+            centroid_label = sprintf('%s: %.2f', as.character(cl_label), cs))],
+      name = 'cs'
+    ) + ggtitle(sprintf('confidence (res %s)', res_val))+theme(legend.position = 'none')
+
+    print(p1 | p2)
     cat('\n\n')
   }
   cat(':::\n\n')
 }
 ```
 
-## Cluster Confidence by Resolution {.tabset}
+## Cell-level annotation
 
-This section shows the same clustering resolutions, but colours each cluster by its within-cluster top-label confidence score (`cs`).
+Per-cell predictions, before any cluster-majority voting: cell counts per predicted cell type (left),
+those labels over the UMAP (top right), and the per-cell prediction score (bottom right).
 
-```{r cluster_confidence_umaps, fig.width=7, fig.height=5, results='asis'}
-if (length(cluster_cols) > 0 && all(c("UMAP1", "UMAP2") %in% names(cells_dt)) && nrow(cluster_dt) > 0) {
-  cat('::: {.panel-tabset}\n\n')
-  for (cluster_col in cluster_cols) {
-    res_val <- cluster_resolution_label(cluster_col)
-    this_cluster_col <- cluster_col
-    cat(sprintf('### %s\n\n', res_val))
+```{r cell_level_annotation, fig.width=12, fig.height=10}
+cell_counts <- cells_dt[, .(N = .N), by = label][order(-N)]
 
-    plot_dt <- cells_dt[
-      !is.na(UMAP1) & !is.na(UMAP2) & !is.na(get(cluster_col)) & nzchar(as.character(get(cluster_col))),
-      .(
-        UMAP1,
-        UMAP2,
-        cluster = as.character(get(cluster_col))
-      )
-    ]
-    if (nrow(plot_dt) == 0) {
-      cat('No cells had non-missing cluster assignments at this resolution.\n\n')
-      next
-    }
+p1 <- ggplot(cell_counts, aes(x = factor(label, levels = rev(label_levels)), y = N, fill = label)) +
+  geom_col(width = 0.8, colour = 'black', linewidth = 0.2, show.legend = FALSE) +
+  geom_text(aes(label = comma(N)), hjust = -0.05, size = 3, show.legend = FALSE) +
+  coord_flip(clip = 'off') +
+  scale_fill_manual(values = label_cols, drop = FALSE) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  theme_bw() +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank(),
+        plot.margin = margin(5.5, 20, 5.5, 5.5)) +
+  labs(x = NULL, y = '# cells', title = 'Cell-level cell-type counts')
 
-    cluster_levels <- order_cluster_ids(plot_dt$cluster)
-    cluster_scores_dt <- cluster_dt[cluster_dt$cluster_col == this_cluster_col]
-    cluster_scores_dt[, `:=`(
-      cluster = as.character(cluster),
-      centroid_group = as.character(cluster),
-      centroid_label = sprintf('%s: %.2f', top_label, cs),
-      score = cs
-    )]
+if (all(c('UMAP1', 'UMAP2') %in% names(cells_dt))) {
+  p2 <- plot_umap_cluster_consistent(
+    cells_dt[, .(cell_id, UMAP1, UMAP2)],
+    cells_dt[, .(cell_id, cluster = label,
+                 centroid_group = as.character(label), centroid_label = as.character(label))],
+    name = 'cell type'
+  ) + theme(legend.position = 'none') + ggtitle('cell-level labels')
 
-    print(
-      plot_umap_score_consistent(
-        cells_dt[, .(cell_id, UMAP1, UMAP2)],
-        cells_dt[
-          !is.na(get(cluster_col)) & nzchar(as.character(get(cluster_col))),
-          .(cell_id, cluster = as.character(get(cluster_col)))
-        ][cluster_scores_dt[, .(cluster, score, centroid_group, centroid_label)], on = 'cluster'],
-        name = 'cs'
-      ) + ggtitle(sprintf('res = %s', res_val))
-    )
-    cat('\n\n')
-  }
-  cat(':::\n\n')
+  p3 <- plot_umap_score_consistent(
+    cells_dt[, .(cell_id, UMAP1, UMAP2)],
+    cells_dt[, .(cell_id, score)],
+    name = 'score'
+  ) + ggtitle('prediction score')
+
+  print(p1 | (p2 / p3))
+} else {
+  print(p1)
 }
-```
-
-## Cluster Summary Table
-
-```{r cluster_table}
-cluster_table_dt <- data.table::copy(cluster_dt)
-cluster_table_dt[, cs := signif(cs, 3)]
-cluster_table_dt[, mean_score := signif(mean_score, 3)]
-
-DT::datatable(
-  cluster_table_dt[order(as.numeric(cluster_resolution), cluster)],
-  rownames = FALSE,
-  class = 'compact stripe hover',
-  options = list(
-    pageLength = 25,
-    lengthMenu = list(c(10, 25, 50), c('10', '25', '50')),
-    autoWidth = TRUE,
-    scrollX = TRUE
-  )
-)
 ```

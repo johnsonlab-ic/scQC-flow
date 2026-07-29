@@ -116,15 +116,32 @@ def run_prepare_zoom_subset(integration_csv, annotation_labels_csv, annotation_m
     elif zoom_source == "annotation_method_label":
         zoom_label = str(spec.get("label", zoom_name))
         annotation_method_id = str(spec["annotation_method_id"])
+        # Cluster-LEVEL selection: assign each cell its cluster's MAJORITY predicted label at
+        # annotation_cluster_res, then take every cell in clusters whose majority == zoom_label.
+        # Downstream analyses act on the cluster-level call, so the zoom must too -- filtering the
+        # raw per-cell label under-selects (e.g. neurons predicted individually as glia inside a
+        # neuron-majority cluster get dropped).
+        cluster_res = str(spec.get("annotation_cluster_res", "0.5"))
+        cluster_col = _resolve_cluster_column(int_df, cluster_res)
         labels_df = _load_annotation_method_labels(annotation_method_id, annotation_method_pattern)
-        labels_df = labels_df.loc[labels_df["label"].astype(str) == zoom_label].copy()
-        selected_df = labels_df.loc[:, ["sample_id", "cell_id", "label"]].copy()
-        selected_df = selected_df.rename(columns={"label": "zoom_value"})
-        selected_df = selected_df.merge(
-            int_df.loc[:, ["sample_id", "cell_id"]].drop_duplicates(),
+        merged = labels_df.loc[:, ["sample_id", "cell_id", "label"]].merge(
+            int_df.loc[:, ["sample_id", "cell_id", cluster_col]].drop_duplicates(),
             on=["sample_id", "cell_id"],
             how="inner",
         )
+        merged[cluster_col] = merged[cluster_col].astype(str)
+        merged = merged.loc[merged[cluster_col].str.len() > 0].copy()
+        majority = (
+            merged.groupby(cluster_col)["label"]
+            .agg(lambda s: s.astype(str).value_counts().idxmax())
+        )
+        selected_clusters = set(majority.index[majority.astype(str) == zoom_label])
+        print(f"Cluster resolution: {cluster_res} ({cluster_col})")
+        print(f"Clusters with majority label '{zoom_label}': {sorted(selected_clusters)}")
+        selected_df = merged.loc[
+            merged[cluster_col].isin(selected_clusters), ["sample_id", "cell_id"]
+        ].copy()
+        selected_df["zoom_value"] = zoom_label
     else:
         raise ValueError(f"Unsupported zoom source '{zoom_source}'")
 

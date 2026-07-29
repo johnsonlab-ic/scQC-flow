@@ -361,6 +361,7 @@ workflow {
                 integration_dbl_cl_prop: (rawSpec.integration_dbl_cl_prop ?: zoomConfig.default_integration_dbl_cl_prop ?: params.integration_dbl_cl_prop) as BigDecimal,
                 exclude_mito: rawSpec.containsKey('exclude_mito') ? rawSpec.exclude_mito : (zoomConfig.containsKey('default_exclude_mito') ? zoomConfig.default_exclude_mito : params.exclude_mito),
                 marker_sel_res: (rawSpec.marker_sel_res ?: zoomConfig.default_marker_sel_res ?: '0.2').toString(),
+                annotation_cluster_res: (rawSpec.annotation_cluster_res ?: zoomConfig.default_annotation_cluster_res ?: params.annotation_sel_res ?: '0.5').toString(),
                 marker_min_cl_size: (rawSpec.marker_min_cl_size ?: zoomConfig.default_marker_min_cl_size ?: 100) as Integer,
                 marker_min_cells: (rawSpec.marker_min_cells ?: zoomConfig.default_marker_min_cells ?: 10) as Integer,
                 marker_top_n: (rawSpec.marker_top_n ?: zoomConfig.default_marker_top_n ?: 10) as Integer,
