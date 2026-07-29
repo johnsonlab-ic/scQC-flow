@@ -110,6 +110,42 @@ def _run_leiden(adata, resolution, random_state):
 # Harmony compatibility wrapper
 # ---------------------------------------------------------------------------
 
+# Batch-correction backend (set in main() from --harmony_impl). Default = harmonypy (Python).
+HARMONY_IMPL = 'harmonypy'
+HARMONY2_SCRIPT = None
+HARMONY2_LIB = None
+
+
+def _harmony2_correct(adata, key_cols, basis, adjusted_basis, theta):
+    """Correct the `basis` embedding with R harmony >=2.0 via a subprocess round-trip.
+
+    Writes the embedding (row-major float64) + batch metadata to disk, runs harmony2_correct.R
+    (which loads harmony from HARMONY2_LIB), reads the corrected embedding back. Keeps the rest
+    of the integration in scanpy — only the Harmony step changes.
+    """
+    import os
+    import subprocess
+
+    x = np.asarray(adata.obsm[basis], dtype=np.float64)
+    n_cells, n_dims = x.shape
+    x.tofile('h2_embedding.bin')
+    with open('h2_dims.txt', 'w') as fh:
+        fh.write(f"{n_cells},{n_dims}\n")
+    adata.obs[key_cols].to_csv('h2_meta.csv.gz', index=False)
+
+    theta_str = 'NA' if theta is None else str(float(theta))
+    ncores = str(int(os.environ.get('OMP_NUM_THREADS', '4') or '4'))
+    env = dict(os.environ)
+    if HARMONY2_LIB:
+        env['HARMONY2_LIB'] = HARMONY2_LIB
+    cmd = ['Rscript', HARMONY2_SCRIPT, 'h2_embedding.bin', 'h2_dims.txt', 'h2_meta.csv.gz',
+           ','.join(key_cols), theta_str, ncores, 'h2_corrected.bin']
+    _log(f"  Harmony2 (R): correcting {n_cells:,} x {n_dims} on vars={key_cols}, theta={theta_str}")
+    subprocess.run(cmd, check=True, env=env)
+    corrected = np.fromfile('h2_corrected.bin', dtype=np.float64).reshape(n_cells, n_dims)
+    adata.obsm[adjusted_basis] = corrected
+
+
 def _run_harmony_integrate_compat(adata, key, basis='X_pca', adjusted_basis='X_pca_harmony', **kwargs):
     """Run harmonypy directly and store corrected PCs with the right orientation.
 
@@ -131,6 +167,10 @@ def _run_harmony_integrate_compat(adata, key, basis='X_pca', adjusted_basis='X_p
     for col in key_cols:
         if adata.obs[col].isna().any():
             raise ValueError(f"Harmony batch column '{col}' contains missing values")
+
+    if HARMONY_IMPL == 'harmony2':
+        _harmony2_correct(adata, key_cols, basis, adjusted_basis, kwargs.get('theta'))
+        return
 
     x = np.asarray(adata.obsm[basis], dtype=np.float64)
     harmony_out = harmonypy.run_harmony(x, adata.obs, key, **kwargs)
@@ -812,7 +852,17 @@ if __name__ == '__main__':
     parser.add_argument('--dbl_sweep_csv',   type=str, default='dbl_sweep.csv.gz')
     parser.add_argument('--dbl_qc_pattern',  type=str, default=None,
                         help='separate QC source for doublet rows (CellSweep path; main QC is singlets-only)')
+    parser.add_argument('--harmony_impl',    type=str, default='harmonypy', choices=['harmonypy', 'harmony2'],
+                        help="batch-correction backend: harmonypy (Python, default) or harmony2 (R harmony >=2.0)")
+    parser.add_argument('--harmony2_script', type=str, default=None, help='path to harmony2_correct.R')
+    parser.add_argument('--harmony2_lib',    type=str, default=None, help='R lib dir holding harmony >=2.0')
     args = parser.parse_args()
+
+    HARMONY_IMPL = args.harmony_impl
+    HARMONY2_SCRIPT = args.harmony2_script
+    HARMONY2_LIB = args.harmony2_lib
+    if HARMONY_IMPL == 'harmony2' and not HARMONY2_SCRIPT:
+        sys.exit("ERROR: --harmony_impl harmony2 requires --harmony2_script")
 
     # Parse list arguments
     metadata_vars = args.metadata_vars.split() if args.metadata_vars.strip() else []
