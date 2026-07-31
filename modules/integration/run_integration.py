@@ -336,12 +336,62 @@ def _normalize_hvg_mat(hvg_mat, cells_df, exclude_mito, scale_f=10000):
 
 
 # ---------------------------------------------------------------------------
+# Reference-fit + transform UMAP (for datasets above umap_reference_size cells)
+# ---------------------------------------------------------------------------
+
+def _stratified_reference_sample(adata, cluster_col, batch_var, ref_size, seed):
+    """Pick up to `ref_size` cells, proportionally stratified by (cluster_col, batch_var),
+    to fit a reference UMAP that the remaining cells get transformed onto."""
+    rng = np.random.RandomState(seed)
+    n_total = adata.n_obs
+    groups = adata.obs.groupby([cluster_col, batch_var]).indices
+    picked = []
+    for idx in groups.values():
+        idx = np.asarray(idx)
+        target = min(len(idx), max(1, round(len(idx) / n_total * ref_size)))
+        picked.append(idx if target == len(idx) else rng.choice(idx, size=target, replace=False))
+    ref_idx = np.concatenate(picked)
+    if len(ref_idx) > ref_size:
+        ref_idx = rng.choice(ref_idx, size=ref_size, replace=False)
+    return np.sort(ref_idx)
+
+
+def _fit_transform_umap(embedding, ref_idx, cluster_seed):
+    """Fit UMAP on embedding[ref_idx], transform the remaining rows onto that reference.
+
+    Returns a full-length (n_cells, 2) array in the original cell order. Reference cells
+    keep their fitted positions; all other cells are placed via umap.transform().
+    """
+    import umap
+
+    n_cells = embedding.shape[0]
+    ref_mask = np.zeros(n_cells, dtype=bool)
+    ref_mask[ref_idx] = True
+
+    reducer = umap.UMAP(random_state=cluster_seed, init='pca')
+    reducer.fit(embedding[ref_mask])
+
+    coords = np.empty((n_cells, 2), dtype=np.float64)
+    coords[ref_mask] = reducer.embedding_
+
+    rest_idx = np.where(~ref_mask)[0]
+    if len(rest_idx) > 0:
+        coords[rest_idx] = reducer.transform(embedding[rest_idx])
+
+    return coords
+
+
+# ---------------------------------------------------------------------------
 # Single integration pass
 # ---------------------------------------------------------------------------
 
 def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed,
-                        use_paga=False, chunk_size=0, n_neighbors=15):
+                        use_paga=False, chunk_size=0, n_neighbors=15,
+                        umap_reference_size=1_000_000):
     """Run one integration pass: scale -> PCA -> Harmony -> Leiden -> UMAP.
+
+    Above `umap_reference_size` cells, UMAP is fit on a stratified reference subset and
+    the rest are transformed onto it (see _fit_transform_umap) instead of a full joint fit.
 
     Returns a DataFrame with cell_id, embedding coords, UMAP, clusters.
     """
@@ -406,9 +456,21 @@ def _do_one_integration(adata, batch_var, n_dims, res_ls, theta, cluster_seed,
             sc.pl.paga(adata, plot=False)
         init_pos = 'paga'
 
-    # UMAP
-    with _timed_step('  Running UMAP'):
-        sc.tl.umap(adata, maxiter=750, random_state=cluster_seed, init_pos=init_pos)
+    # UMAP — above umap_reference_size cells, fit on a stratified reference subset and
+    # transform the rest instead of a full joint fit (see _fit_transform_umap above).
+    if adata.n_obs > umap_reference_size:
+        ref_cl = f"RNA_snn_res.{min(res_ls, key=float)}"
+        with _timed_step(
+            f'  Running UMAP (reference mode: fit on <= {umap_reference_size:,} cells '
+            f"stratified by '{ref_cl}' x '{batch_var}', transform the rest)"
+        ):
+            ref_idx = _stratified_reference_sample(adata, ref_cl, batch_var, umap_reference_size, cluster_seed)
+            _log(f'    Reference size: {len(ref_idx):,} / {adata.n_obs:,} cells')
+            embedding = np.asarray(adata.obsm[sel_embed])[:, :n_dims]
+            adata.obsm['X_umap'] = _fit_transform_umap(embedding, ref_idx, cluster_seed)
+    else:
+        with _timed_step('  Running UMAP'):
+            sc.tl.umap(adata, maxiter=750, random_state=cluster_seed, init_pos=init_pos)
 
     # Extract results
     with _timed_step('  Recording cluster assignments'):
@@ -563,7 +625,8 @@ def _adata_filter_out_doublets(all_hvg_mat, cells_df, dbl_data):
 def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
                     n_dims, cluster_seed, dbl_res, dbl_cl_prop, theta, res_ls,
                     out_csv, dbl_sweep_csv='dbl_sweep.csv.gz', use_paga=False,
-                    chunk_size=0, n_neighbors=15, dbl_qc_files=None):
+                    chunk_size=0, n_neighbors=15, dbl_qc_files=None,
+                    umap_reference_size=1_000_000):
     """Two-pass integration identical to scprocess."""
 
     _log('=== INTEGRATION (two-pass) ===')
@@ -624,6 +687,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         use_paga=use_paga,
         chunk_size=chunk_size,
         n_neighbors=n_neighbors,
+        umap_reference_size=umap_reference_size,
     )
 
     del adata_dbl
@@ -694,6 +758,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
         use_paga=use_paga,
         chunk_size=chunk_size,
         n_neighbors=n_neighbors,
+        umap_reference_size=umap_reference_size,
     )
 
     del adata
@@ -733,7 +798,7 @@ def run_integration(hvg_h5, dbl_hvg_h5, qc_csv_files, metadata_vars, exclude_mit
 
 def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
                          n_dims, cluster_seed, theta, res_ls, out_csv, use_paga=False,
-                         chunk_size=0, n_neighbors=15):
+                         chunk_size=0, n_neighbors=15, umap_reference_size=1_000_000):
     """Single-pass singlet-only integration for zoom workflows."""
 
     _log('=== ZOOM INTEGRATION (singlet-only) ===')
@@ -789,6 +854,7 @@ def run_zoom_integration(hvg_h5, qc_csv_files, metadata_vars, exclude_mito,
         use_paga=use_paga,
         chunk_size=chunk_size,
         n_neighbors=n_neighbors,
+        umap_reference_size=umap_reference_size,
     )
 
     meta_cols = ['sample_id'] + [col for col in metadata_vars if col != 'sample_id']
@@ -848,6 +914,9 @@ if __name__ == '__main__':
                         help='Chunk size for incremental PCA; skips sc.pp.scale (0 = standard scale+PCA)')
     parser.add_argument('--n_neighbors',     type=int, default=15,
                         help='Number of neighbors for kNN graph (default 15; reduce to 10 for very large datasets)')
+    parser.add_argument('--umap_reference_size', type=int, default=1_000_000,
+                        help='Above this many cells, fit UMAP on a stratified reference subset and '
+                             'transform the rest instead of a full joint fit (default 1,000,000)')
     parser.add_argument('--out_csv',         type=str, default='integration_dt.csv.gz')
     parser.add_argument('--dbl_sweep_csv',   type=str, default='dbl_sweep.csv.gz')
     parser.add_argument('--dbl_qc_pattern',  type=str, default=None,
@@ -888,6 +957,7 @@ if __name__ == '__main__':
             use_paga        = args.use_paga,
             chunk_size      = args.chunk_size,
             n_neighbors     = args.n_neighbors,
+            umap_reference_size = args.umap_reference_size,
         )
     else:
         run_integration(
@@ -908,4 +978,5 @@ if __name__ == '__main__':
             chunk_size      = args.chunk_size,
             n_neighbors     = args.n_neighbors,
             dbl_qc_files    = dbl_qc_files,
+            umap_reference_size = args.umap_reference_size,
         )
