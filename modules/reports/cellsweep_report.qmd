@@ -28,13 +28,14 @@ shown here only as a candidate post-hoc trim.
 ```{r setup}
 knitr::opts_chunk$set(fig.path = 'plots/', dev = 'png', dpi = 110)
 suppressPackageStartupMessages({
-  library(data.table); library(ggplot2); library(scales); library(patchwork)
+  library(data.table); library(ggplot2); library(scales); library(patchwork); library(DT)
 })
 source("integration_plots.R")  # nice_cols / make_plot_palette / geom_text_repel centroid labelling
 
 alpha_thresh <- 0.5
 method_id    <- Sys.getenv("ANNOTATION_METHOD_ID")
 ps           <- 10
+stage_violin_page_size <- 40
 
 lab_fs <- list.files(".", pattern = "_labels_.+\\.csv\\.gz$", full.names = TRUE)
 names(lab_fs) <- sub("\\.csv\\.gz$", "", sub("^.*_labels_", "", lab_fs))
@@ -48,6 +49,8 @@ post_qc_fs <- list.files("post_qc", pattern = "^qc_metrics_.+\\.csv\\.gz$", full
 names(post_qc_fs) <- sub("\\.csv\\.gz$", "", sub("^qc_metrics_", "", basename(post_qc_fs)))
 
 sids <- sort(Reduce(intersect, list(names(lab_fs), names(alpha_fs), names(ann_fs), names(pre_qc_fs), names(post_qc_fs))))
+short_id_of <- function(x) sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", x))
+short_id_levels <- sort(unique(short_id_of(sids)), decreasing = TRUE)
 
 pop_cols <- c("cell, QC-kept" = "#2c8a3d", "cell, QC-removed" = "#e08214",
               "ambient" = "#FB8072", "excluded" = "grey30")
@@ -75,16 +78,58 @@ load_output <- function(sid) {
   merge(al, ann[, .(cell_id, cluster, label, UMAP1, UMAP2)], by = "cell_id")
 }
 
-sample_data <- setNames(lapply(sids, function(sid) {
+# --- Lightweight per-sample alpha_hat summary (alpha_hat + celltype only; no UMAP/annotation
+# join), so this stays cheap at any cohort size. Drives the global histogram below and the
+# scorecard used to pick which samples get a full per-cell detail tab.
+all_alpha <- rbindlist(setNames(
+  lapply(sids, function(sid) fread(alpha_fs[[sid]])[, .(alpha_hat, celltype)]), sids
+), idcol = "sample_id")
+
+sample_summary <- all_alpha[, .(
+  n_cells      = .N,
+  n_celltypes  = uniqueN(celltype),
+  median_alpha = median(alpha_hat),
+  pct_gt_03    = 100 * mean(alpha_hat > 0.3),
+  pct_gt_05    = 100 * mean(alpha_hat > alpha_thresh)
+), by = sample_id]
+setorder(sample_summary, -pct_gt_05, -pct_gt_03)
+
+# Per-sample detail tabs are capped so the report stays cheap at large cohort sizes, and split
+# into "worst" (highest ambient burden) and "best" (lowest) so the two tabsets show contrasting
+# examples rather than one burden-ranked list. n_worst/n_best samples are taken off opposite ends
+# of the ranked list (no overlap); anything named in CELLSWEEP_REPORT_FOCUS_SAMPLES gets a tab too
+# regardless of rank, so any specific sample stays reachable on request.
+parse_n <- function(raw) if (toupper(trimws(raw)) == "ALL") Inf else as.numeric(raw)
+n_worst <- parse_n(Sys.getenv("CELLSWEEP_REPORT_N_WORST", "20"))
+n_best  <- parse_n(Sys.getenv("CELLSWEEP_REPORT_N_BEST",  "20"))
+focus_samples <- trimws(strsplit(Sys.getenv("CELLSWEEP_REPORT_FOCUS_SAMPLES", ""), "[, ]+")[[1]])
+focus_samples <- intersect(focus_samples[nzchar(focus_samples)], sids)
+
+ranked_sids  <- sample_summary$sample_id                    # worst-first (see setorder above)
+n_tot        <- length(ranked_sids)
+n_worst_eff  <- min(n_worst, n_tot)
+n_best_eff   <- min(n_best, n_tot - n_worst_eff)
+bad_sids     <- head(ranked_sids, n_worst_eff)
+good_sids    <- if (n_best_eff > 0) tail(ranked_sids, n_best_eff) else character(0)
+focus_extra  <- setdiff(focus_samples, union(bad_sids, good_sids))
+
+detail_sids  <- sort(union(union(bad_sids, good_sids), focus_extra))
+
+sample_summary[, `:=`(
+  short_id      = short_id_of(sample_id),
+  detail_group  = fcase(sample_id %in% bad_sids,    "worst",
+                         sample_id %in% good_sids,   "best",
+                         sample_id %in% focus_extra, "focus",
+                         default = "-")
+)]
+setcolorder(sample_summary, c("sample_id", "short_id", "detail_group"))
+
+# Full per-cell input/output are only materialised for samples with a detail tab: load_input()
+# reads the full raw-barcode label file (every droplet, not just cells) and load_output() joins
+# in the per-cell UMAP/annotation — both are only used by the plots in "Per-sample" below.
+sample_data <- setNames(lapply(detail_sids, function(sid) {
   list(input = load_input(sid), output = load_output(sid))
-}), sids)
-
-all_output <- rbindlist(setNames(lapply(sids, function(sid) sample_data[[sid]]$output), sids), idcol = "sample_id")
-
-short_id_of <- function(x) sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", x))
-all_output[, short_id := short_id_of(sample_id)]
-short_id_levels <- sort(unique(all_output$short_id), decreasing = TRUE)
-all_output[, short_id := factor(short_id, levels = short_id_levels)]
+}), detail_sids)
 
 # --- Per-cell QC metrics at 3 stages, for the nUMI/nGene/splice/mito violins ---
 load_stage_metrics <- function(sid) {
@@ -157,14 +202,34 @@ plot_stage_metric_violins <- function(df, sample_var = "short_id") {
 α̂ (`alpha_hat`) distribution across all CellSweep-output cells, pooled over samples.
 
 ```{r hist-global, fig.width=7, fig.height=3.5}
-ggplot(all_output, aes(alpha_hat)) +
+ggplot(all_alpha, aes(alpha_hat)) +
   geom_histogram(bins = 60, fill = "#4477aa") +
   geom_vline(xintercept = c(0.3, 0.5), linetype = "dashed", colour = "red") +
   theme_classic(base_size = 9) +
   labs(title = sprintf("alpha_hat (all cells, all samples); >0.3: %.1f%%  >0.5: %.1f%%",
-                        100 * mean(all_output$alpha_hat > 0.3),
-                        100 * mean(all_output$alpha_hat > 0.5)),
+                        100 * mean(all_alpha$alpha_hat > 0.3),
+                        100 * mean(all_alpha$alpha_hat > 0.5)),
        x = "alpha_hat", y = "cells")
+```
+
+## Sample scorecard
+
+Per-sample ambient burden across all `r n_tot` samples (α̂ = `alpha_hat`). Sortable and
+searchable; `detail_group` marks samples with a full per-cell tab below: **worst** = highest
+ambient burden, **best** = lowest, **focus** = explicitly requested via
+`CELLSWEEP_REPORT_FOCUS_SAMPLES`. Defaults: `r n_worst` worst + `r n_best` best (set via
+`--cellsweep_report_n_worst`/`--cellsweep_report_n_best`; `all` for no cap on either).
+
+```{r scorecard}
+DT::datatable(
+  sample_summary[, .(sample_id, short_id, n_cells, n_celltypes,
+                      median_alpha = round(median_alpha, 3),
+                      pct_gt_03    = round(pct_gt_03, 1),
+                      pct_gt_05    = round(pct_gt_05, 1),
+                      detail_group)],
+  rownames = FALSE, filter = "top",
+  options = list(pageLength = 25, order = list(list(6, "desc")))
+)
 ```
 
 ## Per-sample
@@ -173,12 +238,18 @@ Each tab covers one sample end to end: what fed CellSweep (input scatter), then 
 came out — α̂ over the UMAP, the annotation, α̂ per cell type, and which input cells the
 α̂ > `r alpha_thresh` trim removes (shown on the same nUMI × splice axes as the input).
 
-```{r results='asis', fig.width=11, fig.height=4.6}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
+```{r results='asis'}
+cat(sprintf(
+  "Showing the %d worst (highest ambient burden) and %d best (lowest) of %d samples — see the scorecard above for the rest, or set `CELLSWEEP_REPORT_FOCUS_SAMPLES` / `--cellsweep_report_focus_samples` to pull a specific one in.\n\n",
+  length(bad_sids), length(good_sids), n_tot
+))
+```
 
-  cat("#### Input\n\n")
+```{r}
+render_sample_tab <- function(sid) {
+  cat("#### ", sid, "\n\n")
+
+  cat("##### Input\n\n")
   d <- copy(sample_data[[sid]]$input)
   d[, lx := log10(total + ps)]; d[, ly := qlogis((spliced + 1) / (total + 2))]
   pl <- rbind(d[status == "excluded"][sample(.N, min(.N, 30000))], d[status != "excluded"])
@@ -192,7 +263,7 @@ for (sid in sids) {
   print(p_in)
   cat("\n\n")
 
-  cat("#### Output\n\n")
+  cat("##### Output\n\n")
   m <- sample_data[[sid]]$output[order(alpha_hat)]
 
   p_al <- ggplot(m, aes(UMAP1, UMAP2, colour = alpha_hat)) +
@@ -249,7 +320,39 @@ for (sid in sids) {
   print(p_box | p_rm)
   cat("\n\n")
 }
-cat(":::\n\n")
+```
+
+### Best (lowest ambient burden)
+
+```{r results='asis', fig.width=11, fig.height=4.6}
+if (length(good_sids) > 0) {
+  cat("::: {.panel-tabset}\n\n")
+  for (sid in good_sids) render_sample_tab(sid)
+  cat(":::\n\n")
+} else {
+  cat("_No samples in this group (see `cellsweep_report_n_best`)._\n\n")
+}
+```
+
+### Worst (highest ambient burden)
+
+```{r results='asis', fig.width=11, fig.height=4.6}
+if (length(bad_sids) > 0) {
+  cat("::: {.panel-tabset}\n\n")
+  for (sid in bad_sids) render_sample_tab(sid)
+  cat(":::\n\n")
+} else {
+  cat("_No samples in this group (see `cellsweep_report_n_worst`)._\n\n")
+}
+```
+
+```{r results='asis', fig.width=11, fig.height=4.6}
+if (length(focus_extra) > 0) {
+  cat("### Focus (requested via CELLSWEEP_REPORT_FOCUS_SAMPLES)\n\n")
+  cat("::: {.panel-tabset}\n\n")
+  for (sid in focus_extra) render_sample_tab(sid)
+  cat(":::\n\n")
+}
 ```
 
 ## QC metrics across CellSweep stages
@@ -259,10 +362,9 @@ at three stages: **post-QC input** (CellSweep's input, i.e. all QC-kept cells),
 **post-CellSweep** (all cells after ambient correction), and **post-CellSweep,
 low-ambient** (the subset with α̂ ≤ `r alpha_thresh`).
 
-```{r stage-violins, fig.width=11, fig.height=0.55*length(sids)+2, results='asis'}
-max_per_page <- 40
+```{r stage-violins, fig.width=11, fig.height=0.55*min(length(sids), stage_violin_page_size)+2, results='asis'}
 sid_levels   <- levels(stage_dt$short_id)
-groups       <- split(sid_levels, ceiling(seq_along(sid_levels) / max_per_page))
+groups       <- split(sid_levels, ceiling(seq_along(sid_levels) / stage_violin_page_size))
 
 if (length(groups) == 1) {
   print(plot_stage_metric_violins(stage_dt))
@@ -271,7 +373,7 @@ if (length(groups) == 1) {
   for (i in seq_along(groups)) {
     g <- groups[[i]]
     cat(sprintf("### Samples %d–%d\n\n",
-                (i - 1) * max_per_page + 1, (i - 1) * max_per_page + length(g)))
+                (i - 1) * stage_violin_page_size + 1, (i - 1) * stage_violin_page_size + length(g)))
     page_dt <- stage_dt[short_id %in% g]
     page_dt[, short_id := droplevels(short_id)]
     print(plot_stage_metric_violins(page_dt))

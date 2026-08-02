@@ -176,6 +176,9 @@ process CELLSWEEP_REPORT {
     export HOME="\$PWD"
     export ANNOTATION_METHOD_ID='${method_id}'
     export ANNOTATION_CLUSTER_COL='${cluster_col}'
+    export CELLSWEEP_REPORT_N_WORST='${params.cellsweep_report_n_worst}'
+    export CELLSWEEP_REPORT_N_BEST='${params.cellsweep_report_n_best}'
+    export CELLSWEEP_REPORT_FOCUS_SAMPLES='${params.cellsweep_report_focus_samples}'
     quarto render "${report_qmd}" --output cellsweep_report.html
     """
 }
