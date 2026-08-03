@@ -1,269 +1,505 @@
-// Reports module for generating QC reports from Cell Ranger outputs
-// This module provides Quarto-based report generation
+// reports.nf — report rendering processes
 
-process GENERATE_REPORTS {
-    label "process_reports"
-    tag { sampleName }
-        container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true, pattern: "*.html"
+// ---------------------------------------------------------------------------
+// Mapping report (one HTML across all samples)
+// ---------------------------------------------------------------------------
+
+process MAPPING_REPORT {
+    label     "process_reports"
+    tag       "mapping_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/mapping", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    tuple val(sampleName), path(mappingDir), path(seurat_preqc_rds), path(seurat_postqc_rds), path(template_qmd), val(max_mito), val(min_nuclear), path(comparison_metrics), path(comparison_plot)
+    path knee_data_csvs   // collected knee_plot_data_*.csv files — v1 (DropletUtils 1.30)
+    path report_qmd       // mapping_report.qmd
 
     output:
-    tuple val(sampleName), path("${sampleName}_qc_report.html"), emit: html_report
-    tuple val(sampleName), path("${sampleName}_qc_report.qmd"), emit: qmd_source
+    path "mapping_report.html", emit: html
+    path "plots/**",             optional: true
 
     script:
     """
-    echo "Generating QC report for sample: ${sampleName}"
-    echo "Mapping directory: ${mappingDir}"
-    echo "Pre-QC Seurat RDS: ${seurat_preqc_rds}"
-    echo "Post-QC Seurat RDS: ${seurat_postqc_rds}"
-    echo "QC thresholds: max_mito=${max_mito}, min_nuclear=${min_nuclear}"
-
-    # Copy the template from input path to a new file and replace placeholders
-    cp ${template_qmd} ${sampleName}_qc_report.qmd
-
-    # Replace placeholders with actual values (use absolute path)
-    ABSOLUTE_PATH=\$(realpath ${mappingDir})
-    sed -i "s|SAMPLE_NAME_PLACEHOLDER|${sampleName}|g" ${sampleName}_qc_report.qmd
-    sed -i "s|DATA_PATH_PLACEHOLDER|\$ABSOLUTE_PATH|g" ${sampleName}_qc_report.qmd
-
-    # Use the Seurat object paths that were passed as input
-    SEURAT_PRE_PATH=\$(realpath ${seurat_preqc_rds})
-    SEURAT_POST_PATH=\$(realpath ${seurat_postqc_rds})
-    sed -i "s|SEURAT_PRE_PATH_PLACEHOLDER|\$SEURAT_PRE_PATH|g" ${sampleName}_qc_report.qmd
-    sed -i "s|SEURAT_POST_PATH_PLACEHOLDER|\$SEURAT_POST_PATH|g" ${sampleName}_qc_report.qmd
-    
-    # Replace QC threshold placeholders
-    sed -i "s|MAX_MITO_PLACEHOLDER|${max_mito}|g" ${sampleName}_qc_report.qmd
-    sed -i "s|MIN_NUCLEAR_PLACEHOLDER|${min_nuclear}|g" ${sampleName}_qc_report.qmd
-    
-    # Replace CellBender comparison file paths
-    COMPARISON_METRICS_PATH=\$(realpath ${comparison_metrics})
-    COMPARISON_PLOT_PATH=\$(realpath ${comparison_plot})
-    sed -i "s|COMPARISON_METRICS_PLACEHOLDER|\$COMPARISON_METRICS_PATH|g" ${sampleName}_qc_report.qmd
-    sed -i "s|COMPARISON_PLOT_PLACEHOLDER|\$COMPARISON_PLOT_PATH|g" ${sampleName}_qc_report.qmd
-
-    # Render the report
-    echo "Rendering Quarto report..."
-    quarto render ${sampleName}_qc_report.qmd
-
-    echo "QC report completed for ${sampleName}"
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output mapping_report.html
     """
 }
 
-process COMBINE_REPORTS {
-        label "process_reports"
-        container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-        publishDir "${params.outputDir}", mode: 'copy', overwrite: true
+// ---------------------------------------------------------------------------
+// CellBender report (one HTML across all samples)
+// ---------------------------------------------------------------------------
 
-        input:
-        path html_reports
-        path qmd_sources
-        path(book_template_dir)
-
-        output:
-        path "combined_qc_book/", emit: book_directory
-        path "combined_qc_book/_book/", emit: rendered_book
-
-        script:
-        """
-        echo "Combining all QC reports into a single Quarto book..."
-
-        mkdir -p combined_qc_book/chapters
-        cd combined_qc_book
-
-        # Copy the book template and configuration from input
-        cp -r ${book_template_dir}/* .
-
-        # Copy all individual QMD reports to chapters directory
-        cp ../*.qmd chapters/ || echo "No QMD files to copy"
-
-        # Update the _quarto.yml with all chapters
-        echo "Creating book configuration..."
-
-        # Generate chapters list (only if chapters exist)
-        if ls chapters/*.qmd >/dev/null 2>&1; then
-                CHAPTERS=\$(ls chapters/*.qmd | sed 's|chapters/||g' | sort)
-        else
-                CHAPTERS=""
-        fi
-
-        # Create the chapters section in _quarto.yml
-        cat > _quarto.yml << 'EOF'
-project:
-    type: book
-    output-dir: _book
-
-book:
-    title: "scQC-flow Quality Control Report"
-    author: "scQC-flow Pipeline"
-    date: today
-  
-    chapters:
-        - index.qmd
-EOF
-
-        # Add each chapter to the YAML
-        for chapter in \$CHAPTERS; do
-                echo "    - chapters/\$chapter" >> _quarto.yml
-        done
-
-        cat >> _quarto.yml << 'EOF'
-
-format:
-    html:
-        theme: cosmo
-        toc: true
-        code-fold: true
-        code-tools: true
-        embed-resources: true
-
-    
-execute:
-    warning: false
-    message: false
-EOF
-
-        # Render the book
-        echo "Rendering combined QC book..."
-        quarto render
-
-        echo "Combined QC book completed"
-        """
-}
-
-process GENERATE_COMBINED_REPORT {
-    label "process_reports"
-        container "ghcr.io/johnsonlab-ic/landmark-sc_image"
-    publishDir "${params.outputDir}", mode: 'copy', overwrite: true
+process CELLBENDER_REPORT {
+    label     "process_reports"
+    tag       "cellbender_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    val sample_names
-    path mapping_dirs
-    path dropletqc_files
-    path scdbl_files
-    path(combined_template_qmd)
+    path summary_csvs   // cb_summary_*.csv
+    path labels_csvs    // cb_barcode_labels_*.csv.gz
+    path report_qmd     // cellbender_report.qmd
 
     output:
-    path "combined_qc_report.html", emit: combined_report
-    path "combined_qc_report.qmd", emit: combined_qmd
+    path "cellbender_report.html", emit: html
 
     script:
     """
-    echo "Generating combined QC report for all samples..."
-
-    # Debug: List all input files
-    echo "All files in work directory:"
-    ls -la
-
-    # Use the combined template directly from input path
-    cp ${combined_template_qmd} combined_qc_report.qmd
-
-    # Create sample information file that the template can read
-    echo "sample_name,mapping_dir,dropletqc_file,scdbl_file" > sample_info.csv
-
-    # Convert to arrays (handle the join properly)
-    SAMPLE_NAMES="${sample_names.join(' ')}"
-
-    # Get all mapping directories and files in arrays to maintain order
-    declare -a sample_array=(\$SAMPLE_NAMES)
-    declare -a mapping_dirs=(\$(find . -maxdepth 1 -type l -name "*mapped" | sort))
-    declare -a dropletqc_files=(\$(ls *_dropletqc_metrics.csv 2>/dev/null | sort))
-    declare -a scdbl_files=(\$(ls *_scdbl_metrics.csv 2>/dev/null | sort))
-
-    # Process files by index to maintain order
-    for i in "\${!sample_array[@]}"; do
-        sample="\${sample_array[\$i]}"
-        echo "Processing sample: \$sample (index \$i)"
-
-        # Get mapping directory by index (since Nextflow preserves order)
-        if [ \$i -lt \${#mapping_dirs[@]} ]; then
-            mapping_dir=\$(realpath "\${mapping_dirs[\$i]}")
-        else
-            mapping_dir=""
-        fi
-
-        # Get dropletqc file by index
-        if [ \$i -lt \${#dropletqc_files[@]} ]; then
-            dropletqc_file=\$(realpath "\${dropletqc_files[\$i]}")
-        else
-            dropletqc_file=""
-        fi
-
-        # Get scdbl file by index
-        if [ \$i -lt \${#scdbl_files[@]} ]; then
-            scdbl_file=\$(realpath "\${scdbl_files[\$i]}")
-        else
-            scdbl_file=""
-        fi
-
-        echo "  Mapping dir: \$mapping_dir"
-        echo "  DropletQC file: \$dropletqc_file"
-        echo "  scDbl file: \$scdbl_file"
-
-        # Add to CSV
-        echo "\$sample,\$mapping_dir,\$dropletqc_file,\$scdbl_file" >> sample_info.csv
-    done
-
-    echo "Sample info file contents:"
-    cat sample_info.csv
-
-    # Replace placeholder with the sample info file path
-    SAMPLE_INFO_PATH=\$(realpath sample_info.csv)
-    sed -i "s|SAMPLE_INFO_PLACEHOLDER|\$SAMPLE_INFO_PATH|g" combined_qc_report.qmd
-
-    # Render the combined report
-    echo "Rendering combined QC report..."
-    quarto render combined_qc_report.qmd
-
-    echo "Combined QC report completed"
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output cellbender_report.html
     """
 }
 
-// =============================================================================
-// ATAC QC REPORT FOR MULTIOME DATA
-// =============================================================================
-process GENERATE_ATAC_REPORT {
-    label "process_reports"
-    tag { sampleName }
-    container "ghcr.io/johnsonlab-ic/landmark-singlecell-atac:with-radian"
-    publishDir "${params.outputDir}/${sampleName}", mode: 'copy', overwrite: true, pattern: "*.html"
+// ---------------------------------------------------------------------------
+// Ambient report (one HTML across all samples)
+// ---------------------------------------------------------------------------
+
+process AMBIENT_REPORT {
+    label     "process_reports"
+    tag       "ambient_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/ambient", mode: params.publish_mode_reports, overwrite: true
 
     input:
-    tuple val(sampleName), path(seurat_rds), path(fragment_file), path(peak_file), path(template_qmd)
+    path qc_metrics_csvs   // barcodes_qc_metrics_*.csv.gz  — pre/post S/U/A per barcode
+    path barcodes_csvs     // cell_barcodes_*.csv            — accepted cell barcodes
+    path dcx_params_csvs   // dcx_params_*.csv               — contamination + cluster
+    path summaries_csvs    // dcx_summary_*.csv              — per-sample summary stats
+    path report_qmd        // ambient_report.qmd
 
     output:
-    tuple val(sampleName), path("${sampleName}_atac_qc_report.html"), emit: html_report
-    tuple val(sampleName), path("${sampleName}_atac_qc_report.qmd"), emit: qmd_source
+    path "ambient_report.html", emit: html
+    path "plots/**",             optional: true
 
     script:
     """
-    echo "Generating ATAC QC report for sample: ${sampleName}"
-    echo "Seurat RDS: ${seurat_rds}"
-    echo "Fragment file: ${fragment_file}"
-    echo "Peak file: ${peak_file}"
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output ambient_report.html
+    """
+}
 
-    # Copy the template from input path to a new file
-    cp ${template_qmd} ${sampleName}_atac_qc_report.qmd
+process CELL_CALLING_REPORT {
+    label     "process_reports"
+    tag       "cell_calling_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
 
-    # Get absolute paths for replacement
-    SEURAT_PATH=\$(realpath ${seurat_rds})
-    FRAGMENT_PATH=\$(realpath ${fragment_file})
-    PEAK_PATH=\$(realpath ${peak_file})
+    input:
+    path alevinfry_stats_csvs // alevinfry_stats_*.csv         — read mapping + per-barcode stats from piscem/alevin-fry
+    path summary_csvs         // cell_calling_summary_*.csv     — per-sample counts + cuts
+    path label_csvs           // cell_calling_labels_*.csv.gz   — per-barcode posteriors + population
+    path gmm_rds              // cell_calling_gmm_*.rds         — fitted GMM params + cuts
+    path report_qmd           // cell_calling_report.qmd
 
-    # Replace placeholders with actual values
-    sed -i "s|SAMPLE_NAME_PLACEHOLDER|${sampleName}|g" ${sampleName}_atac_qc_report.qmd
-    sed -i "s|SEURAT_PATH_PLACEHOLDER|\$SEURAT_PATH|g" ${sampleName}_atac_qc_report.qmd
-    sed -i "s|FRAGMENT_PATH_PLACEHOLDER|\$FRAGMENT_PATH|g" ${sampleName}_atac_qc_report.qmd
-    sed -i "s|PEAK_PATH_PLACEHOLDER|\$PEAK_PATH|g" ${sampleName}_atac_qc_report.qmd
+    output:
+    path "cell_calling_report.html", emit: html
+    path "plots/**",                  optional: true
 
-    # Render the report
-    echo "Rendering ATAC QC Quarto report..."
-    quarto render ${sampleName}_atac_qc_report.qmd
+    script:
+    """
+    export HOME="\$PWD"
+    export CC_BHATTACHARYYA_WARN="${params.cc_bhattacharyya_warn}"
+    export CC_BHATTACHARYYA_FAIL="${params.cc_bhattacharyya_fail}"
+    quarto render "${report_qmd}" --output cell_calling_report.html
+    """
+}
 
-    echo "ATAC QC report completed for ${sampleName}"
+process KNEE_REPORT {
+    label     "process_reports"
+    tag       "knee_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path knee_data_csvs      // knee_plot_data_*.csv
+    path alevinfry_stats_csvs // alevinfry_stats_*.csv — read mapping + per-barcode stats from piscem/alevin-fry
+    path summary_csvs        // knee_summary_*.csv
+    path label_csvs          // knee_labels_*.csv.gz
+    path report_qmd          // knee_report.qmd
+
+    output:
+    path "knee_report.html", emit: html
+    path "plots/**",         optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output knee_report.html
+    """
+}
+
+process EMPTYDROPS_REPORT {
+    label     "process_reports"
+    tag       "emptydrops_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path summary_csvs   // emptydrops_summary_*.csv
+    path label_csvs     // emptydrops_labels_*.csv.gz
+    path report_qmd     // emptydrops_report.qmd
+
+    output:
+    path "emptydrops_report.html", emit: html
+    path "plots/**",               optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    quarto render "${report_qmd}" --output emptydrops_report.html
+    """
+}
+
+process CELLSWEEP_REPORT {
+    label     "process_reports"
+    tag       "cellsweep_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cellsweep", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path label_csvs                            // <caller>_labels_*.csv.gz from AMBIENT.labels
+    path qc_metrics_csvs, stageAs: 'pre_qc/*'   // qc_metrics_*.csv.gz (pre-CellSweep) from QC.qc_metrics
+    path alpha_csvs                             // <sid>_alpha_hat.csv.gz from CELLSWEEP
+    path annotation_cells_csvs                  // annotation_cells_<method_id>_<sid>.csv.gz from PER_SAMPLE_ANNOTATION_WF
+    path corrected_qc_csvs, stageAs: 'post_qc/*' // qc_metrics_*.csv.gz (post-CellSweep, has alpha_hat) from CELLSWEEP_TO_H5
+    path report_qmd                             // cellsweep_report.qmd
+    path plots_r                                // integration_plots.R
+    val  method_id
+    val  cluster_col
+
+    output:
+    path "cellsweep_report.html", emit: html
+    path "plots/**",               optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    export ANNOTATION_METHOD_ID='${method_id}'
+    export ANNOTATION_CLUSTER_COL='${cluster_col}'
+    export CELLSWEEP_REPORT_N_WORST='${params.cellsweep_report_n_worst}'
+    export CELLSWEEP_REPORT_N_BEST='${params.cellsweep_report_n_best}'
+    export CELLSWEEP_REPORT_FOCUS_SAMPLES='${params.cellsweep_report_focus_samples}'
+    quarto render "${report_qmd}" --output cellsweep_report.html
+    """
+}
+
+// ---------------------------------------------------------------------------
+// QC report (one HTML across all samples)
+// ---------------------------------------------------------------------------
+
+process QC_REPORT {
+    label     "process_reports"
+    tag       "qc_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/qc", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path qc_metrics_csvs   // collected qc_metrics_*.csv.gz files
+    path qc_plots_r        // qc_plots.R helper script
+    path report_qmd        // qc_report.qmd
+
+    output:
+    path "qc_report.html", emit: html
+    path "plots/**",        optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    export HARD_MIN_COUNTS="${params.qc_hard_min_counts}"
+    export HARD_MIN_FEATS="${params.qc_hard_min_feats}"
+    export HARD_MAX_MITO="${params.qc_hard_max_mito}"
+    export MIN_COUNTS="${params.qc_min_counts}"
+    export MIN_FEATS="${params.qc_min_feats}"
+    export MAX_MITO="${params.qc_max_mito}"
+    export MIN_MITO="${params.qc_min_mito}"
+    export MAX_SPLICE="${params.qc_max_splice}"
+    export MIN_SPLICE="${params.qc_min_splice}"
+    export QC_MAD_FILTER="${params.qc_mad_filter}"
+    export QC_MAD_NMADS="${params.qc_mad_nmads}"
+    quarto render "${report_qmd}" --output qc_report.html
+    """
+}
+
+// ---------------------------------------------------------------------------
+// HVG report (one HTML across all samples)
+// ---------------------------------------------------------------------------
+
+process HVG_REPORT {
+    label     "process_reports"
+    tag       "hvg_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/hvg", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path hvg_stats_csv     // hvg_stats.csv.gz — per-gene HVG stats
+    path de_table_gz, stageAs: 'de_in/*'    // edger_dt.csv.gz (or NO_FILE placeholder) — ambient DE results
+    path pb_empties_rds, stageAs: 'pb_in/*' // pb_empties.rds (or NO_FILE placeholder) — pseudobulk empty SummarizedExperiment
+    path report_qmd        // hvg_report.qmd
+    path plots_r           // hvg_plots.R — plotting helpers sourced by the report
+
+    output:
+    path "hvg_report.html", emit: html
+    path "plots/**",         optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    export N_HVG="${params.hvg_n_hvgs}"
+    quarto render "${report_qmd}" --output hvg_report.html
+    """
+}
+
+// ---------------------------------------------------------------------------
+// Integration report (one HTML across all samples)
+// ---------------------------------------------------------------------------
+
+process INTEGRATION_REPORT {
+    label     "process_reports"
+    tag       "integration_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/integration", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path integration_csv   // integration_dt.csv.gz — UMAP + cluster assignments
+    path dbl_sweep_csv     // dbl_sweep.csv.gz — doublet proportion sweep
+    path qc_metrics_csvs   // collected qc_metrics_*.csv.gz files for cluster QC summaries
+    path report_qmd        // integration_report.qmd
+    path plots_r           // integration_plots.R — plotting helpers sourced by the report
+
+    output:
+    path "integration_report.html", emit: html
+    path "plots/**",                 optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    export METADATA_VARS="${params.metadata_vars}"
+    export LEIDEN_RES="${params.integration_leiden_res}"
+    export DBL_CL_PROP="${params.integration_dbl_cl_prop}"
+    quarto render "${report_qmd}" --output integration_report.html
+    """
+}
+
+  // ---------------------------------------------------------------------------
+  // Annotation report (one HTML across all samples)
+  // ---------------------------------------------------------------------------
+
+process ANNOTATION_REPORT {
+    label     "process_reports"
+    tag       "annotation_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path integration_csv
+    path marker_stats_csv
+    path logcpms_csv
+    path marker_panel_csv
+    path marker_expr_rds
+    path top_marker_expr_rds
+    path cell_labels_csv
+    path report_qmd
+    path utils_r
+    path plots_r
+
+    output:
+    path "annotation_report.html", emit: html
+
+    script:
+    """
+    export HOME="\$PWD"
+    export ANNOTATION_SEL_RES="${params.annotation_sel_res}"
+    export ANNOTATION_MIN_CPM_MKR="${params.annotation_min_cpm_mkr}"
+    export ANNOTATION_NOT_OK_RE="${params.annotation_not_ok_re}"
+    export ANNOTATION_TOP_N="${params.annotation_top_n}"
+    export ANNOTATION_FDR_CUT="${params.annotation_fdr_cut}"
+    export ANNOTATION_MAX_ZERO_P="${params.annotation_max_zero_p}"
+    quarto render "${report_qmd}" --output annotation_report.html
+    """
+}
+
+process ANNOTATION_METHOD_REPORT {
+    label     "process_reports"
+    tag       "annotation_method_${method_id}"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/annotation", mode: params.publish_mode_reports, overwrite: true, saveAs: { filename -> "${method_id}/${filename}" }
+
+    input:
+    tuple val(method_id), val(spec_b64), path(cells_csv), path(cluster_csv), path(export_csv)
+    path report_qmd
+
+    output:
+    path "annotation_report_${method_id}.html", emit: html
+
+    script:
+    def spec = new groovy.json.JsonSlurper().parseText(new String(spec_b64.decodeBase64()))
+    def engine = spec.engine.toString().replace("'", "'\"'\"'")
+    def referenceName = spec.reference_name.toString().replace("'", "'\"'\"'")
+    def referenceLabelCol = (spec.reference_label_col ?: '').toString().replace("'", "'\"'\"'")
+    """
+    export HOME="\$PWD"
+    export ANNOTATION_METHOD_ID='${method_id}'
+    export ANNOTATION_ENGINE='${engine}'
+    export ANNOTATION_REFERENCE_NAME='${referenceName}'
+    export ANNOTATION_REFERENCE_LABEL_COL='${referenceLabelCol}'
+    export ANNOTATION_CELLS_CSV='${cells_csv.name}'
+    export ANNOTATION_CLUSTER_CSV='${cluster_csv.name}'
+    export ANNOTATION_FEATURE_RES='${params.annotation_sel_res}'
+
+    quarto render ${report_qmd} --output annotation_report_${method_id}.html
+    """
+}
+
+process PER_SAMPLE_ANNOTATION_REPORT {
+    label     "process_reports"
+    tag       "per_sample_annotation_report"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/per_sample_annotation", mode: params.publish_mode_reports, overwrite: true
+
+    input:
+    path cells_csvs   // annotation_cells_<method_id>_<sid>.csv.gz, one per sample
+    path summary_csvs // annotation_cluster_summary_<method_id>_<sid>.csv.gz, one per sample
+    path qc_metrics_csvs // qc_metrics_<sid>.csv.gz (pre-CellSweep, all cells) from QC.qc_metrics
+    path report_qmd   // per_sample_annotation_report.qmd
+    path plots_r      // integration_plots.R
+    path qc_plots_r   // qc_plots.R
+    val  method_id
+    val  cluster_col
+
+    output:
+    path "per_sample_annotation_report.html", emit: html
+    path "plots/**",                          optional: true
+
+    script:
+    """
+    export HOME="\$PWD"
+    export ANNOTATION_METHOD_ID='${method_id}'
+    export ANNOTATION_CLUSTER_COL='${cluster_col}'
+    export HARD_MIN_COUNTS="${params.qc_hard_min_counts}"
+    export HARD_MIN_FEATS="${params.qc_hard_min_feats}"
+    export HARD_MAX_MITO="${params.qc_hard_max_mito}"
+    export MIN_COUNTS="${params.qc_min_counts}"
+    export MIN_FEATS="${params.qc_min_feats}"
+    export MAX_MITO="${params.qc_max_mito}"
+    export MIN_MITO="${params.qc_min_mito}"
+    export MAX_SPLICE="${params.qc_max_splice}"
+    export MIN_SPLICE="${params.qc_min_splice}"
+    quarto render "${report_qmd}" --output per_sample_annotation_report.html
+    """
+}
+
+process REPORT_SITE {
+    label     "process_reports"
+    tag       "report_site"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/reports", mode: params.publish_mode_reports, overwrite: true, saveAs: { filename -> filename.replaceFirst('^site/', '') }
+
+    input:
+    path report_htmls
+    path landing_qmd
+    val landing_payload_json
+    path integration_csv
+    path builder_script
+    path trace_file
+
+    output:
+    path "site/*", emit: site
+
+    script:
+    def payloadB64 = landing_payload_json.toString().bytes.encodeBase64().toString()
+    """
+    set -euo pipefail
+    export HOME="\$PWD"
+
+    printf '%s' '${payloadB64}' | base64 --decode > landing_page_payload.json
+
+    python3 - <<'PY'
+import csv
+import datetime as dt
+import json
+import re
+from pathlib import Path
+
+
+def parse_nf_duration_ms(s):
+    if not s or s.strip() in ('', '-'):
+        return None
+    total = 0.0
+    for val, unit in re.findall(r'([0-9.]+)(ms|s|m|h|d)', s):
+        v = float(val)
+        if unit == 'ms':   total += v
+        elif unit == 's':  total += v * 1_000
+        elif unit == 'm':  total += v * 60_000
+        elif unit == 'h':  total += v * 3_600_000
+        elif unit == 'd':  total += v * 86_400_000
+    return total or None
+
+
+def runtime_from_trace(trace_path):
+    min_submit = None
+    max_complete = None
+    try:
+        with open(trace_path, newline='', encoding='utf-8') as fh:
+            for row in csv.DictReader(fh, delimiter=chr(9)):
+                if row.get('status') != 'COMPLETED':
+                    continue
+                submit_str = (row.get('submit') or '').strip()
+                dur_str    = (row.get('duration') or '').strip()
+                if not submit_str or submit_str == '-':
+                    continue
+                submit_dt = None
+                for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+                    try:
+                        submit_dt = dt.datetime.strptime(submit_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if submit_dt is None:
+                    continue
+                if min_submit is None or submit_dt < min_submit:
+                    min_submit = submit_dt
+                dur_ms = parse_nf_duration_ms(dur_str)
+                if dur_ms is not None:
+                    complete_dt = submit_dt + dt.timedelta(milliseconds=dur_ms)
+                    if max_complete is None or complete_dt > max_complete:
+                        max_complete = complete_dt
+    except Exception:
+        pass
+    if min_submit is not None and max_complete is not None:
+        return max(0, int((max_complete - min_submit).total_seconds()))
+    return None
+
+
+payload_path = Path("landing_page_payload.json")
+payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+now = dt.datetime.now().astimezone()
+payload["generated_at"] = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+trace_path = "${trace_file}"
+runtime_seconds = None
+if trace_path and not trace_path.endswith("NO_FILE"):
+    runtime_seconds = runtime_from_trace(trace_path)
+
+if runtime_seconds is None:
+    started_at = payload.get("started_at")
+    if started_at:
+        try:
+            runtime_seconds = max(0, int((now - dt.datetime.fromisoformat(started_at)).total_seconds()))
+        except ValueError:
+            pass
+
+payload["runtime_seconds"] = runtime_seconds
+payload_path.write_text(json.dumps(payload, indent=2) + chr(10), encoding="utf-8")
+PY
+
+    quarto render "${landing_qmd}" --output index.html
+
+    mapfile -t report_html_files < <(find -L . -type f -name '*.html' ! -path './site/*' -printf '%P\n' | sort)
+
+    python3 "${builder_script}" \
+        --payload landing_page_payload.json \
+        --outdir site \
+        "\${report_html_files[@]}"
     """
 }

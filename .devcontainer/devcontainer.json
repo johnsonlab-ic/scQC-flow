@@ -1,0 +1,22 @@
+{
+  "name": "scQC-flow Dev Container",
+  "image": "ghcr.io/johnsonlab-ic/landmark-sc_image:latest",
+  "runArgs": ["--network=host"],
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Ikuyadeu.r"
+      ],
+      "settings": {
+        "r.rterm.linux": "/usr/local/bin/radian",
+        "r.rterm.option": ["--no-save", "--no-restore"],
+        "r.lsp.path": "/usr/local/bin/R"
+      }
+    }
+  },
+  "forwardPorts": [8000, 8001, 8002, 8003],
+  "remoteUser": "vscode",
+  "postCreateCommand": "echo 'Container ready' && Rscript -e \"cat('R version: ', R.version.string, '\n')\""
+}

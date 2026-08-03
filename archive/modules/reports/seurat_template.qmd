@@ -1,0 +1,729 @@
+---
+title: "SAMPLE_NAME_PLACEHOLDER QC Report"
+subtitle: "Sample: SAMPLE_NAME_PLACEHOLDER"
+author: "scQC-flow Pipeline"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    embed-resources: false
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(ggplot2)
+  library(dplyr)
+  library(gridExtra)
+  library(patchwork)
+  library(knitr)
+})
+
+# Set sample name and object paths
+sample_name <- "SAMPLE_NAME_PLACEHOLDER"
+seurat_object_preqc_path <- "SEURAT_PRE_PATH_PLACEHOLDER"
+seurat_object_postqc_path <- "SEURAT_POST_PATH_PLACEHOLDER"
+
+cat("Processing sample:", sample_name, "\n")
+cat("Pre-QC Seurat object path:", seurat_object_preqc_path, "\n")
+cat("Post-QC Seurat object path:", seurat_object_postqc_path, "\n")
+
+# Load both Seurat objects
+seurat_obj_preqc <- readRDS(seurat_object_preqc_path)
+seurat_obj_postqc <- readRDS(seurat_object_postqc_path)
+
+cat("Loaded pre-QC Seurat object - cells:", ncol(seurat_obj_preqc), "features:", nrow(seurat_obj_preqc), "\n")
+cat("Loaded post-QC Seurat object - cells:", ncol(seurat_obj_postqc), "features:", nrow(seurat_obj_postqc), "\n")
+
+# Calculate cells lost and retained
+cells_lost <- ncol(seurat_obj_preqc) - ncol(seurat_obj_postqc)
+cells_retained_pct <- round(100 * ncol(seurat_obj_postqc) / ncol(seurat_obj_preqc), 2)
+cells_lost_pct <- round(100 * cells_lost / ncol(seurat_obj_preqc), 2)
+
+# Calculate cells lost to specific filtering criteria
+# Cells lost to doublet filtering (if doublet_class column exists)
+if ("doublet_class" %in% colnames(seurat_obj_preqc@meta.data)) {
+  doublets_removed <- sum(seurat_obj_preqc@meta.data$doublet_class == "doublet", na.rm = TRUE)
+  doublets_removed_pct <- round(100 * doublets_removed / ncol(seurat_obj_preqc), 2)
+} else {
+  doublets_removed <- 0
+  doublets_removed_pct <- 0
+}
+
+# Cells lost to nuclear fraction filtering (if nuclear_fraction column exists)
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc@meta.data)) {
+  # Estimate nuclear fraction threshold from the data
+  min_nuclear_threshold <- min(seurat_obj_postqc@meta.data$nuclear_fraction, na.rm = TRUE)
+  nuclear_fraction_filtered <- sum(seurat_obj_preqc@meta.data$nuclear_fraction < min_nuclear_threshold, na.rm = TRUE)
+  nuclear_fraction_filtered_pct <- round(100 * nuclear_fraction_filtered / ncol(seurat_obj_preqc), 2)
+} else {
+  nuclear_fraction_filtered <- 0
+  nuclear_fraction_filtered_pct <- 0
+}
+
+# Cells lost to mitochondrial filtering
+max_mito_threshold <- max(seurat_obj_postqc@meta.data$percent.mt, na.rm = TRUE)
+mito_filtered <- sum(seurat_obj_preqc@meta.data$percent.mt > max_mito_threshold, na.rm = TRUE)
+mito_filtered_pct <- round(100 * mito_filtered / ncol(seurat_obj_preqc), 2)
+
+cat("Cells retained after QC filtering:", cells_retained_pct, "% (", ncol(seurat_obj_postqc), "cells)\n")
+cat("Cells lost after QC filtering:", cells_lost_pct, "% (", cells_lost, "cells)\n")
+cat("Cells lost to doublet filtering:", doublets_removed, "(", doublets_removed_pct, "%)\n")
+cat("Cells lost to nuclear fraction filtering:", nuclear_fraction_filtered, "(", nuclear_fraction_filtered_pct, "%)\n")
+cat("Cells lost to mitochondrial filtering:", mito_filtered, "(", mito_filtered_pct, "%)\n")
+
+# Calculate y-axis limits from pre-QC data for consistent scaling between plots
+qc_features_for_limits <- c("nFeature_RNA", "nCount_RNA", "percent.mt")
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc@meta.data)) {
+  qc_features_for_limits <- c(qc_features_for_limits, "nuclear_fraction")
+}
+if ("doublet_score" %in% colnames(seurat_obj_preqc@meta.data)) {
+  qc_features_for_limits <- c(qc_features_for_limits, "doublet_score")
+}
+
+y_limits <- list()
+for (feature in qc_features_for_limits) {
+  if (feature %in% colnames(seurat_obj_preqc@meta.data)) {
+    if (feature == "percent.mt") {
+      # For mitochondrial percentage, use 0-100 range
+      y_limits[[feature]] <- c(0, 100)
+    } else if (feature == "nuclear_fraction") {
+      # For nuclear fraction, use 0-1 range
+      y_limits[[feature]] <- c(0, 1)
+    } else if (feature == "doublet_score") {
+      # For doublet score, use 0-1 range
+      y_limits[[feature]] <- c(0, 1)
+    } else {
+      # For nFeature_RNA and nCount_RNA, calculate from data with some padding
+      data_range <- range(seurat_obj_preqc@meta.data[[feature]], na.rm = TRUE)
+      padding <- (data_range[2] - data_range[1]) * 0.05  # 5% padding
+      y_limits[[feature]] <- c(max(0, data_range[1] - padding), data_range[2] + padding)
+    }
+  }
+}
+
+cat("Calculated y-axis limits for consistent scaling between pre-QC and post-QC plots\n")
+```
+
+# CellBender Comparison
+
+```{r}
+#| label: cellbender-status
+#| results: 'asis'
+#| echo: false
+
+# Load CellBender comparison metrics
+comparison_metrics_path <- "COMPARISON_METRICS_PLACEHOLDER"
+comparison_plot_path <- "COMPARISON_PLOT_PLACEHOLDER"
+
+# Check if files exist
+if (file.exists(comparison_metrics_path)) {
+  comparison_metrics <- read.csv(comparison_metrics_path)
+  
+  # Display key findings and difference flag first
+  raw_droplets <- comparison_metrics$count[comparison_metrics$metric == "Total Raw Droplets"]
+  cr_cells <- comparison_metrics$count[comparison_metrics$metric == "CellRanger Called Cells"]
+  cb_cells <- comparison_metrics$count[comparison_metrics$metric == "CellBender Called Cells"]
+  
+  # Calculate difference percentage for status indicator
+  if (!is.na(cb_cells) && cr_cells > 0) {
+    diff <- cb_cells - cr_cells
+    diff_pct <- abs(round(100 * diff / cr_cells, 2))
+    
+    # Determine status text (no HTML to avoid rendering issues)
+    if (diff_pct <= 5) {
+      status_emoji <- "✅"
+      status_label <- "OK"
+      message <- "CellBender and Cell Ranger results are consistent (< 5% difference)"
+    } else if (diff_pct <= 20) {
+      status_emoji <- "⚠️"
+      status_label <- "Warning"
+      message <- paste0("Moderate difference detected (", diff_pct, "% difference)")
+    } else {
+      status_emoji <- "🔴"
+      status_label <- "Attention"
+      message <- paste0("Large difference detected (", diff_pct, "% difference) - Review recommended")
+    }
+    
+    cat(paste0("**CellBender vs Cell Ranger:** ", status_emoji, " ", status_label, " — ", message, "\n\n"))
+  }
+}
+```
+
+## Droplet Calling Comparison
+
+This section compares droplet calling between Cell Ranger and CellBender.
+
+```{r}
+#| label: cellbender-comparison-table
+#| echo: false
+
+if (file.exists(comparison_metrics_path)) {
+  comparison_metrics <- read.csv(comparison_metrics_path)
+  
+  # Get values
+  raw_droplets <- comparison_metrics$count[comparison_metrics$metric == "Total Raw Droplets"]
+  cr_cells <- comparison_metrics$count[comparison_metrics$metric == "CellRanger Called Cells"]
+  cb_cells <- comparison_metrics$count[comparison_metrics$metric == "CellBender Called Cells"]
+  
+  # Create comparison summary table
+  if (!is.na(cb_cells)) {
+    diff <- cb_cells - cr_cells
+    diff_pct <- round(100 * diff / cr_cells, 2)
+    
+    comparison_summary <- data.frame(
+      Method = c("Cell Ranger", "CellBender", "Difference"),
+      `Cells Called` = c(
+        format(cr_cells, big.mark = ","),
+        format(cb_cells, big.mark = ","),
+        format(diff, big.mark = ",")
+      ),
+      `% of Cell Ranger` = c(
+        "100%",
+        sprintf("%.2f%%", 100 * cb_cells / cr_cells),
+        sprintf("%+.2f%%", diff_pct)
+      ),
+      `% of Total Droplets` = c(
+        sprintf("%.2f%%", 100 * cr_cells / raw_droplets),
+        sprintf("%.2f%%", 100 * cb_cells / raw_droplets),
+        ""
+      ),
+      check.names = FALSE
+    )
+  } else {
+    comparison_summary <- data.frame(
+      Method = c("Cell Ranger"),
+      `Cells Called` = c(format(cr_cells, big.mark = ",")),
+      `% of Total Droplets` = c(sprintf("%.2f%%", 100 * cr_cells / raw_droplets)),
+      check.names = FALSE
+    )
+  }
+  
+  knitr::kable(
+    comparison_summary,
+    caption = paste0("Droplet Calling Summary (Total Droplets: ", format(raw_droplets, big.mark = ","), ")"),
+    format = "html",
+    align = c("l", "r", "r", "r")
+  )
+} else {
+  cat("\n*CellBender comparison metrics not available.*\n\n")
+}
+```
+
+## Knee-Plot Comparison
+
+The knee-plots show the distribution of UMI counts across all droplets. Each plot highlights the droplets called as cells by Cell Ranger (left, blue) and CellBender (right, purple), with background droplets shown in gray.
+
+```{r}
+#| label: cellbender-kneeplot
+#| fig-width: 18
+#| fig-height: 10
+#| echo: false
+
+# Display knee-plot if available
+if (file.exists(comparison_plot_path)) {
+  knitr::include_graphics(comparison_plot_path)
+} else {
+  cat("\n*Knee-plot not available.*\n\n")
+}
+```
+
+# QC Filtering Summary
+
+**Quality Control Filtering Thresholds:**
+
+- **Maximum mitochondrial percentage:** MAX_MITO_PLACEHOLDER%
+- **Minimum nuclear fraction:** MIN_NUCLEAR_PLACEHOLDER
+
+**Quality Control Filtering Results:**
+
+- **Pre-QC cells:** `r format(ncol(seurat_obj_preqc), big.mark = ",")`
+- **Post-QC cells:** `r format(ncol(seurat_obj_postqc), big.mark = ",")`
+- **Cells retained:** `r cells_retained_pct`% (`r format(ncol(seurat_obj_postqc), big.mark = ",")` cells)
+- **Cells lost:** `r cells_lost_pct`% (`r format(cells_lost, big.mark = ",")` cells)
+
+**Breakdown of cells lost by filtering criteria:**
+
+- **Doublet removal:** `r format(doublets_removed, big.mark = ",")` cells (`r doublets_removed_pct`%)
+- **Nuclear fraction < MIN_NUCLEAR_PLACEHOLDER:** `r format(nuclear_fraction_filtered, big.mark = ",")` cells (`r nuclear_fraction_filtered_pct`%)
+- **Mitochondrial % > MAX_MITO_PLACEHOLDER%:** `r format(mito_filtered, big.mark = ",")` cells (`r mito_filtered_pct`%)
+
+# Pre-QC Analysis
+
+## Step 1: QC Metrics Overview (Pre-QC)
+
+```{r}
+#| label: qc-violin-plots-preqc
+#| fig-width: 12
+#| fig-height: 12
+
+# Collect all available QC metrics for violin plots
+qc_features <- c("nFeature_RNA", "nCount_RNA", "percent.mt")
+
+# Add nuclear fraction if available
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc@meta.data)) {
+  qc_features <- c(qc_features, "nuclear_fraction")
+}
+
+# Add doublet score if available
+if ("doublet_score" %in% colnames(seurat_obj_preqc@meta.data)) {
+  qc_features <- c(qc_features, "doublet_score")
+}
+
+cat("Creating violin plots for QC metrics:", paste(qc_features, collapse = ", "), "\n")
+
+# Create individual violin plots with fixed y-axis limits for consistency
+violin_plots_preqc <- list()
+for (feature in qc_features) {
+  p <- VlnPlot(seurat_obj_preqc, features = feature, pt.size = 0.1) +
+    ggtitle(paste(feature, "(Pre-QC)")) +
+    NoLegend()
+  
+  # Apply fixed y-axis limits for specific metrics
+  if (feature == "nuclear_fraction") {
+    p <- p + ylim(0, 1)
+  } else if (feature == "doublet_score") {
+    p <- p + ylim(0, 1)
+  } else if (feature == "percent.mt") {
+    p <- p + ylim(0, 100)
+  }
+  
+  violin_plots_preqc[[length(violin_plots_preqc) + 1]] <- p
+}
+
+# Arrange plots
+wrap_plots(violin_plots_preqc, ncol = 3)
+```
+
+## Step 2: Comparative QC Analysis (Pre-QC)
+
+```{r}
+#| label: qc-pairs-plot-preqc
+#| fig-width: 10
+#| fig-height: 10
+
+# Prepare data for pairs plot
+qc_data <- seurat_obj_preqc@meta.data[, c("nFeature_RNA", "nCount_RNA", "percent.mt")]
+
+# Add nuclear fraction if available
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc@meta.data)) {
+  qc_data$nuclear_fraction <- seurat_obj_preqc@meta.data$nuclear_fraction
+}
+
+# Add doublet score if available
+if ("doublet_score" %in% colnames(seurat_obj_preqc@meta.data)) {
+  qc_data$doublet_score <- seurat_obj_preqc@meta.data$doublet_score
+}
+
+# Create pairs plot
+pairs(qc_data, 
+      main = "Pre-QC Metrics Correlation Matrix",
+      pch = 16, 
+      cex = 0.3,
+      col = rgb(0, 0, 0, alpha = 0.3))
+```
+
+## Downstream Analysis (Pre-QC)
+
+```{r}
+#| label: downstream-analysis-preqc
+#| include: false
+
+# Perform downstream analysis on pre-QC data
+set.seed(1000)
+
+cat("Starting downstream analysis on pre-QC data...\n")
+
+# Use the pre-QC object for downstream analysis
+seurat_obj_preqc_analysis <- seurat_obj_preqc
+
+# Normalize data
+seurat_obj_preqc_analysis <- NormalizeData(seurat_obj_preqc_analysis)
+
+# Find variable features
+seurat_obj_preqc_analysis <- FindVariableFeatures(seurat_obj_preqc_analysis)
+
+# Scale data
+seurat_obj_preqc_analysis <- ScaleData(seurat_obj_preqc_analysis)
+
+# Run PCA
+seurat_obj_preqc_analysis <- RunPCA(seurat_obj_preqc_analysis, features = VariableFeatures(seurat_obj_preqc_analysis), dims = 1:50, verbose = FALSE)
+
+# Find neighbors and clusters
+seurat_obj_preqc_analysis <- FindNeighbors(seurat_obj_preqc_analysis, reduction = "pca", dims = 1:50, verbose = FALSE)
+seurat_obj_preqc_analysis <- FindClusters(seurat_obj_preqc_analysis, resolution = 0.2, verbose = FALSE)
+
+# Run UMAP
+seurat_obj_preqc_analysis <- RunUMAP(seurat_obj_preqc_analysis, reduction = "pca", dims = 1:50, verbose = FALSE)
+
+cat("Found", length(unique(seurat_obj_preqc_analysis$seurat_clusters)), "clusters in pre-QC data\n")
+cat("Completed pre-QC downstream analysis\n")
+```
+
+## UMAP Clustering (Pre-QC)
+
+```{r}
+#| label: umap-clusters-preqc
+#| fig-width: 8
+#| fig-height: 8
+
+# Create UMAP cluster plot for pre-QC data
+DimPlot(seurat_obj_preqc_analysis, reduction = "umap", label = TRUE, pt.size = 0.5) +
+  ggtitle(paste("Pre-QC UMAP Clustering -", sample_name)) +
+  theme_minimal()
+```
+
+## QC Feature Plots (Pre-QC)
+
+```{r}
+#| label: umap-qc-plots-preqc
+#| fig-width: 12
+#| fig-height: 10
+
+plots_list_preqc <- list()
+
+# 1. Mitochondrial percentage
+plots_list_preqc[[1]] <- FeaturePlot(seurat_obj_preqc_analysis, features = "percent.mt", pt.size = 0.3) +
+  ggtitle("Mitochondrial % (Pre-QC)") +
+  theme(plot.title = element_text(size = 12))
+
+# 2. Doublet score (if available)
+if ("doublet_score" %in% colnames(seurat_obj_preqc_analysis@meta.data)) {
+  plots_list_preqc[[2]] <- FeaturePlot(seurat_obj_preqc_analysis, features = "doublet_score", pt.size = 0.3) +
+    ggtitle("Doublet Score (Pre-QC)") +
+    theme(plot.title = element_text(size = 12))
+} else {
+  plots_list_preqc[[2]] <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, label = "Doublet Score\nNot Available", size = 4) +
+    theme_void() +
+    ggtitle("Doublet Score (Pre-QC)") +
+    theme(plot.title = element_text(size = 12))
+}
+
+# 3. Nuclear fraction (if available)
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc_analysis@meta.data)) {
+  plots_list_preqc[[3]] <- FeaturePlot(seurat_obj_preqc_analysis, features = "nuclear_fraction", pt.size = 0.3) +
+    ggtitle("Nuclear Fraction (Pre-QC)") +
+    theme(plot.title = element_text(size = 12))
+} else {
+  plots_list_preqc[[3]] <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, label = "Nuclear Fraction\nNot Available", size = 4) +
+    theme_void() +
+    ggtitle("Nuclear Fraction (Pre-QC)") +
+    theme(plot.title = element_text(size = 12))
+}
+
+# 4. MALAT1 expression (check if gene exists)
+if ("MALAT1" %in% rownames(seurat_obj_preqc_analysis)) {
+  plots_list_preqc[[4]] <- FeaturePlot(seurat_obj_preqc_analysis, features = "MALAT1", pt.size = 0.3) +
+    ggtitle("MALAT1 Expression (Pre-QC)") +
+    theme(plot.title = element_text(size = 12))
+} else {
+  plots_list_preqc[[4]] <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, label = "MALAT1\nNot Found", size = 4) +
+    theme_void() +
+    ggtitle("MALAT1 Expression (Pre-QC)") +
+    theme(plot.title = element_text(size = 12))
+}
+
+# Arrange plots in a 2x2 grid
+grid.arrange(grobs = plots_list_preqc, ncol = 2)
+```
+
+# Post-QC Analysis
+
+## Step 1: QC Metrics Overview (Post-QC)
+
+```{r}
+#| label: qc-violin-plots-postqc
+#| fig-width: 12
+#| fig-height: 12
+
+# Collect all available QC metrics for violin plots
+qc_features_postqc <- c("nFeature_RNA", "nCount_RNA", "percent.mt")
+
+# Add nuclear fraction if available
+if ("nuclear_fraction" %in% colnames(seurat_obj_postqc@meta.data)) {
+  qc_features_postqc <- c(qc_features_postqc, "nuclear_fraction")
+}
+
+# Add doublet score if available
+if ("doublet_score" %in% colnames(seurat_obj_postqc@meta.data)) {
+  qc_features_postqc <- c(qc_features_postqc, "doublet_score")
+}
+
+cat("Creating post-QC violin plots for QC metrics:", paste(qc_features_postqc, collapse = ", "), "\n")
+
+# Create individual violin plots with fixed y-axis limits for consistency  
+violin_plots_postqc <- list()
+for (feature in qc_features_postqc) {
+  p <- VlnPlot(seurat_obj_postqc, features = feature, pt.size = 0.1) +
+    ggtitle(paste(feature, "(Post-QC)")) +
+    NoLegend()
+  
+  # Apply fixed y-axis limits for specific metrics
+  if (feature == "nuclear_fraction") {
+    p <- p + ylim(0, 1)
+  } else if (feature == "doublet_score") {
+    p <- p + ylim(0, 1)
+  } else if (feature == "percent.mt") {
+    p <- p + ylim(0, 100)
+  }
+  
+  violin_plots_postqc[[length(violin_plots_postqc) + 1]] <- p
+}
+
+# Arrange plots
+wrap_plots(violin_plots_postqc, ncol = 3)
+```
+
+## Step 2: Comparative QC Analysis (Post-QC)
+
+```{r}
+#| label: qc-pairs-plot-postqc
+#| fig-width: 10
+#| fig-height: 10
+
+# Prepare data for pairs plot
+qc_data_postqc <- seurat_obj_postqc@meta.data[, c("nFeature_RNA", "nCount_RNA", "percent.mt")]
+
+# Add nuclear fraction if available
+if ("nuclear_fraction" %in% colnames(seurat_obj_postqc@meta.data)) {
+  qc_data_postqc$nuclear_fraction <- seurat_obj_postqc@meta.data$nuclear_fraction
+}
+
+# Add doublet score if available
+if ("doublet_score" %in% colnames(seurat_obj_postqc@meta.data)) {
+  qc_data_postqc$doublet_score <- seurat_obj_postqc@meta.data$doublet_score
+}
+
+# Create pairs plot
+pairs(qc_data_postqc, 
+      main = "Post-QC Metrics Correlation Matrix",
+      pch = 16, 
+      cex = 0.3,
+      col = rgb(0, 0, 0, alpha = 0.3))
+```
+
+## Downstream Analysis
+
+```{r}
+#| label: downstream-analysis
+#| include: false
+
+# Perform downstream analysis on post-QC filtered data
+set.seed(1000)
+
+cat("Starting downstream analysis on post-QC filtered data...\n")
+
+# Use the post-QC object for downstream analysis
+seurat_obj <- seurat_obj_postqc
+
+# Normalize data
+seurat_obj <- NormalizeData(seurat_obj)
+
+# Find variable features
+seurat_obj <- FindVariableFeatures(seurat_obj)
+
+# Scale data
+seurat_obj <- ScaleData(seurat_obj)
+
+# Run PCA
+seurat_obj <- RunPCA(seurat_obj, features = VariableFeatures(seurat_obj), dims = 1:50, verbose = FALSE)
+
+# Find neighbors and clusters
+seurat_obj <- FindNeighbors(seurat_obj, reduction = "pca", dims = 1:50, verbose = FALSE)
+seurat_obj <- FindClusters(seurat_obj, resolution = 0.2, verbose = FALSE)
+
+# Run UMAP
+seurat_obj <- RunUMAP(seurat_obj, reduction = "pca", dims = 1:50, verbose = FALSE)
+
+cat("Found", length(unique(seurat_obj$seurat_clusters)), "clusters\n")
+cat("Completed downstream analysis\n")
+```
+
+## UMAP Clustering
+
+```{r}
+#| label: umap-clusters
+#| fig-width: 8
+#| fig-height: 8
+
+# Create UMAP cluster plot
+DimPlot(seurat_obj, reduction = "umap", label = TRUE, pt.size = 0.5) +
+  ggtitle(paste("UMAP Clustering -", sample_name)) +
+  theme_minimal()
+```
+
+## QC Feature Plots
+
+```{r}
+#| label: umap-qc-plots
+#| fig-width: 12
+#| fig-height: 10
+
+plots_list <- list()
+
+# 1. Mitochondrial percentage
+plots_list[[1]] <- FeaturePlot(seurat_obj, features = "percent.mt", pt.size = 0.3) +
+  ggtitle("Mitochondrial %") +
+  theme(plot.title = element_text(size = 12))
+
+# 2. Doublet score (if available)
+if ("doublet_score" %in% colnames(seurat_obj@meta.data)) {
+  plots_list[[2]] <- FeaturePlot(seurat_obj, features = "doublet_score", pt.size = 0.3) +
+    ggtitle("Doublet Score") +
+    theme(plot.title = element_text(size = 12))
+} else {
+  plots_list[[2]] <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, label = "Doublet Score\nNot Available", size = 4) +
+    theme_void() +
+    ggtitle("Doublet Score") +
+    theme(plot.title = element_text(size = 12))
+}
+
+# 3. Nuclear fraction (if available)
+if ("nuclear_fraction" %in% colnames(seurat_obj@meta.data)) {
+  plots_list[[3]] <- FeaturePlot(seurat_obj, features = "nuclear_fraction", pt.size = 0.3) +
+    ggtitle("Nuclear Fraction") +
+    theme(plot.title = element_text(size = 12))
+} else {
+  plots_list[[3]] <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, label = "Nuclear Fraction\nNot Available", size = 4) +
+    theme_void() +
+    ggtitle("Nuclear Fraction") +
+    theme(plot.title = element_text(size = 12))
+}
+
+# 4. MALAT1 expression (check if gene exists)
+if ("MALAT1" %in% rownames(seurat_obj)) {
+  plots_list[[4]] <- FeaturePlot(seurat_obj, features = "MALAT1", pt.size = 0.3) +
+    ggtitle("MALAT1 Expression") +
+    theme(plot.title = element_text(size = 12))
+} else {
+  plots_list[[4]] <- ggplot() + 
+    annotate("text", x = 0.5, y = 0.5, label = "MALAT1\nNot Found", size = 4) +
+    theme_void() +
+    ggtitle("MALAT1 Expression") +
+    theme(plot.title = element_text(size = 12))
+}
+
+# Arrange plots in a 2x2 grid
+grid.arrange(grobs = plots_list, ncol = 2)
+```
+
+## Summary Statistics
+
+```{r}
+#| label: summary-stats-table
+
+# Create comprehensive summary table comparing pre-QC and post-QC
+summary_data <- data.frame(
+  Metric = character(),
+  "Pre_QC" = character(),
+  "Post_QC" = character(),
+  stringsAsFactors = FALSE
+)
+
+# Basic sample information
+summary_data <- rbind(summary_data,
+  data.frame(Metric = "Sample Name", Pre_QC = sample_name, Post_QC = sample_name),
+  data.frame(Metric = "Total Cells", 
+             Pre_QC = format(ncol(seurat_obj_preqc), big.mark = ","),
+             Post_QC = format(ncol(seurat_obj), big.mark = ",")),
+  data.frame(Metric = "Cells Lost", 
+             Pre_QC = "0",
+             Post_QC = format(cells_lost, big.mark = ",")),
+  data.frame(Metric = "Cells Retained (%)", 
+             Pre_QC = "100%",
+             Post_QC = paste0(cells_retained_pct, "%")),
+  data.frame(Metric = "Cells Lost (%)", 
+             Pre_QC = "0%",
+             Post_QC = paste0(cells_lost_pct, "%")),
+  data.frame(Metric = "Total Features", 
+             Pre_QC = format(nrow(seurat_obj_preqc), big.mark = ","),
+             Post_QC = format(nrow(seurat_obj), big.mark = ",")),
+  data.frame(Metric = "Number of Clusters", 
+             Pre_QC = as.character(length(unique(seurat_obj_preqc_analysis$seurat_clusters))),
+             Post_QC = as.character(length(unique(seurat_obj$seurat_clusters))))
+)
+
+# QC metrics comparison
+summary_data <- rbind(summary_data,
+  data.frame(Metric = "UMI Count (mean ± sd)", 
+             Pre_QC = paste0(format(round(mean(seurat_obj_preqc$nCount_RNA)), big.mark = ","), 
+                           " ± ", format(round(sd(seurat_obj_preqc$nCount_RNA)), big.mark = ",")),
+             Post_QC = paste0(format(round(mean(seurat_obj$nCount_RNA)), big.mark = ","), 
+                           " ± ", format(round(sd(seurat_obj$nCount_RNA)), big.mark = ","))),
+  data.frame(Metric = "Feature Count (mean ± sd)", 
+             Pre_QC = paste0(format(round(mean(seurat_obj_preqc$nFeature_RNA)), big.mark = ","), 
+                           " ± ", format(round(sd(seurat_obj_preqc$nFeature_RNA)), big.mark = ",")),
+             Post_QC = paste0(format(round(mean(seurat_obj$nFeature_RNA)), big.mark = ","), 
+                           " ± ", format(round(sd(seurat_obj$nFeature_RNA)), big.mark = ","))),
+  data.frame(Metric = "Mitochondrial % (mean ± sd)", 
+             Pre_QC = paste0(round(mean(seurat_obj_preqc$percent.mt), 2), 
+                           " ± ", round(sd(seurat_obj_preqc$percent.mt), 2)),
+             Post_QC = paste0(round(mean(seurat_obj$percent.mt), 2), 
+                           " ± ", round(sd(seurat_obj$percent.mt), 2)))
+)
+
+# Add nuclear fraction if available
+if ("nuclear_fraction" %in% colnames(seurat_obj_preqc@meta.data)) {
+  summary_data <- rbind(summary_data,
+    data.frame(Metric = "Nuclear Fraction (mean ± sd)", 
+               Pre_QC = paste0(round(mean(seurat_obj_preqc$nuclear_fraction, na.rm = TRUE), 3), 
+                             " ± ", round(sd(seurat_obj_preqc$nuclear_fraction, na.rm = TRUE), 3)),
+               Post_QC = paste0(round(mean(seurat_obj$nuclear_fraction, na.rm = TRUE), 3), 
+                             " ± ", round(sd(seurat_obj$nuclear_fraction, na.rm = TRUE), 3)))
+  )
+}
+
+# Add doublet score if available
+if ("doublet_score" %in% colnames(seurat_obj_preqc@meta.data)) {
+  summary_data <- rbind(summary_data,
+    data.frame(Metric = "Doublet Score (mean ± sd)", 
+               Pre_QC = paste0(round(mean(seurat_obj_preqc$doublet_score, na.rm = TRUE), 3), 
+                             " ± ", round(sd(seurat_obj_preqc$doublet_score, na.rm = TRUE), 3)),
+               Post_QC = paste0(round(mean(seurat_obj$doublet_score, na.rm = TRUE), 3), 
+                             " ± ", round(sd(seurat_obj$doublet_score, na.rm = TRUE), 3)))
+  )
+  
+  # Add doublet class distribution for pre-QC
+  if ("doublet_class" %in% colnames(seurat_obj_preqc@meta.data)) {
+    doublet_table_preqc <- table(seurat_obj_preqc$doublet_class)
+    doublet_summary_preqc <- paste(names(doublet_table_preqc), doublet_table_preqc, sep = ": ", collapse = ", ")
+    
+    doublet_table_postqc <- table(seurat_obj$doublet_class)
+    doublet_summary_postqc <- paste(names(doublet_table_postqc), doublet_table_postqc, sep = ": ", collapse = ", ")
+    
+    summary_data <- rbind(summary_data,
+      data.frame(Metric = "Doublet Classification", 
+                 Pre_QC = doublet_summary_preqc,
+                 Post_QC = doublet_summary_postqc)
+    )
+  }
+}
+
+# Display the table using kable
+kable(summary_data, 
+      col.names = c("Metric", "Pre-QC", "Post-QC"),
+      caption = paste("Pre-QC vs Post-QC Comparison for", sample_name),
+      align = c("l", "r", "r"))
+```
+
+## Session Information
+
+```{r}
+#| label: session-info
+
+sessionInfo()
+```

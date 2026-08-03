@@ -1,0 +1,420 @@
+---
+title: "Annotation predictions"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(scales)
+  library(ggrastr)
+  library(ggrepel)
+  library(patchwork)
+})
+
+nice_cols <- c(
+  '#DC050C', '#FB8072', '#1965B0', '#7BAFDE', '#882E72', '#B17BA6',
+  '#FF7F00', '#FDB462', '#E7298A', '#E78AC3', '#33A02C', '#B2DF8A'
+)
+
+make_plot_palette <- function(levels_vec) {
+  levels_vec <- unique(as.character(levels_vec))
+  if (length(levels_vec) == 0) {
+    return(setNames(character(), character()))
+  }
+  palette_vals <- rep(nice_cols, length.out = length(levels_vec))
+  names(palette_vals) <- levels_vec
+  palette_vals
+}
+
+order_cluster_ids <- function(cluster_ids) {
+  cluster_ids <- unique(as.character(cluster_ids))
+  if (length(cluster_ids) == 0) {
+    return(character())
+  }
+  if (all(grepl('^cl[0-9]+$', cluster_ids))) {
+    return(cluster_ids[order(as.integer(sub('^cl', '', cluster_ids)))])
+  }
+  sort(cluster_ids)
+}
+
+cluster_resolution_label <- function(cluster_col) {
+  res_val <- sub('^RNA_snn_res\\.', '', cluster_col)
+  sub('^leiden_', '', res_val)
+}
+
+coerce_cluster_summary <- function(dt) {
+  if (nrow(dt) == 0) {
+    return(dt)
+  }
+  char_cols <- intersect(c('cluster_col', 'cluster_resolution', 'cluster', 'top_label'), names(dt))
+  if (length(char_cols) > 0) {
+    dt[, (char_cols) := lapply(.SD, as.character), .SDcols = char_cols]
+  }
+  dt
+}
+
+build_cluster_summary <- function(cells_dt, cluster_cols) {
+  if (length(cluster_cols) == 0) {
+    return(data.table(
+      cluster_col = character(),
+      cluster_resolution = character(),
+      cluster = character(),
+      n_cells = integer(),
+      top_label = character(),
+      cs = numeric(),
+      mean_score = numeric()
+    ))
+  }
+
+  rbindlist(lapply(cluster_cols, function(cluster_col) {
+    dt <- cells_dt[
+      !is.na(get(cluster_col)) & nzchar(as.character(get(cluster_col))),
+      .(
+        cluster = as.character(get(cluster_col)),
+        label = as.character(label),
+        score = as.numeric(score)
+      )
+    ]
+    if (nrow(dt) == 0) {
+      return(NULL)
+    }
+
+    counts_dt <- dt[, .N, by = .(cluster, label)]
+    totals_dt <- dt[, .(
+      n_cells = .N,
+      mean_score = mean(score, na.rm = TRUE)
+    ), by = cluster]
+
+    summary_dt <- merge(counts_dt, totals_dt, by = 'cluster', all.x = TRUE, sort = FALSE)
+    summary_dt[, cs := N / n_cells]
+    setorder(summary_dt, cluster, -cs, -N, label)
+    summary_dt <- summary_dt[, .SD[1], by = cluster]
+    summary_dt[, `:=`(
+      cluster_col = cluster_col,
+      cluster_resolution = cluster_resolution_label(cluster_col),
+      top_label = label
+    )]
+    summary_dt[, .(cluster_col, cluster_resolution, cluster, n_cells, top_label, cs, mean_score)]
+  }), use.names = TRUE, fill = TRUE)
+}
+
+plot_umap_cluster_consistent <- function(umap_dt, clust_dt, name) {
+  stopifnot(
+    all(c('UMAP1', 'UMAP2') %in% names(umap_dt)),
+    'cell_id' %in% names(umap_dt),
+    'cell_id' %in% names(clust_dt),
+    'cluster' %in% names(clust_dt)
+  )
+
+  plot_dt <- merge(umap_dt, clust_dt, by = 'cell_id', all.x = TRUE)[, .(
+    UMAP1 = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2 = rescale(UMAP2, to = c(0.05, 0.95)),
+    cluster,
+    centroid_group = if ('centroid_group' %in% names(clust_dt)) centroid_group else cluster,
+    centroid_label = if ('centroid_label' %in% names(clust_dt)) centroid_label else cluster
+  )]
+
+  if (is.factor(clust_dt$cluster)) {
+    cluster_levels <- levels(clust_dt$cluster)
+  } else {
+    cluster_levels <- order_cluster_ids(plot_dt$cluster)
+  }
+  plot_dt[, cluster := factor(as.character(cluster), levels = cluster_levels)]
+  plot_dt[, centroid_group := as.character(centroid_group)]
+  plot_dt[, centroid_label := as.character(centroid_label)]
+  plot_dt <- plot_dt[sample(.N, .N)]
+
+  label_dt <- plot_dt[
+    !is.na(centroid_group) & nzchar(centroid_group),
+    .(
+      UMAP1 = median(UMAP1),
+      UMAP2 = median(UMAP2),
+      centroid_label = centroid_label[1]
+    ),
+    by = centroid_group
+  ]
+
+  cl_cols <- make_plot_palette(levels(plot_dt$cluster))
+  n_col <- 4
+  n_rows_lgd <- ceiling(length(cl_cols) / n_col)
+
+  ggplot(plot_dt) +
+    aes(x = UMAP1, y = UMAP2, colour = cluster) +
+    geom_point(size = 0.1) +
+    geom_text_repel(
+      data = label_dt,
+      aes(x = UMAP1, y = UMAP2, label = centroid_label),
+      inherit.aes = FALSE,
+      size = 3,
+      seed = 1,
+      min.segment.length = 0,
+      max.overlaps = Inf,
+      box.padding = 0.3,
+      point.padding = 0.15,
+      segment.color = 'grey55'
+    ) +
+    scale_colour_manual(
+      values = cl_cols,
+      guide = guide_legend(override.aes = list(size = 3), nrow = n_rows_lgd)
+    ) +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      aspect.ratio = 1,
+      legend.title.position = 'left',
+      legend.position = 'bottom',
+      axis.ticks = element_blank(),
+      axis.text = element_blank()
+    ) +
+    labs(colour = name)
+}
+
+plot_umap_score_consistent <- function(umap_dt, score_dt, name = 'cs') {
+  stopifnot(
+    all(c('UMAP1', 'UMAP2') %in% names(umap_dt)),
+    'cell_id' %in% names(umap_dt),
+    'cell_id' %in% names(score_dt),
+    'score' %in% names(score_dt)
+  )
+
+  plot_dt <- merge(umap_dt, score_dt, by = 'cell_id', all.x = TRUE)[, .(
+    UMAP1 = rescale(UMAP1, to = c(0.05, 0.95)),
+    UMAP2 = rescale(UMAP2, to = c(0.05, 0.95)),
+    score,
+    centroid_group = if ('centroid_group' %in% names(score_dt)) centroid_group else NA_character_,
+    centroid_label = if ('centroid_label' %in% names(score_dt)) centroid_label else NA_character_
+  )]
+  plot_dt <- plot_dt[sample(.N, .N)]
+
+  label_dt <- plot_dt[
+    !is.na(centroid_group) & nzchar(centroid_group),
+    .(
+      UMAP1 = median(UMAP1),
+      UMAP2 = median(UMAP2),
+      centroid_label = centroid_label[1]
+    ),
+    by = centroid_group
+  ]
+
+  ggplot(plot_dt) +
+    aes(x = UMAP1, y = UMAP2, colour = score) +
+    geom_point(size = 0.1) +
+    geom_text_repel(
+      data = label_dt,
+      aes(x = UMAP1, y = UMAP2, label = centroid_label),
+      inherit.aes = FALSE,
+      size = 3,
+      seed = 1,
+      min.segment.length = 0,
+      max.overlaps = Inf,
+      box.padding = 0.3,
+      point.padding = 0.15,
+      segment.color = 'grey55'
+    ) +
+    scale_colour_viridis_c(option = 'inferno', na.value = 'grey80', limits = c(0.5, 1)) +
+    scale_x_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    scale_y_continuous(breaks = pretty_breaks(), limits = c(0, 1)) +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      aspect.ratio = 1,
+      legend.title.position = 'left',
+      legend.position = 'bottom',
+      axis.ticks = element_blank(),
+      axis.text = element_blank()
+    ) +
+    labs(colour = name)
+}
+
+method_id <- Sys.getenv("ANNOTATION_METHOD_ID", "annotation_method")
+engine <- Sys.getenv("ANNOTATION_ENGINE", "annotation")
+reference_name <- Sys.getenv("ANNOTATION_REFERENCE_NAME", "reference")
+reference_label_col <- Sys.getenv("ANNOTATION_REFERENCE_LABEL_COL", "")
+cells_csv <- Sys.getenv("ANNOTATION_CELLS_CSV", "annotation_cells.csv.gz")
+cluster_csv <- Sys.getenv("ANNOTATION_CLUSTER_CSV", "annotation_cluster_summary.csv.gz")
+
+cells_dt <- fread(cells_csv)
+cluster_dt_input <- fread(cluster_csv)
+
+cells_dt[, label := as.character(label)]
+cells_dt[is.na(label) | !nzchar(label), label := "Unassigned"]
+
+cluster_cols <- grep("^(RNA_snn_res\\.|leiden_)", names(cells_dt), value = TRUE)
+cluster_cols <- cluster_cols[order(as.numeric(cluster_resolution_label(cluster_cols)))]
+
+cluster_dt_input <- coerce_cluster_summary(cluster_dt_input)
+cluster_dt <- build_cluster_summary(cells_dt, cluster_cols)
+
+label_counts_dt <- cells_dt[, .N, by = label][order(-N, label)]
+label_levels <- label_counts_dt$label
+label_cols <- make_plot_palette(label_levels)
+cells_dt[, label := factor(label, levels = label_levels)]
+
+cluster_summary_missing_cols <- if (
+  nrow(cluster_dt_input) > 0 &&
+  all(c('cluster_col', 'cluster_resolution', 'cluster', 'top_label', 'cs') %in% names(cluster_dt_input))
+) {
+  setdiff(cluster_cols, unique(cluster_dt_input$cluster_col))
+} else {
+  cluster_cols
+}
+```
+
+This report summarises one annotation run.
+
+* **Method id:** `r method_id`
+* **Engine:** `r engine`
+* **Reference:** `r reference_name`
+* **Reference label column:** `r if (nzchar(reference_label_col)) reference_label_col else "not specified"`
+* **Annotated cells:** `r scales::comma(nrow(cells_dt))`
+* **Assigned labels:** `r data.table::uniqueN(cells_dt$label)`
+* **Cluster score (`cs`):** within-cluster fraction assigned to the top predicted label
+* **Cluster summary source:** `r if (length(cluster_summary_missing_cols) > 0) "recomputed from per-cell predictions to cover all clustering resolutions" else "recomputed from per-cell predictions for report consistency"`
+
+```{r cluster_level_prep}
+# Cluster-level annotation: each cell inherits its cluster's majority (top) predicted label.
+# These cluster-level calls -- not the per-cell predictions -- are what downstream analyses use.
+feature_res_env <- trimws(Sys.getenv("ANNOTATION_FEATURE_RES", "0.5"))
+feature_col <- cluster_cols[cluster_resolution_label(cluster_cols) == feature_res_env]
+if (length(feature_col) == 0) feature_col <- cluster_cols[max(1L, ceiling(length(cluster_cols) / 2))]
+feature_col <- feature_col[1]
+feature_res <- cluster_resolution_label(feature_col)
+
+# cell_id -> its cluster's top_label + cluster confidence (cs), for a given resolution column
+cluster_label_map <- function(cc) {
+  csum <- cluster_dt[cluster_col == cc, .(cluster = as.character(cluster),
+                                          cl_label = as.character(top_label), cs = as.numeric(cs))]
+  base <- cells_dt[!is.na(get(cc)) & nzchar(as.character(get(cc))),
+                   .(cell_id, cluster = as.character(get(cc)))]
+  base[csum, on = "cluster", nomatch = 0L]
+}
+```
+
+## Cluster-level annotation (res `r feature_res`)
+
+Each cell takes the majority predicted label of its cluster at the featured resolution
+(res `r feature_res`) — the cluster-level calls downstream analyses build on. Left: cells per
+cluster-level cell type. Right: the same labels over the UMAP.
+
+```{r cluster_level_headline, fig.width=10, fig.height=6}
+m_feat <- cluster_label_map(feature_col)
+m_feat[, cl_label := factor(cl_label, levels = label_levels)]
+
+lab_counts <- m_feat[, .(N = .N), by = cl_label][order(-N)]
+
+p1 <- ggplot(lab_counts, aes(x = factor(cl_label, levels = rev(levels(cl_label))), y = N, fill = cl_label)) +
+  geom_col(width = 0.8, colour = "black", linewidth = 0.2, show.legend = FALSE) +
+  geom_text(aes(label = comma(N)), hjust = -0.05, size = 3, show.legend = FALSE) +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = label_cols, drop = FALSE) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  theme_bw() +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank(),
+        plot.margin = margin(5.5, 30, 5.5, 5.5)) +
+  labs(x = NULL, y = "# cells", title = sprintf("Cluster-level cell-type counts (res %s)", feature_res))
+
+if (all(c("UMAP1", "UMAP2") %in% names(cells_dt))) {
+  p2 <- plot_umap_cluster_consistent(
+    cells_dt[, .(cell_id, UMAP1, UMAP2)],
+    m_feat[, .(cell_id, cluster = cl_label,
+               centroid_group = as.character(cl_label), centroid_label = as.character(cl_label))],
+    name = "cell type"
+  ) + theme(legend.position = "none") + ggtitle(sprintf("cluster-level annotation (res %s)", feature_res))
+  print(p1 | p2)
+} else {
+  print(p1)
+}
+```
+
+## Cluster-level predictions by resolution {.tabset}
+
+For each clustering resolution: cluster-level cell-type annotation (left) and per-cluster confidence
+`cs` (right). `cs` is the fraction of a cluster's cells sharing its top predicted label
+($cs = \frac{n(\text{top label})}{n(\text{cluster})}$; 1 = unanimous, ~0.5 = mixed). Both derive from
+the per-cell predictions.
+
+```{r cluster_pred_tabset, fig.width=10, fig.height=6, results='asis'}
+if (length(cluster_cols) > 0 && all(c("UMAP1", "UMAP2") %in% names(cells_dt)) && nrow(cluster_dt) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (cluster_col in cluster_cols) {
+    res_val <- cluster_resolution_label(cluster_col)
+    cat(sprintf('### %s\n\n', res_val))
+
+    m <- cluster_label_map(cluster_col)
+    if (nrow(m) == 0) { cat('No cells with cluster assignments at this resolution.\n\n'); next }
+    m[, cl_label := factor(cl_label, levels = label_levels)]
+
+    p1 <- plot_umap_cluster_consistent(
+      cells_dt[, .(cell_id, UMAP1, UMAP2)],
+      m[, .(cell_id, cluster = cl_label,
+            centroid_group = as.character(cl_label), centroid_label = as.character(cl_label))],
+      name = 'cell type'
+    ) + theme(legend.position = 'none') + ggtitle(sprintf('annotation (res %s)', res_val))
+
+    p2 <- plot_umap_score_consistent(
+      cells_dt[, .(cell_id, UMAP1, UMAP2)],
+      m[, .(cell_id, score = cs, centroid_group = cluster,
+            centroid_label = sprintf('%s: %.2f', as.character(cl_label), cs))],
+      name = 'cs'
+    ) + ggtitle(sprintf('confidence (res %s)', res_val))+theme(legend.position = 'none')
+
+    print(p1 | p2)
+    cat('\n\n')
+  }
+  cat(':::\n\n')
+}
+```
+
+## Cell-level annotation
+
+Per-cell predictions, before any cluster-majority voting: cell counts per predicted cell type (left),
+those labels over the UMAP (top right), and the per-cell prediction score (bottom right).
+
+```{r cell_level_annotation, fig.width=12, fig.height=10}
+cell_counts <- cells_dt[, .(N = .N), by = label][order(-N)]
+
+p1 <- ggplot(cell_counts, aes(x = factor(label, levels = rev(label_levels)), y = N, fill = label)) +
+  geom_col(width = 0.8, colour = 'black', linewidth = 0.2, show.legend = FALSE) +
+  geom_text(aes(label = comma(N)), hjust = -0.05, size = 3, show.legend = FALSE) +
+  coord_flip(clip = 'off') +
+  scale_fill_manual(values = label_cols, drop = FALSE) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  theme_bw() +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank(),
+        plot.margin = margin(5.5, 20, 5.5, 5.5)) +
+  labs(x = NULL, y = '# cells', title = 'Cell-level cell-type counts')
+
+if (all(c('UMAP1', 'UMAP2') %in% names(cells_dt))) {
+  p2 <- plot_umap_cluster_consistent(
+    cells_dt[, .(cell_id, UMAP1, UMAP2)],
+    cells_dt[, .(cell_id, cluster = label,
+                 centroid_group = as.character(label), centroid_label = as.character(label))],
+    name = 'cell type'
+  ) + theme(legend.position = 'none') + ggtitle('cell-level labels')
+
+  p3 <- plot_umap_score_consistent(
+    cells_dt[, .(cell_id, UMAP1, UMAP2)],
+    cells_dt[, .(cell_id, score)],
+    name = 'score'
+  ) + ggtitle('prediction score')
+
+  print(p1 | (p2 / p3))
+} else {
+  print(p1)
+}
+```

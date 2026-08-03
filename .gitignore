@@ -4,3 +4,11 @@ data/
 
 # GitHub folder (copilot instructions, internal docs)
 .github/
+data/
+scripts/
+.claude/
+dev/
+.vscode/
+resources/
+.nextflow.log*
+.copilot/

@@ -1,0 +1,145 @@
+---
+pagetitle: "scQC-flow"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+```{=html}
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.2rem; }
+  p.sub { color: #666; margin-top: 0; }
+  ol { padding-left: 1.2rem; }
+  li { margin: 0.9rem 0; }
+  a { font-size: 1.05rem; text-decoration: none; color: #1a5fb4; font-weight: 600; }
+  a:hover { text-decoration: underline; }
+  span.desc { display: block; color: #555; font-size: 0.92rem; font-weight: 400; margin-top: 0.1rem; }
+  ul.sub-links { list-style: none; padding-left: 0.2rem; margin: 0.4rem 0 0; }
+  ul.sub-links li { margin: 0.3rem 0; }
+  ul.sub-links a { font-size: 0.92rem; font-weight: 500; }
+</style>
+```
+
+```{r}
+#| output: asis
+suppressPackageStartupMessages({
+  library(jsonlite)
+  library(htmltools)
+})
+payload <- tryCatch(fromJSON("landing_page_payload.json", simplifyVector = TRUE),
+                    error = function(e) list())
+
+# Stage order + titles/blurbs mirror KNOWN_REPORTS/STAGE_ORDER in build_report_site.py
+stage_order <- c("mapping", "ambient", "qc", "per_sample_annotation", "cellsweep",
+                 "hvg", "integration", "annotation", "other")
+
+known <- list(
+  "mapping_report.html" = list(stage = "mapping", title = "Mapping",
+    desc = "Barcode knee plots and read-level mapping diagnostics across samples."),
+  "knee_report.html" = list(stage = "ambient", title = "Mapping + cell calling (knee/shin)",
+    desc = "Read mapping diagnostics and classic knee/shin cell calling, combined."),
+  "cell_calling_report.html" = list(stage = "ambient", title = "Mapping + cell calling (GMM)",
+    desc = "Read mapping diagnostics and splice-aware GMM cell calling: nuclei/ambient/damaged populations per sample."),
+  "emptydrops_report.html" = list(stage = "ambient", title = "Cell calling (EmptyDrops)",
+    desc = "DropletUtils emptyDrops cell calling: cells vs empty droplets per sample."),
+  "ambient_report.html" = list(stage = "ambient", title = "Ambient RNA diagnostics",
+    desc = "decontX summaries, contamination estimates, and ambient cleanup diagnostics."),
+  "cellbender_report.html" = list(stage = "ambient", title = "CellBender diagnostics",
+    desc = "Estimated-vs-called barcode comparisons and CellBender call diagnostics across samples."),
+  "qc_report.html" = list(stage = "qc", title = "Cell-level QC",
+    desc = "Filtering metrics, threshold summaries, and QC visualizations."),
+  "per_sample_annotation_report.html" = list(stage = "per_sample_annotation", title = "Per-sample annotation",
+    desc = "Per-sample normalize → HVG → PCA → Leiden → XGBoost annotation, used as CellSweep's per-cell-type input labels."),
+  "cellsweep_input_report.html" = list(stage = "cellsweep", title = "CellSweep inputs",
+    desc = "Audit of exactly which barcodes feed CellSweep."),
+  "cellsweep_report.html" = list(stage = "cellsweep", title = "CellSweep decontamination",
+    desc = "Ambient-fraction (alpha_hat) estimates per cell and per cluster from the EM denoiser."),
+  "hvg_report.html" = list(stage = "hvg", title = "HVG selection",
+    desc = "Highly variable gene selection diagnostics and ambient-gene context."),
+  "integration_report.html" = list(stage = "integration", title = "Integration diagnostics",
+    desc = "Harmony integration, clustering, metadata overlays, and QC-feature UMAPs."),
+  "annotation_report.html" = list(stage = "annotation", title = "Annotation diagnostics",
+    desc = "Marker-panel matching, cluster labels, and marker expression views.")
+)
+
+pretty_method <- function(m) {
+  m <- gsub("(^|_)([a-z])", "\\1\\U\\2", m, perl = TRUE)
+  m <- gsub("Xgboost", "XGBoost", m)
+  gsub("_", " ", m)
+}
+
+file_stage <- function(f) {
+  if (!is.null(known[[f]])) return(known[[f]]$stage)
+  if (grepl("^annotation_report_.+\\.html$", f)) return("annotation")
+  if (grepl("^zoom_.+\\.html$", f)) return("zoom")
+  "other"
+}
+file_title <- function(f) {
+  if (!is.null(known[[f]])) return(known[[f]]$title)
+  if (grepl("^annotation_report_.+\\.html$", f))
+    return(paste0("Annotation: ", pretty_method(sub("^annotation_report_(.+)\\.html$", "\\1", f))))
+  if (grepl("^zoom_.+_report\\.html$", f))
+    return(paste0("Zoom: ", pretty_method(sub("^zoom_(.+)_report\\.html$", "\\1", f))))
+  f
+}
+file_desc <- function(f) {
+  if (!is.null(known[[f]])) return(known[[f]]$desc)
+  if (grepl("^annotation_report_.+\\.html$", f))
+    return("Per-method annotation diagnostics, prediction confidence, and cluster-level label agreement.")
+  if (grepl("^zoom_.+\\.html$", f))
+    return("Subset rerun report for a configured zoom, including reintegration and top-marker summaries.")
+  "Generated HTML report from this pipeline run."
+}
+
+files <- setdiff(sort(list.files(".", pattern = "\\.html$")), "index.html")
+
+# Zoom targets are independent subset analyses -> each gets its own numbered
+# step, never grouped. XGBoost annotation-method variants ARE variants of one
+# conceptual step -> nested as an unnumbered sub-list under annotation_report.html.
+zoom_files       <- files[grepl("^zoom_.+\\.html$", files)]
+core_files       <- setdiff(files, zoom_files)
+variant_files    <- core_files[grepl("^annotation_report_.+\\.html$", core_files)]
+main_files       <- setdiff(core_files, variant_files)
+main_files       <- main_files[order(match(vapply(main_files, file_stage, character(1)), stage_order))]
+
+items <- list()
+for (f in main_files) {
+  sub <- character(0)
+  if (file_stage(f) == "annotation" && length(variant_files) > 0) {
+    sub <- sort(variant_files)
+    variant_files <- character(0)
+  }
+  items[[length(items) + 1]] <- list(file = f, title = file_title(f), desc = file_desc(f), sub = sub)
+}
+for (f in variant_files) {  # only reached if no main annotation_report.html was present
+  items[[length(items) + 1]] <- list(file = f, title = file_title(f), desc = file_desc(f), sub = character(0))
+}
+for (f in sort(zoom_files)) {
+  items[[length(items) + 1]] <- list(file = f, title = file_title(f), desc = file_desc(f), sub = character(0))
+}
+
+cat("<h1>scQC-flow</h1>\n")
+sub_line <- character(0)
+if (!is.null(payload$run_name))     sub_line <- c(sub_line, sprintf("Run: %s", htmlEscape(payload$run_name)))
+if (!is.null(payload$generated_at)) sub_line <- c(sub_line, sprintf("Generated: %s", htmlEscape(payload$generated_at)))
+if (length(sub_line) > 0) cat(sprintf('<p class="sub">%s</p>\n', paste(sub_line, collapse = " &middot; ")))
+
+cat("<ol>\n")
+for (it in items) {
+  cat(sprintf('<li><a href="%s">%s</a><span class="desc">%s</span>',
+              htmlEscape(it$file), htmlEscape(it$title), htmlEscape(it$desc)))
+  if (length(it$sub) > 0) {
+    cat('<ul class="sub-links">')
+    for (sf in it$sub) cat(sprintf('<li><a href="%s">%s</a></li>', htmlEscape(sf), htmlEscape(file_title(sf))))
+    cat("</ul>")
+  }
+  cat("</li>\n")
+}
+cat("</ol>\n")
+```

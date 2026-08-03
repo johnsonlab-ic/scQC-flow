@@ -1,0 +1,153 @@
+---
+title: "CellBender diagnostics"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(scales)
+})
+
+summary_fs <- list.files(".", pattern = "^cb_summary_.+\\.csv$", full.names = TRUE)
+labels_fs  <- list.files(".", pattern = "^cb_barcode_labels_.+\\.csv\\.gz$", full.names = TRUE)
+
+if (length(summary_fs) == 0) {
+  stop("No cb_summary_*.csv files found")
+}
+
+sample_id_from <- function(fs, prefix, suffix) {
+  sub(suffix, "", sub(paste0("^.*/", prefix), "", fs))
+}
+
+names(summary_fs) <- sample_id_from(summary_fs, "cb_summary_", "\\.csv$")
+names(labels_fs)  <- sample_id_from(labels_fs, "cb_barcode_labels_", "\\.csv\\.gz$")
+
+summary_dt <- rbindlist(lapply(summary_fs, fread), fill = TRUE)
+summary_dt <- summary_dt[order(sample_id)]
+
+labels_ls <- lapply(labels_fs, fread)
+```
+
+## Summary
+
+```{r summary-table}
+summary_view <- summary_dt[, .(
+  sample_id,
+  estimated_cells,
+  cellbender_called,
+  overlap_barcodes,
+  estimated_only,
+  cellbender_only,
+  jaccard_index,
+  called_over_estimated_ratio,
+  total_droplets_included,
+  low_count_threshold
+)]
+
+knitr::kable(summary_view, digits = 3)
+```
+
+## Estimated vs Called
+
+```{r compare-bars}
+plot_dt <- melt(
+  summary_dt[, .(sample_id, estimated_cells, cellbender_called, overlap_barcodes)],
+  id.vars = "sample_id",
+  variable.name = "metric",
+  value.name = "n"
+)
+
+plot_dt[, metric := factor(metric, levels = c("estimated_cells", "cellbender_called", "overlap_barcodes"))]
+
+labs <- c(
+  estimated_cells = "Estimated (barcode step)",
+  cellbender_called = "Called by CellBender",
+  overlap_barcodes = "Overlap"
+)
+
+
+ggplot(plot_dt, aes(x = sample_id, y = n, fill = metric)) +
+  geom_col(position = "dodge") +
+  scale_fill_brewer(palette = "Set2", labels = labs) +
+  labs(x = NULL, y = "Barcodes", fill = NULL) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0, vjust = 0.5))
+```
+
+## Per-sample Breakdown
+
+```{r per-sample-tabset, results='asis'}
+cat("::: {.panel-tabset}\n\n")
+
+for (sid in summary_dt$sample_id) {
+  cat("### ", sid, "\n\n", sep = "")
+
+  this_summary <- summary_dt[sample_id == sid]
+  this_labels <- labels_ls[[sid]]
+
+  this_counts <- this_labels[, .N, by = class][order(class)]
+  if (!"class" %in% names(this_counts)) {
+    this_counts <- data.table(class = c("overlap", "estimated_only", "cellbender_only"), N = c(0, 0, 0))
+  }
+
+  cat("**Sample metrics**\n\n")
+  print(knitr::kable(this_summary[, .(
+    estimated_cells,
+    cellbender_called,
+    overlap_barcodes,
+    estimated_only,
+    cellbender_only,
+    jaccard_index,
+    called_over_estimated_ratio
+  )], digits = 3))
+  cat("\n\n")
+
+  g <- ggplot(this_counts, aes(x = class, y = N, fill = class)) +
+    geom_col() +
+    scale_fill_brewer(palette = "Set2") +
+    labs(x = NULL, y = "Barcodes", title = sid) +
+    theme_classic()
+
+  print(g)
+  cat("\n\n")
+}
+
+cat("::: \n")
+```
+
+## Ratios
+
+```{r ratios}
+ratio_dt <- summary_dt[, .(
+  sample_id,
+  jaccard_index,
+  called_over_estimated_ratio
+)]
+
+ratio_long <- melt(ratio_dt, id.vars = "sample_id", variable.name = "metric", value.name = "value")
+
+ratio_labels <- c(
+  jaccard_index = "Jaccard overlap",
+  called_over_estimated_ratio = "Called / estimated"
+)
+
+ratio_long[, metric := factor(metric, levels = names(ratio_labels), labels = ratio_labels)]
+
+ggplot(ratio_long, aes(x = sample_id, y = value, color = metric, group = metric)) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = label_number(accuracy = 0.01)) +
+  labs(x = NULL, y = "Ratio", color = NULL) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0, vjust = 0.5))
+```

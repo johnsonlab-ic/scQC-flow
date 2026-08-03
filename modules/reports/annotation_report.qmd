@@ -1,0 +1,690 @@
+---
+title: "Annotation diagnostics"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+  # Memory optimization: render plots to PNG immediately (rasterize large ComplexHeatmap objects)
+  fig.keep: 'high'
+  # Garbage collect aggressively in the report
+  include: true
+---
+
+```{r setup}
+source("annotation_utils.R")
+source("integration_plots.R")
+
+# Helper: load logCPMs for specific genes only (memory-efficient)
+load_logcpms_subset <- function(cpms_path, genes_of_interest, verbose = FALSE) {
+  genes_of_interest <- unique(genes_of_interest[!is.na(genes_of_interest) & nzchar(genes_of_interest)])
+  if (length(genes_of_interest) == 0) {
+    return(data.table())
+  }
+
+  if (verbose) cat("Loading logCPMs for", length(genes_of_interest), "genes...\n")
+
+  genes_f <- tempfile(fileext = ".txt")
+  on.exit(unlink(genes_f), add = TRUE)
+  fwrite(data.table(gene_id = genes_of_interest), genes_f, col.names = FALSE)
+
+  awk_script <- paste(
+    "NR==FNR { keep[$1]=1; next }",
+    "FNR==1 || ($1 in keep)"
+  )
+  cmd_inner <- sprintf(
+    "set -euo pipefail; gzip -dc %s | awk -F',' %s %s -",
+    shQuote(cpms_path),
+    shQuote(awk_script),
+    shQuote(genes_f)
+  )
+  cmd <- sprintf("bash -lc %s", shQuote(cmd_inner))
+
+  fread(cmd = cmd)
+}
+
+infer_annotation_sel_res <- function(int_dt, mkrs_dt, cell_labels_f) {
+  cluster_cols <- grep("^RNA_snn_res\\.", names(int_dt), value = TRUE)
+  if (length(cluster_cols) == 0) {
+    stop("No RNA_snn_res.* columns found in integration output")
+  }
+
+  artifact_sets <- list(
+    marker_stats = order_cluster_labels(unique(mkrs_dt$cluster))
+  )
+  if (file.exists(cell_labels_f)) {
+    artifact_sets$cell_labels <- order_cluster_labels(unique(fread(cell_labels_f, select = "cluster")$cluster))
+  }
+  artifact_sets <- artifact_sets[vapply(artifact_sets, length, integer(1)) > 0]
+
+  if (length(artifact_sets) == 0) {
+    return(data.table(sel_res = character(), matched_sources = character()))
+  }
+
+  match_dt <- rbindlist(lapply(cluster_cols, function(cluster_col) {
+    int_clusters <- order_cluster_labels(unique(int_dt[[cluster_col]]))
+    matched_sources <- names(artifact_sets)[vapply(artifact_sets, function(x) identical(x, int_clusters), logical(1))]
+    if (length(matched_sources) == 0) {
+      return(NULL)
+    }
+    data.table(
+      sel_res = sub("^RNA_snn_res\\.", "", cluster_col),
+      matched_sources = paste(matched_sources, collapse = ", ")
+    )
+  }), use.names = TRUE, fill = TRUE)
+
+  unique(match_dt, by = "sel_res")
+}
+
+annotation_sel_res_env <- trimws(Sys.getenv("ANNOTATION_SEL_RES", ""))
+sel_res <- annotation_sel_res_env
+annotation_sel_res_source <- if (nzchar(annotation_sel_res_env)) "environment" else "unset"
+min_cpm_mkr <- as.numeric(Sys.getenv("ANNOTATION_MIN_CPM_MKR", "50"))
+not_ok_re <- Sys.getenv("ANNOTATION_NOT_OK_RE", "(lincRNA|lncRNA|pseudogene|antisense)")
+top_n <- as.integer(Sys.getenv("ANNOTATION_TOP_N", "10"))
+top_n_plot <- min(top_n, 5L)
+fdr_cut <- as.numeric(Sys.getenv("ANNOTATION_FDR_CUT", "0.01"))
+max_zero_p <- as.numeric(Sys.getenv("ANNOTATION_MAX_ZERO_P", "0.5"))
+
+mem_log_f <- "annotation_memory_usage.txt"
+writeLines("timestamp\tstage\tr_used_mb", con = mem_log_f)
+log_mem <- function(stage) {
+  capture.output(gc_tab <- gc(verbose = FALSE))
+  used_mb <- sum(gc_tab[, 2])
+  cat(sprintf("%s\t%s\t%.2f\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), stage, used_mb),
+      file = mem_log_f, append = TRUE)
+}
+```
+
+```{r load_data}
+int_dt <- fread("integration_dt.csv.gz")
+mkrs_dt <- fread("annotation_markers.csv.gz")
+# Don't load full logCPMs yet; load on-demand per section
+cpms_path <- "annotation_logcpms.csv.gz"
+cpms_dt <- NULL
+panel_dt <- fread("annotation_marker_panel.csv.gz")
+marker_expr_rds <- "annotation_marker_expression.rds"
+top_marker_expr_rds <- "annotation_top_marker_expression.rds"
+cell_labels_f <- "annotation_cell_labels.csv.gz"
+
+annotation_res_matches <- infer_annotation_sel_res(int_dt, mkrs_dt, cell_labels_f)
+if (nzchar(annotation_sel_res_env)) {
+  if (nrow(annotation_res_matches) > 0 && !annotation_sel_res_env %in% annotation_res_matches$sel_res) {
+    stop(sprintf(
+      paste(
+        "ANNOTATION_SEL_RES=%s, but the annotation report artifacts match resolution(s) %s.",
+        "This report would mix clusterings; re-render with the correct environment or regenerate the annotation report inputs."
+      ),
+      annotation_sel_res_env,
+      paste(annotation_res_matches$sel_res, collapse = ", ")
+    ))
+  }
+} else {
+  if (nrow(annotation_res_matches) == 1) {
+    sel_res <- annotation_res_matches$sel_res[[1]]
+    annotation_sel_res_source <- sprintf("inferred from %s", annotation_res_matches$matched_sources[[1]])
+  } else if (nrow(annotation_res_matches) > 1) {
+    stop(sprintf(
+      paste(
+        "ANNOTATION_SEL_RES is unset and the annotation report artifacts match multiple resolutions: %s.",
+        "Set ANNOTATION_SEL_RES explicitly before rendering this report."
+      ),
+      paste(annotation_res_matches$sel_res, collapse = ", ")
+    ))
+  } else {
+    stop(
+      paste(
+        "ANNOTATION_SEL_RES is unset and the report could not infer a unique annotation resolution from annotation_markers.csv.gz",
+        "and annotation_cell_labels.csv.gz. Set ANNOTATION_SEL_RES explicitly before rendering this report."
+      )
+    )
+  }
+}
+
+cl_col <- paste0("RNA_snn_res.", sel_res)
+stopifnot("Selected annotation resolution not found in integration output" = cl_col %in% names(int_dt))
+
+# Keep only cells that were eligible for annotation (exclude doublets / doublet-enriched clusters)
+keep_ann_idx <- !is.na(int_dt[[cl_col]]) & int_dt$sample_id != ""
+if ("is_dbl" %in% names(int_dt)) {
+  keep_ann_idx <- keep_ann_idx & !as.logical(int_dt$is_dbl)
+}
+if ("in_dbl_cl" %in% names(int_dt)) {
+  keep_ann_idx <- keep_ann_idx & !as.logical(int_dt$in_dbl_cl)
+}
+
+# Save sample-level metadata columns before subsetting (used for composition barcharts)
+core_int_re <- "^(cell_id|UMAP1|UMAP2|embedding|dbl_|is_dbl|is_doublet|RNA_snn_res\\.|leiden_)"
+meta_var_cols <- setdiff(names(int_dt)[!grepl(core_int_re, names(int_dt))], "sample_id")
+sample_meta_dt <- if (length(meta_var_cols) > 0) {
+  unique(int_dt[keep_ann_idx, c("sample_id", meta_var_cols), with = FALSE], by = "sample_id")
+} else {
+  data.table(sample_id = unique(int_dt[keep_ann_idx, sample_id]))
+}
+
+int_dt <- int_dt[keep_ann_idx, .(
+  sample_id,
+  cell_id,
+  UMAP1,
+  UMAP2,
+  cluster = get(cl_col)
+)]
+
+cl_ord <- order_cluster_labels(unique(int_dt$cluster))
+int_dt[, cluster := factor(as.character(cluster), levels = cl_ord)]
+panel_label_levels <- unique(as.character(panel_dt$label))
+panel_dt[, label := factor(as.character(label), levels = panel_label_levels)]
+
+top_min_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
+  logcpm.sel >= log(min_cpm_mkr + 1)
+] |> get_top_markers(fdr_cut = fdr_cut, n_top = top_n_plot, max_zero_p = max_zero_p)
+
+top_heatmap_panel_dt <- make_top_marker_heatmap_panel(top_min_dt, cl_order = cl_ord)
+
+top50_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
+  logFC > 0 & logcpm.sel >= log(min_cpm_mkr + 1)
+][order(cluster, FDR, -logFC, -logcpm.sel, symbol)]
+top50_dt[, prop_zero := n_zero / n_cl]
+top50_dt[, marker_rank := seq_len(.N), by = cluster]
+top50_dt <- top50_dt[marker_rank <= 50]
+
+marker_coverage_dt <- panel_dt[, .(
+  markers = paste(unique(symbol), collapse = ", ")
+), by = label]
+
+if (file.exists(cell_labels_f)) {
+  cell_labels_dt <- fread(cell_labels_f)
+  cluster_label_dt <- unique(cell_labels_dt[, .(cluster, label, label_score, n_markers)])
+  cell_label_lu <- unique(cell_labels_dt[, .(cell_id, label, label_score, n_markers)])
+  label_lu <- setNames(as.character(cell_label_lu$label), cell_label_lu$cell_id)
+  label_score_lu <- setNames(cell_label_lu$label_score, cell_label_lu$cell_id)
+  n_markers_lu <- setNames(cell_label_lu$n_markers, cell_label_lu$cell_id)
+  int_dt[, label := label_lu[cell_id]]
+  int_dt[, label_score := label_score_lu[cell_id]]
+  int_dt[, n_markers := n_markers_lu[cell_id]]
+} else {
+  cluster_label_dt <- assign_cluster_labels_from_panel(mkrs_dt, panel_dt, min_cpm = min_cpm_mkr)
+  cluster_label_dt <- merge(data.table(cluster = cl_ord), cluster_label_dt, by = "cluster", all.x = TRUE, sort = FALSE)
+  label_lu <- setNames(as.character(cluster_label_dt$label), as.character(cluster_label_dt$cluster))
+  label_score_lu <- setNames(cluster_label_dt$label_score, as.character(cluster_label_dt$cluster))
+  n_markers_lu <- setNames(cluster_label_dt$n_markers, as.character(cluster_label_dt$cluster))
+  int_dt[, label := label_lu[as.character(cluster)]]
+  int_dt[, label_score := label_score_lu[as.character(cluster)]]
+  int_dt[, n_markers := n_markers_lu[as.character(cluster)]]
+}
+cluster_label_dt <- merge(data.table(cluster = cl_ord), cluster_label_dt, by = "cluster", all.x = TRUE, sort = FALSE)
+cluster_label_dt[is.na(label), `:=`(label = "Unassigned", label_score = NA_real_, n_markers = 0L)]
+cluster_label_dt[, label := factor(as.character(label), levels = unique(c(panel_label_levels, "Unassigned")))]
+
+int_dt[is.na(label), label := "Unassigned"]
+int_dt[, label := factor(as.character(label), levels = unique(c(panel_label_levels, "Unassigned")))]
+
+panel_ls <- setNames(
+  lapply(panel_label_levels, function(label_name) panel_dt[as.character(label) == label_name]),
+  panel_label_levels
+)
+
+provided_marker_fig_height <- max(
+  2.7,
+  0.35 * max(1L, max(vapply(panel_ls, function(dt) data.table::uniqueN(dt$symbol), integer(1))))
+)
+
+# Determine which genes will actually be used in plots
+genes_for_plots <- unique(c(
+  panel_dt$gene_id,
+  mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][logcpm.sel >= log(min_cpm_mkr + 1)]$gene_id,
+  top_min_dt$gene_id
+))
+
+# Load logCPMs only for genes that will be displayed
+cpms_dt <- load_logcpms_subset(cpms_path, genes_for_plots, verbose = FALSE)
+
+cell_exp_dt <- data.table()
+
+# Clean up after initial data preparation
+invisible(gc(verbose = FALSE))
+```
+
+## Annotation setup
+
+This report assigns labels from the integration clustering column `r cl_col`, then tests marker genes by aggregating counts per sample within each cluster and running one-vs-rest pseudobulk differential expression.
+
+* **Selected cluster resolution used for annotation:** `r sel_res` (`r cl_col`)
+* **Resolution source:** `r annotation_sel_res_source`
+* **Clusters carried into annotation:** `r length(cl_ord)`
+* **Cells used for annotation (doublets and doublet-enriched clusters removed):** `r format(nrow(int_dt), big.mark = ",")`
+* **Provided marker genes matched in the data:** `r uniqueN(panel_dt$gene_id)`
+* **Marker-expression cache available for UMAPs:** `r if (file.exists(marker_expr_rds)) "yes" else "no"`
+
+## Input marker panel
+
+```{r marker_panel_table}
+DT::datatable(
+  marker_coverage_dt,
+  rownames = FALSE,
+  class = "compact stripe hover",
+  options = list(dom = "t", paging = FALSE, searching = FALSE, info = FALSE, ordering = FALSE, autoWidth = TRUE)
+)
+```
+
+## Heatmaps of marker genes
+
+
+Heatmap stars indicate positive-marker significance from the differential expression step: `***` FDR <= 0.001, `**` FDR <= 0.01, and `*` FDR <= 0.05. Blank cells are either not significant, negative logFC, or below the minimum CPM threshold.
+
+
+::: {.panel-tabset}
+
+### Provided markers
+
+```{r plot_heatmap_provided_markers, fig.height = 7, fig.width = 7}
+suppressMessages(draw(
+  plot_heatmap_of_selected_genes(mkrs_dt, panel_dt),
+  heatmap_legend_side = "right",
+  annotation_legend_side = "right",
+  merge_legend = TRUE
+))
+rm(panel_dt); invisible(gc(verbose = FALSE))
+```
+
+### Top markers by cluster
+
+```{r plot_heatmap_top_markers, fig.height = 7, fig.width = 14}
+if (nrow(top_heatmap_panel_dt) > 0) {
+  suppressMessages(draw(
+    plot_heatmap_of_selected_genes(mkrs_dt, top_heatmap_panel_dt),
+    heatmap_legend_side = "right",
+    annotation_legend_side = "right",
+    merge_legend = TRUE
+  ))
+  rm(top_heatmap_panel_dt); invisible(gc(verbose = FALSE))
+} else {
+  cat("No top markers passed the display filters for the heatmap.\n")
+}
+```
+
+:::
+
+## Top marker genes by cluster at resolution `r sel_res`
+
+
+```{r plot_top_markers, fig.height = 5, fig.width = 7, results = 'asis', cache = FALSE}
+top_marker_expr_dt <- if (file.exists(top_marker_expr_rds)) readRDS(top_marker_expr_rds) else data.table()
+
+cat('::: {.panel-tabset}\n\n')
+for (sel_cl in cl_ord) {
+  cat(sprintf("### %s\n\n", sel_cl))
+  has_markers <- sel_cl %in% as.character(top_min_dt$cluster)
+  if (!has_markers) {
+    cat("No marker genes passed the display filters for this cluster.\n\n")
+    next
+  }
+
+  p_dot <- plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = cl_ord) +
+    theme(
+      axis.text.x = element_text(size = 9),
+      axis.text.y = element_text(size = 9),
+      strip.text = element_text(size = 9),
+      plot.title = element_text(size = 12),legend.position="none"
+    )
+  g_umap <- NULL
+  if (nrow(top_marker_expr_dt) > 0) {
+    g_umap <- plot_top_marker_umap_facet(
+      sel_cl, top_min_dt, top_marker_expr_dt,
+      int_dt[, .(cell_id, UMAP1, UMAP2)]
+    ) +
+      theme(
+        strip.text = element_text(size = 9, margin = margin(b = 4)),
+        plot.title = element_text(size = 11)
+      )
+  }
+
+  print(p_dot)
+
+  if (!is.null(g_umap)) {
+    print(g_umap)
+  }
+  cat("\n\n")
+  invisible(gc(verbose = FALSE))
+}
+rm(top_marker_expr_dt)
+cat(':::\n\n')
+```
+
+## Top 50 marker tables by cluster at resolution `r sel_res`
+
+The tables below list up to 50 positive markers per cluster after excluding genes that match `r not_ok_re` and requiring expression above the annotation CPM threshold. Each table shows 25 rows per page.
+
+```{r top_marker_tables, results = 'asis'}
+cat('::: {.panel-tabset}\n\n')
+for (sel_cl in cl_ord) {
+  cat(sprintf("### %s\n\n", sel_cl))
+  sel_tbl <- top50_dt[as.character(cluster) == as.character(sel_cl), .(
+    rank = marker_rank,
+    symbol,
+    gene_type,
+    logFC = round(logFC, 2),
+    FDR = formatC(FDR, format = 'e', digits = 2),
+    logcpm_sel = round(logcpm.sel, 2),
+    logcpm_other = round(logcpm.other, 2),
+    zero_prop = round(prop_zero, 3)
+  )]
+  if (nrow(sel_tbl) > 0) {
+    print(htmltools::tagList(DT::datatable(
+      sel_tbl,
+      rownames = FALSE,
+      class = 'compact stripe hover',
+      options = list(
+        pageLength = 25,
+        lengthMenu = list(c(10, 25), c('10', '25')),
+        dom = 'tip',
+        autoWidth = TRUE,
+        scrollX = TRUE
+      )
+    )))
+  } else {
+    cat('No marker genes passed the table filters for this cluster.\n\n')
+  }
+  cat('\n\n')
+}
+cat(':::\n\n')
+```
+
+## Provided marker genes by label
+
+```{r plot_provided_marker_panels, fig.height = provided_marker_fig_height, fig.width = 7, results = 'asis'}
+cat('::: {.panel-tabset}\n\n')
+for (i_panel in seq_along(names(panel_ls))) {
+  label_name <- names(panel_ls)[i_panel]
+  cat('###', label_name, '\n\n')
+  sel_panel_dt <- panel_ls[[label_name]]
+  highlight_clusters <- as.character(cluster_label_dt[as.character(label) == label_name, cluster])
+  print(plot_selected_marker_panel(
+    sel_panel_dt,
+    cpms_dt,
+    cl_order = cl_ord,
+    highlight_clusters = highlight_clusters,
+    title = sprintf('%s provided marker genes', label_name)
+  )+theme(legend.position = "none"))
+  cat('\n\n')
+  # Clean up every 3 panels
+  if (i_panel %% 3 == 0) invisible(gc(verbose = FALSE))
+}
+cat(':::\n\n')
+```
+
+
+## Marker expression over UMAP
+
+Marker-expression panels below use the cached annotation marker-expression file and colour cells by uncapped log CPM values rather than per-gene values rescaled to 1.
+
+```{r plot_marker_umaps, fig.height = 4.5, fig.width = 7, results = 'asis'}
+cell_exp_dt <- if (file.exists(marker_expr_rds)) readRDS(marker_expr_rds) else data.table()
+
+if (nrow(cell_exp_dt) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  int_umap_subset <- int_dt[, .(cell_id, UMAP1, UMAP2, cluster)]  # Subset once
+  
+  for (i_label in seq_along(names(panel_ls))) {
+    label_name <- names(panel_ls)[i_label]
+    cat('###', label_name, '\n\n')
+    sel_expr_dt <- cell_exp_dt[as.character(label) == label_name]
+    if (nrow(sel_expr_dt) == 0) {
+      cat('No marker expression values were available for this label.\n\n')
+      next
+    }
+
+    gene_levels <- unique(as.character(sel_expr_dt$symbol))
+    for (i_gene in seq_along(gene_levels)) {
+      gene_name <- gene_levels[i_gene]
+      print(plot_expression_umap_pair(
+        sel_expr_dt[as.character(symbol) == gene_name, .(cell_id, expr)],
+        int_umap_subset,
+        cluster_col = 'cluster',
+        gene_name = gene_name,
+        cluster_name = sprintf('cluster (res. %s)', sel_res)
+      ))
+      cat("\n\n")
+      # Aggressive cleanup for large label/gene combinations
+      if (i_gene %% 2 == 0) invisible(gc(verbose = FALSE))
+    }
+    if (i_label %% 2 == 0) invisible(gc(verbose = FALSE))
+  }
+  rm(int_umap_subset, cell_exp_dt); invisible(gc(verbose = FALSE))
+  cat(':::\n\n')
+} else {
+  cat('No filtered H5 inputs were available to render marker expression UMAPs.\n\n')
+}
+```
+
+
+## Annotation labels over UMAP
+
+Cell labels in the panels below are assigned at the cluster level by the provided marker label with the highest mean positive marker log2 fold-change among the matched input markers. Cluster labels are written at each cluster centroid; if two clusters receive the same annotation label, that label is repeated once per cluster.
+
+```{r plot_annotation_umap_overview, fig.height = 5, fig.width = 7}
+g_label <- plot_umap_cluster(
+  int_dt[, .(cell_id, UMAP1, UMAP2)],
+  int_dt[, .(cell_id, cluster = label, centroid_group = as.character(label), centroid_label = as.character(label))],
+  name = 'cell label'
+)+theme(legend.position = "none")
+g_cluster <- plot_umap_cluster(
+  int_dt[, .(cell_id, UMAP1, UMAP2)],
+  int_dt[, .(cell_id, cluster)],
+  name = sprintf('cluster (res. %s)', sel_res)
+)+theme(legend.position = "none")
+print(g_label + g_cluster)
+```
+
+```{r celltype_sample_data, include = FALSE}
+comp_dt <- int_dt[, .N, by = .(sample_id, label)]
+comp_dt[, prop := N / sum(N), by = sample_id]
+
+cat_meta_cols <- meta_var_cols[sapply(meta_var_cols, function(col) {
+  v <- sample_meta_dt[[col]]
+  is.character(v) || is.factor(v)
+})]
+cat_meta_cols <- setdiff(cat_meta_cols, "_harmony_batch")
+
+label_levels <- levels(int_dt$label)
+label_cols <- setNames(
+  rep(nice_cols, length.out = length(label_levels)),
+  label_levels
+)
+sample_levels <- unique(comp_dt$sample_id)
+comp_dt[, sample_id := factor(sample_id, levels = sample_levels)]
+
+add_comp_bar_theme <- function(p, label_cols) {
+  p +
+    geom_col(width = 0.8, colour = "black", linewidth = 0.2) +
+    scale_fill_manual(values = label_cols, drop = FALSE) +
+    scale_y_continuous(labels = label_percent(accuracy = 1), expand = expansion(mult = c(0, 0.02))) +
+    scale_x_discrete(drop = TRUE) +
+    theme_bw() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor    = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      strip.background = element_rect(fill = "white"),
+      legend.position  = "right",
+      legend.title.position = "top",
+      legend.text = element_text(size = 7),
+      legend.key.size = unit(0.25, "cm")
+    ) +
+    guides(fill = guide_legend(ncol = 1, byrow = TRUE)) +
+    labs(x = "sample", y = "proportion", fill = "cell type")
+}
+
+add_count_bar_theme <- function(p, label_cols) {
+  p +
+    geom_col(width = 0.8, colour = "black", linewidth = 0.2, show.legend = FALSE) +
+    scale_fill_manual(values = label_cols, drop = FALSE) +
+    scale_x_discrete(drop = TRUE) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.02))) +
+    theme_bw() +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor    = element_blank(),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      strip.background = element_rect(fill = "white")
+    ) +
+    labs(x = "sample", y = "# cells")
+}
+
+get_meta_plot_dt <- function(comp_dt, sample_meta_dt, meta_col) {
+  plot_dt <- merge(
+    comp_dt,
+    sample_meta_dt[, c("sample_id", meta_col), with = FALSE],
+    by = "sample_id"
+  )
+  plot_dt[, sample_id := factor(as.character(sample_id), levels = sample_levels)]
+  plot_dt[, (meta_col) := factor(as.character(get(meta_col)))]
+  plot_dt
+}
+
+make_celltype_count_table <- function(comp_dt, sample_meta_dt, sample_levels, meta_cols) {
+  counts_wide_dt <- dcast(
+    copy(comp_dt)[, sample_id := as.character(sample_id)],
+    sample_id ~ label,
+    value.var = "N",
+    fill = 0
+  )
+
+  props_wide_dt <- dcast(
+    copy(comp_dt)[, sample_id := as.character(sample_id)],
+    sample_id ~ label,
+    value.var = "prop",
+    fill = 0
+  )
+
+  count_cols <- setdiff(names(counts_wide_dt), "sample_id")
+  if (length(count_cols) > 0) {
+    clean_count_cols <- paste0("n_", gsub("[^A-Za-z0-9]+", "_", count_cols))
+    setnames(counts_wide_dt, count_cols, clean_count_cols)
+
+    prop_cols <- setdiff(names(props_wide_dt), "sample_id")
+    clean_prop_cols <- paste0("pct_", gsub("[^A-Za-z0-9]+", "_", prop_cols))
+    setnames(props_wide_dt, prop_cols, clean_prop_cols)
+    props_wide_dt[, (clean_prop_cols) := lapply(.SD, function(x) round(100 * x, 2)), .SDcols = clean_prop_cols]
+  }
+
+  out_dt <- data.table(sample_id = sample_levels, sample_order = seq_along(sample_levels))
+  if (length(meta_cols) > 0) {
+    meta_dt <- unique(sample_meta_dt[, c("sample_id", meta_cols), with = FALSE], by = "sample_id")
+    out_dt <- merge(out_dt, meta_dt, by = "sample_id", all.x = TRUE, sort = FALSE)
+  }
+  out_dt <- merge(out_dt, counts_wide_dt, by = "sample_id", all.x = TRUE, sort = FALSE)
+  out_dt <- merge(out_dt, props_wide_dt, by = "sample_id", all.x = TRUE, sort = FALSE)
+  setorder(out_dt, sample_order)
+  out_dt[, sample_order := NULL]
+  out_dt
+}
+```
+
+## Cell-type numbers by sample
+
+Bar charts show raw cell counts per sample, faceted by cell type with a fixed y-axis so absolute differences can be compared directly.
+
+```{r celltype_numbers, fig.height = 6.5, fig.width = 7, results = 'asis'}
+if (length(cat_meta_cols) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (meta_col in cat_meta_cols) {
+    cat(sprintf("### %s\n\n", meta_col))
+    plot_counts <- get_meta_plot_dt(comp_dt, sample_meta_dt, meta_col)
+    meta_levels <- levels(plot_counts[[meta_col]])
+    meta_levels <- meta_levels[!is.na(meta_levels) & nzchar(meta_levels)]
+    for (meta_level in meta_levels) {
+      level_dt <- plot_counts[get(meta_col) == meta_level]
+      if (nrow(level_dt) == 0) {
+        next
+      }
+      cat(sprintf("#### %s\n\n", meta_level))
+      g <- add_count_bar_theme(
+        ggplot(level_dt, aes(x = sample_id, y = N, fill = label)) +
+          facet_wrap(~ label, ncol = 2, scales = "fixed"),
+        label_cols
+      )
+      print(g)
+      cat("\n\n")
+    }
+  }
+  cat(':::\n\n')
+} else {
+  g <- add_count_bar_theme(
+    ggplot(comp_dt, aes(x = sample_id, y = N, fill = label)) +
+      facet_wrap(~ label, ncol = 2, scales = "fixed"),
+    label_cols
+  )
+  print(g)
+}
+```
+
+## Cell-type composition by sample
+
+Stacked bar charts show cell-type proportions per sample. Each bar is normalised within a sample to 100%. When metadata covariates are available, each covariate gets its own tab and each covariate level is plotted separately to avoid squeezing many conditions into a single figure.
+
+```{r celltype_composition, fig.height = 4.5, fig.width = 7, results = 'asis'}
+if (length(cat_meta_cols) > 0) {
+  cat('::: {.panel-tabset}\n\n')
+  for (meta_col in cat_meta_cols) {
+    cat(sprintf("### %s\n\n", meta_col))
+    plot_comp <- get_meta_plot_dt(comp_dt, sample_meta_dt, meta_col)
+    meta_levels <- levels(plot_comp[[meta_col]])
+    meta_levels <- meta_levels[!is.na(meta_levels) & nzchar(meta_levels)]
+    for (meta_level in meta_levels) {
+      level_dt <- plot_comp[get(meta_col) == meta_level]
+      if (nrow(level_dt) == 0) {
+        next
+      }
+      cat(sprintf("#### %s\n\n", meta_level))
+      g <- add_comp_bar_theme(
+        ggplot(level_dt, aes(x = sample_id, y = prop, fill = label)),
+        label_cols
+      )
+      print(g)
+      cat("\n\n")
+    }
+  }
+  cat(':::\n\n')
+} else {
+  g <- add_comp_bar_theme(
+    ggplot(comp_dt, aes(x = sample_id, y = prop, fill = label)),
+    label_cols
+  )
+  print(g)
+}
+```
+
+## Cell-type counts table by sample
+
+The table below lists raw cell counts per sample for each annotated cell type, alongside the metadata columns used in the composition bar charts.
+
+```{r celltype_count_table}
+count_table_dt <- make_celltype_count_table(comp_dt, sample_meta_dt, sample_levels, cat_meta_cols)
+
+DT::datatable(
+  count_table_dt,
+  rownames = FALSE,
+  class = 'compact stripe hover',
+  options = list(
+    pageLength = 25,
+    lengthMenu = list(c(10, 25, 50), c('10', '25', '50')),
+    autoWidth = TRUE,
+    scrollX = TRUE
+  )
+)
+```
+
+
+## Session info
+
+```{r session_info}
+sessionInfo()
+```

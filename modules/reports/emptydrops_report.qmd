@@ -1,0 +1,76 @@
+---
+title: "Cell calling — EmptyDrops (CellSweep-recommended)"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{=html}
+<style>.quarto-figure img,.cell-output-display img,img.img-fluid{max-width:min(100%,860px);height:auto}</style>
+```
+
+Cells are called with `DropletUtils::emptyDrops` (no GMM): each barcode's gene-composition
+profile is tested against the ambient pool (Dirichlet-multinomial); **is_cell = FDR ≤ 0.01**.
+**is_empty = total UMI < 100** (the ambient pool). Barcodes above the ambient threshold that are
+not significant are `ambiguous` (neither cell nor empty). Downstream decontamination is CellSweep.
+
+```{r setup}
+knitr::opts_chunk$set(fig.path='plots/', dev='png', dpi=110)
+suppressPackageStartupMessages({library(data.table); library(ggplot2); library(patchwork)})
+ps <- 10
+sum_fs <- list.files(".", pattern="^emptydrops_summary_.+\\.csv$", full.names=TRUE)
+lab_fs <- list.files(".", pattern="^emptydrops_labels_.+\\.csv\\.gz$", full.names=TRUE)
+.sid <- function(fs,pre,suf) sub(suf,"",sub(paste0("^.*/",pre),"",fs))
+names(lab_fs) <- .sid(lab_fs,"emptydrops_labels_","\\.csv\\.gz$")
+sids <- sort(names(lab_fs))
+summ <- rbindlist(lapply(sum_fs, fread), fill=TRUE)
+pop_cols <- c(cell="#2c8a3d", ambiguous="#1a6aa8", empty="grey70")
+LOGB <- log10(ps + c(0,10,30,100,300,1000,3000,1e4,3e4,1e5,3e5))
+LOGL <- c("0","10","30","100","300","1k","3k","10k","30k","100k","300k")
+PCTB <- qlogis(c(0.001,0.003,0.01,0.03,0.1,0.5,0.9,0.97,0.99,0.997,0.999))
+PCTL <- c("0.1%","0.3%","1%","3%","10%","50%","90%","97%","99%","99.7%","99.9%")
+```
+
+## Cells called per sample
+
+```{r counts}
+show <- c("sample_id","n_total","n_cell","n_empty","n_ambiguous","lower","fdr_cut")
+knitr::kable(summ[, intersect(show, names(summ)), with=FALSE],
+             caption="EmptyDrops calls per sample (is_cell = FDR<=0.01; is_empty = UMI<100).")
+```
+
+```{r bar, fig.width=7, fig.height=3.2}
+ggplot(summ, aes(sub("_snRNAseq$","",sub("^LM[0-9]+_","",sample_id)), n_cell)) +
+  geom_col(fill="#2c8a3d") + theme_classic(base_size=9) +
+  theme(axis.text.x=element_text(angle=40,hjust=1)) +
+  labs(title="EmptyDrops cells per sample", x=NULL, y="cells (FDR<=0.01)")
+```
+
+## Per-sample: UMI × splice by call
+
+```{r per-sample, results='asis', fig.width=8, fig.height=3.6}
+cat("::: {.panel-tabset}\n\n")
+for (sid in sids) {
+  cat("### ", sid, "\n\n")
+  d <- fread(lab_fs[[sid]])
+  d[, lx := log10(total+ps)]; d[, ly := qlogis((spliced+1)/(total+2))]
+  d[, population := factor(population, levels=names(pop_cols))]
+  pl <- rbind(d[population=="empty"][sample(.N, min(.N, 30000))], d[population!="empty"])
+  p <- ggplot(pl[order(population)], aes(lx, ly, colour=population)) +
+    geom_point(size=0.25, alpha=0.45) +
+    scale_colour_manual(values=pop_cols, drop=FALSE) +
+    scale_x_continuous(breaks=LOGB, labels=LOGL) + scale_y_continuous(breaks=PCTB, labels=PCTL) +
+    guides(colour=guide_legend(override.aes=list(size=2,alpha=1))) +
+    theme_classic(base_size=8) +
+    labs(title=paste(sid, "— EmptyDrops call (UMI>=100 candidates)"),
+         x="total UMIs (log)", y="spliced fraction")
+  print(p); cat("\n\n")
+}
+cat(":::\n")
+```

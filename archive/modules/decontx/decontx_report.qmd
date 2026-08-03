@@ -1,0 +1,268 @@
+---
+title: "Ambient RNA Removal Diagnostics (decontX)"
+format:
+  html:
+        embed-resources: false
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+suppressPackageStartupMessages({
+    library(data.table)
+    library(ggplot2)
+    library(patchwork)
+})
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+# Discover files staged into the Nextflow work directory
+usa_files      <- list.files(".", pattern = "_decontx_usa_metrics\\.csv$",  full.names = TRUE)
+barcodes_files <- list.files(".", pattern = "_decontx_barcodes\\.csv$",     full.names = TRUE)
+knee_files     <- list.files(".", pattern = "_knee_data\\.csv$",            full.names = TRUE)
+
+# Extract sample IDs
+.sid <- function(paths, suffix) sub(suffix, "", basename(paths))
+usa_ids  <- .sid(usa_files,      "_decontx_usa_metrics.csv")
+bcs_ids  <- .sid(barcodes_files, "_decontx_barcodes.csv")
+knee_ids <- .sid(knee_files,     "_knee_data.csv")
+
+# Named lists
+usa_fs      <- setNames(as.list(usa_files),      usa_ids)
+barcodes_fs <- setNames(as.list(barcodes_files), bcs_ids)
+knee_fs     <- setNames(as.list(knee_files),     knee_ids)
+
+# Consistent sample ordering: union of all present IDs, sorted
+s_lvls <- sort(unique(c(usa_ids, bcs_ids, knee_ids)))
+
+# Load knee summary (one row per sample) — used for total_droplets_included
+knee_params_dt <- lapply(s_lvls, function(s) {
+    f <- knee_fs[[s]]
+    if (is.null(f)) return(NULL)
+    fread(f, select = c("sample_id", "total_droplets_included", "expected_cells")) |>
+        unique()
+}) |> rbindlist()
+
+# Load ok_bcs (retained cell barcodes, one vector per sample)
+ok_bcs_ls <- lapply(s_lvls, function(s) {
+    f <- barcodes_fs[[s]]
+    if (is.null(f)) return(character(0))
+    fread(f, header = FALSE)[[1]]
+}) |> setNames(s_lvls)
+
+# Load USA metrics (pre/post S+U+A per barcode)
+usa_dt_ls <- lapply(s_lvls, function(s) {
+    f <- usa_fs[[s]]
+    if (is.null(f)) return(NULL)
+    fread(f)
+}) |> setNames(s_lvls)
+
+# total_droplets_included per sample (named vector)
+tot_inc_ls <- setNames(
+    knee_params_dt$total_droplets_included[match(s_lvls, knee_params_dt$sample_id)],
+    s_lvls
+)
+
+# Chunk samples for multi-page violin plots (10 per tab, matches scprocess)
+chunk_size <- 10
+idx_ls     <- seq_along(s_lvls)
+chunks_ls  <- split(idx_ls, ceiling(idx_ls / chunk_size))
+```
+
+```{r}
+#| label: plot-functions
+#| include: false
+
+# ---------------------------------------------------------------------------
+# plot_umis_pre_post
+# Per-sample scatter: total UMIs pre and post decontX, coloured by barcode
+# status (cell / used for ambient / excluded completely).
+#
+# NOTE: the H5 from BARCODE_ESTIMATION is already a collapsed S+U+A total;
+# the usa_metrics CSV therefore has pre_total / post_total columns only (no
+# separate S/U/A breakdown).  Spliced % cannot be derived at this stage.
+# ---------------------------------------------------------------------------
+plot_umis_pre_post <- function(ss, usa_dt, ok_bcs, total_inc) {
+    pscount  <- 10
+    LOG_BRKS <- log10(pscount + c(0, 10, 30, 100, 300, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5))
+    LOG_LABS <- c("0", "10", "30", "100", "300", "1k", "3k", "10k", "30k", "100k", "300k")
+    COL_VALS <- c(
+        "cell"                     = "grey80",
+        "no, used for\nambient"    = "#FB8072",
+        "no, excluded\ncompletely" = "grey30"
+    )
+
+    # Top total_inc barcodes by pre_total (ambient background)
+    inc_bcs <- usa_dt[order(-pre_total)][seq_len(min(total_inc, .N)), barcode]
+
+    plot_dt <- copy(usa_dt)
+    plot_dt[, status := fifelse(
+        barcode %in% ok_bcs,     names(COL_VALS)[[1]],
+        fifelse(barcode %in% inc_bcs, names(COL_VALS)[[2]], names(COL_VALS)[[3]])
+    ) |> factor(levels = names(COL_VALS))]
+
+    # Long format: pre and post as separate rows
+    long_dt <- rbind(
+        plot_dt[pre_total > 0,
+                .(barcode, stage = "pre",  total = pre_total,  status)],
+        plot_dt[!is.na(post_total) & post_total > 0,
+                .(barcode, stage = "post", total = post_total, status)]
+    )
+    long_dt[, stage := factor(stage, levels = c("pre", "post"))]
+
+    g_dens <- ggplot(long_dt) +
+        aes(x = log10(total + pscount)) +
+        geom_histogram(bins = 80, fill = "#283747") +
+        scale_x_continuous(breaks = LOG_BRKS, labels = LOG_LABS) +
+        facet_grid(. ~ stage) +
+        expand_limits(x = log10(pscount)) +
+        theme_classic(base_size = 10) +
+        labs(x = "total UMIs", y = "barcodes", title = ss)
+
+    g_dots <- ggplot(long_dt) +
+        aes(x = log10(total + pscount), colour = status) +
+        geom_freqpoly(bins = 80) +
+        scale_x_continuous(breaks = LOG_BRKS, labels = LOG_LABS) +
+        scale_color_manual(
+            values = COL_VALS,
+            guide  = guide_legend(override.aes = list(linewidth = 1.5))
+        ) +
+        facet_grid(. ~ stage) +
+        expand_limits(x = log10(pscount)) +
+        theme_classic(base_size = 10) +
+        labs(x = "total UMIs", y = "barcodes", colour = "barcode status")
+
+    g_dens / g_dots + plot_layout(axes = "collect")
+}
+
+# ---------------------------------------------------------------------------
+# plot_reads_removed_as_ambient
+# Per-sample violin of fraction of reads removed by decontX, for kept cells.
+# Mirrors scprocess/scripts/ambient.R plot_reads_removed_as_ambient().
+# ---------------------------------------------------------------------------
+plot_reads_removed_as_ambient <- function(usa_dt_ls_chunk, ok_bcs_ls_chunk) {
+    logit_brks <- qlogis(c(1e-4, 1e-3, 1e-2, 0.10, 0.50, 0.90, 0.99, 0.999))
+    logit_labs <- c("0.01%", "0.1%", "1%", "10%", "50%", "90%", "99%", "99.9%")
+
+    plot_dt <- lapply(names(usa_dt_ls_chunk), function(nn) {
+        usa  <- usa_dt_ls_chunk[[nn]]
+        bcs  <- ok_bcs_ls_chunk[[nn]]
+        usa[barcode %in% bcs & pre_total > 0][, .(
+            barcode,
+            sample_id  = nn,
+            logit_removed = qlogis(pmax(1e-6, 1 - post_total / pre_total))
+        )]
+    }) |> rbindlist()
+
+    plot_dt[, sample_id := factor(sample_id, levels = names(usa_dt_ls_chunk))]
+
+    ggplot(plot_dt) +
+        aes(x = sample_id,
+            y = pmin(pmax(logit_removed, head(logit_brks, 1)), tail(logit_brks, 1))) +
+        geom_violin(
+            colour = NA, fill = "grey60",
+            kernel = "rectangular", adjust = 0.1, scale = "width", width = 0.8
+        ) +
+        scale_y_continuous(breaks = logit_brks, labels = logit_labs) +
+        theme_classic(base_size = 10) +
+        theme(
+            axis.text.x = element_text(angle = -45, hjust = 0, vjust = 0.5),
+            plot.margin  = unit(c(1, 4, 1, 1), "lines")
+        ) +
+        labs(y = "pct. reads removed as ambient", x = NULL)
+}
+```
+
+## UMI distribution pre / post decontX {.tabset}
+
+Per-sample UMI count distributions before and after ambient correction.
+Barcodes are coloured by their status: **cell** (retained),
+**used for ambient** (within `total_droplets_included`, used as background),
+**excluded completely** (below the background threshold).
+
+Note: the count matrix passed to decontX is a collapsed S+U+A total (produced
+by BARCODE_ESTIMATION); separate spliced/unspliced fractions are not available
+at this stage.
+
+```{r}
+#| label: plot-umis-pre-post
+#| results: asis
+#| fig-width: 10
+#| fig-height: 6
+
+for (ss in s_lvls) {
+    cat("### ", ss, "\n")
+    usa  <- usa_dt_ls[[ss]]
+    bcs  <- ok_bcs_ls[[ss]]
+    tinc <- tot_inc_ls[[ss]]
+    if (!is.null(usa) && length(bcs) > 0 && !is.na(tinc)) {
+        print(plot_umis_pre_post(ss, usa, bcs, tinc))
+    } else {
+        cat("_Data not available for this sample._\n")
+    }
+    cat("\n\n")
+}
+```
+
+## Reads removed as ambient {.tabset}
+
+Violin plots of the fraction of reads removed per retained cell barcode
+(`1 - post_total / pre_total`). Higher values indicate more aggressive
+ambient correction for that sample.
+
+```{r}
+#| label: plot-reads-removed
+#| results: asis
+#| fig-height: 4
+#| fig-width: 10
+
+for (ii in seq_along(chunks_ls)) {
+    chunk <- chunks_ls[[ii]]
+    cat("### samples ", min(chunk), "-", max(chunk), "\n")
+    print(plot_reads_removed_as_ambient(usa_dt_ls[chunk], ok_bcs_ls[chunk]))
+    cat("\n\n")
+}
+```
+
+## Droplets kept
+
+Summary table: one row per sample showing how many barcodes were retained
+after decontX filtering, relative to the total droplets included in the
+ambient estimation.
+
+```{r}
+#| label: tbl-droplets-kept
+
+summary_dt <- rbindlist(lapply(s_lvls, function(ss) {
+    params <- knee_params_dt[sample_id == ss]
+    n_kept <- length(ok_bcs_ls[[ss]])
+    data.table(
+        sample_id               = ss,
+        total_droplets_included = if (nrow(params)) params$total_droplets_included else NA_integer_,
+        expected_cells_knee     = if (nrow(params)) params$expected_cells          else NA_integer_,
+        cells_kept_decontx      = n_kept,
+        pct_kept                = if (nrow(params) && params$total_droplets_included > 0)
+                                    round(n_kept / params$total_droplets_included * 100, 1)
+                                  else NA_real_
+    )
+}))
+
+knitr::kable(
+    summary_dt,
+    col.names = c("Sample", "Total droplets included", "Expected cells (knee)",
+                  "Cells kept (decontX)", "% kept"),
+    format.args = list(big.mark = ","),
+    caption = "Cells retained after decontX per sample"
+)
+```
