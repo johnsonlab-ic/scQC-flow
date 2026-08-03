@@ -4,7 +4,6 @@ data/
 
 # GitHub folder (copilot instructions, internal docs)
 .github/
-data/
 scripts/
 .claude/
 dev/
@@ -12,3 +11,5 @@ dev/
 resources/
 .nextflow.log*
 .copilot/
+__pycache__/
+*.pyc
