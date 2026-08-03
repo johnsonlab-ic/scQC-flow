@@ -368,7 +368,15 @@ def _fit_transform_umap(embedding, ref_idx, cluster_seed):
     ref_mask = np.zeros(n_cells, dtype=bool)
     ref_mask[ref_idx] = True
 
-    reducer = umap.UMAP(random_state=cluster_seed, init='pca')
+    # random_state=None is deliberate: umap-learn's numba SGD layout step only runs
+    # multi-threaded when self.random_state is None (fixed seed -> parallel=False, since
+    # parallel writes aren't reproducible). At multi-million-cell scale, forcing a seed here
+    # serialises the whole fit+transform onto one core — observed ~18h wall time on a 32-core
+    # node with cput≈walltime for the reference-mode UMAP step. UMAP coords are a downstream
+    # visualisation layer (PCA/Harmony/Leiden are seeded and unaffected), so losing exact
+    # coordinate reproducibility across runs is an acceptable trade for ~Nx wall-clock.
+    np.random.seed(cluster_seed)
+    reducer = umap.UMAP(random_state=None, init='pca')
     reducer.fit(embedding[ref_mask])
 
     coords = np.empty((n_cells, 2), dtype=np.float64)
