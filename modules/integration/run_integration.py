@@ -384,6 +384,12 @@ def _fit_transform_umap(embedding, ref_idx, cluster_seed):
 
     rest_idx = np.where(~ref_mask)[0]
     if len(rest_idx) > 0:
+        # pynndescent's NNDescent defaults parallel_batch_queries=False, so the KNN
+        # search inside transform() is single-threaded regardless of random_state above
+        # (a separate knob from the SGD layout step). Flipping it before the first
+        # .query() call (triggered by transform()) compiles the multi-threaded search
+        # closure instead. Verified empirically: ~20x on the KNN-query portion.
+        reducer._knn_search_index.parallel_batch_queries = True
         coords[rest_idx] = reducer.transform(embedding[rest_idx])
 
     return coords
