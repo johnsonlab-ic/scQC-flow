@@ -178,7 +178,15 @@ for (i in seq_along(sample_ids)) {
   if (!is.null(subset_qc_dt)) {
     sel_bcs <- intersect(subset_qc_dt[sample_id == sid, unique(cell_id)], colnames(filt_mat))
     message("  Selected zoom cells: ", length(sel_bcs))
-    if (length(sel_bcs) == 0L) stop("No selected zoom cells found for sample: ", sid)
+    if (length(sel_bcs) == 0L) {
+      # A zoom subset can legitimately contain no cells from some samples. Skip the
+      # whole sample rather than aborting the run, and drop the empties column added
+      # above so the empties/cells pseudobulk matrices stay column-aligned.
+      message("  No zoom cells for sample ", sid, " — skipping from ambient DE")
+      empty_cols[[sid]] <- NULL
+      rm(filt_mat); gc()
+      next
+    }
     filt_mat <- filt_mat[, sel_bcs, drop = FALSE]
   }
   filt_sua  <- .sum_sua(filt_mat)
@@ -189,6 +197,9 @@ for (i in seq_along(sample_ids)) {
 # ---------------------------------------------------------------------------
 # Build aligned pseudobulk matrices (genes × samples)
 # ---------------------------------------------------------------------------
+if (length(cell_cols) == 0L)
+  stop("No samples had cells in this subset — cannot build cells pseudobulk for ambient DE")
+
 all_genes <- Reduce(union, lapply(empty_cols, names))
 message("Total genes (union): ", length(all_genes))
 
