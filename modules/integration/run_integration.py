@@ -390,6 +390,13 @@ def _fit_transform_umap(embedding, ref_idx, cluster_seed):
         # .query() call (triggered by transform()) compiles the multi-threaded search
         # closure instead. Verified empirically: ~20x on the KNN-query portion.
         reducer._knn_search_index.parallel_batch_queries = True
+        # transform() defaults to only 30 SGD layout epochs for large query sets
+        # (umap-learn uses n_epochs//3). That under-optimises placement: cells whose
+        # reference neighbours straddle two clusters get stranded on their averaged
+        # init position between clusters, producing the "stringy" inter-cluster bridges.
+        # Raise the epoch budget so those cells are pulled into their cluster. Fit is
+        # untouched (already run at its clean default above); this only affects transform.
+        reducer.n_epochs = 500
         coords[rest_idx] = reducer.transform(embedding[rest_idx])
 
     return coords
