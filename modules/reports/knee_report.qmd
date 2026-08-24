@@ -61,6 +61,25 @@ sum_fs <- list.files(".", pattern="^knee_summary_.+\\.csv$", full.names=TRUE)
 lab_fs <- list.files(".", pattern="^knee_labels_.+\\.csv\\.gz$", full.names=TRUE)
 names(lab_fs) <- sub("\\.csv\\.gz$","",sub("^.*/knee_labels_","",lab_fs))
 sids <- sort(names(lab_fs))
+
+# Paginate the per-sample tabset into chunks so large cohorts stay navigable
+# (nested chunk tabs -> per-sample sub-tabs). render_one(sid) emits its own
+# '#### <sid>' header + body. Single-chunk cohorts skip the outer tab layer.
+page_size <- 30L
+render_sample_chunks <- function(ids, render_one) {
+  chunks <- split(ids, ceiling(seq_along(ids) / page_size))
+  multi  <- length(chunks) > 1L
+  if (multi) cat('::: {.panel-tabset}\n\n')
+  for (ci in seq_along(chunks)) {
+    if (multi) cat(sprintf("### Samples %d–%d\n\n",
+                           (ci - 1L) * page_size + 1L,
+                           (ci - 1L) * page_size + length(chunks[[ci]])))
+    cat('::: {.panel-tabset}\n\n')
+    for (sid in chunks[[ci]]) { render_one(sid); cat("\n\n") }
+    cat(':::\n\n')
+  }
+  if (multi) cat(':::\n\n')
+}
 summ <- rbindlist(lapply(sum_fs, fread), fill=TRUE)
 summ[, short_id := sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", sample_id))]
 setorder(summ, -sample_id)
@@ -170,9 +189,8 @@ paginate_and_plot(summ, "short_id", 20, plot_knee_summary_page)
 ## Per-sample: UMI × splice by call
 
 ```{r per-sample, results='asis', fig.width=8, fig.height=3.6}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
+render_sample_chunks(sids, function(sid) {
+  cat("#### ", sid, "\n\n")
   d <- fread(lab_fs[[sid]])
   d[, lx := log10(total+ps)]; d[, ly := qlogis((spliced+1)/(total+2))]
   d[, population := factor(population, levels=names(pop_cols))]
@@ -183,9 +201,8 @@ for (sid in sids) {
     guides(colour=guide_legend(override.aes=list(size=2,alpha=1))) +
     theme_classic(base_size=8) +
     labs(title=paste(sid, "— knee/shin call"), x="total UMIs (log)", y="spliced fraction")
-  print(p); cat("\n\n")
-}
-cat(":::\n")
+  print(p)
+})
 ```
 
 ## Session info

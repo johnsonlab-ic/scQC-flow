@@ -29,6 +29,25 @@ lab_fs <- list.files(".", pattern="^emptydrops_labels_.+\\.csv\\.gz$", full.name
 .sid <- function(fs,pre,suf) sub(suf,"",sub(paste0("^.*/",pre),"",fs))
 names(lab_fs) <- .sid(lab_fs,"emptydrops_labels_","\\.csv\\.gz$")
 sids <- sort(names(lab_fs))
+
+# Paginate the per-sample tabset into chunks so large cohorts stay navigable
+# (nested chunk tabs -> per-sample sub-tabs). render_one(sid) emits its own
+# '#### <sid>' header + body. Single-chunk cohorts skip the outer tab layer.
+page_size <- 30L
+render_sample_chunks <- function(ids, render_one) {
+  chunks <- split(ids, ceiling(seq_along(ids) / page_size))
+  multi  <- length(chunks) > 1L
+  if (multi) cat('::: {.panel-tabset}\n\n')
+  for (ci in seq_along(chunks)) {
+    if (multi) cat(sprintf("### Samples %d–%d\n\n",
+                           (ci - 1L) * page_size + 1L,
+                           (ci - 1L) * page_size + length(chunks[[ci]])))
+    cat('::: {.panel-tabset}\n\n')
+    for (sid in chunks[[ci]]) { render_one(sid); cat("\n\n") }
+    cat(':::\n\n')
+  }
+  if (multi) cat(':::\n\n')
+}
 summ <- rbindlist(lapply(sum_fs, fread), fill=TRUE)
 pop_cols <- c(cell="#2c8a3d", ambiguous="#1a6aa8", empty="grey70")
 LOGB <- log10(ps + c(0,10,30,100,300,1000,3000,1e4,3e4,1e5,3e5))
@@ -55,9 +74,8 @@ ggplot(summ, aes(sub("_snRNAseq$","",sub("^LM[0-9]+_","",sample_id)), n_cell)) +
 ## Per-sample: UMI × splice by call
 
 ```{r per-sample, results='asis', fig.width=8, fig.height=3.6}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
+render_sample_chunks(sids, function(sid) {
+  cat("#### ", sid, "\n\n")
   d <- fread(lab_fs[[sid]])
   d[, lx := log10(total+ps)]; d[, ly := qlogis((spliced+1)/(total+2))]
   d[, population := factor(population, levels=names(pop_cols))]
@@ -70,7 +88,6 @@ for (sid in sids) {
     theme_classic(base_size=8) +
     labs(title=paste(sid, "— EmptyDrops call (UMI>=100 candidates)"),
          x="total UMIs (log)", y="spliced fraction")
-  print(p); cat("\n\n")
-}
-cat(":::\n")
+  print(p)
+})
 ```

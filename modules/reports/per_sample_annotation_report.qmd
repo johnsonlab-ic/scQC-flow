@@ -47,6 +47,26 @@ names(qc_fs) <- sub("\\.csv\\.gz$", "", sub("^qc_metrics_", "", basename(qc_fs))
 
 sids <- sort(Reduce(intersect, list(names(cells_fs), names(summ_fs), names(qc_fs))))
 
+# Paginate the per-sample tabsets into chunks so large cohorts stay navigable
+# (nested chunk tabs -> per-sample sub-tabs). render_one(sid) emits its own
+# '#### <sid>' header + body (use return() to skip a sample). Single-chunk
+# cohorts skip the outer tab layer.
+page_size <- 30L
+render_sample_chunks <- function(ids, render_one) {
+  chunks <- split(ids, ceiling(seq_along(ids) / page_size))
+  multi  <- length(chunks) > 1L
+  if (multi) cat('::: {.panel-tabset}\n\n')
+  for (ci in seq_along(chunks)) {
+    if (multi) cat(sprintf("### Samples %d–%d\n\n",
+                           (ci - 1L) * page_size + 1L,
+                           (ci - 1L) * page_size + length(chunks[[ci]])))
+    cat('::: {.panel-tabset}\n\n')
+    for (sid in chunks[[ci]]) { render_one(sid); cat("\n\n") }
+    cat(':::\n\n')
+  }
+  if (multi) cat(':::\n\n')
+}
+
 method_label <- toupper(substr(method_id, 1, 1)) %>% paste0(substr(method_id, 2, nchar(method_id)))
 
 qc_names <- c("n_cells", "log_counts", "log_feats", "logit_mito", "logit_spliced")
@@ -86,16 +106,13 @@ Dashed lines mark the soft thresholds, dotted lines the hard thresholds (see
 legend). Same thresholds as the pipeline's `qc_report`.
 
 ```{r results='asis', fig.height=4, fig.width=9}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
+render_sample_chunks(sids, function(sid) {
+  cat("#### ", sid, "\n\n")
   d <- sample_data[[sid]]
   suppressWarnings(print(
     plot_qc_split_violin(d$qc_all_dt, sid, qc_names, qc_lu, cuts_dt, hard_cuts_dt = hard_cuts_dt)
   ))
-  cat("\n\n")
-}
-cat(":::\n\n")
+})
 ```
 
 Reasons cells were removed (UpSet plot of overlapping exclusion criteria:
@@ -103,16 +120,13 @@ doublet, hard threshold, soft threshold per metric, MAD-adaptive filter per
 metric). Tabs are omitted for samples with nothing excluded.
 
 ```{r results='asis', fig.height=4, fig.width=7}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
+render_sample_chunks(sids, function(sid) {
   d <- sample_data[[sid]]
   qc_tmp <- d$qc_all_dt
-  if (nrow(qc_tmp) <= 1 || sum(qc_tmp$keep) == nrow(qc_tmp)) next
-  cat("### ", sid, "\n\n")
+  if (nrow(qc_tmp) <= 1 || sum(qc_tmp$keep) == nrow(qc_tmp)) return(invisible())
+  cat("#### ", sid, "\n\n")
   suppressMessages(print(plot_upset_of_exclusions(qc_tmp, qc_names, qc_lu, cuts_dt)))
-  cat("\n\n")
-}
-cat(":::\n\n")
+})
 ```
 
 ## QC density plots
@@ -121,14 +135,11 @@ Pairwise relationships between QC metrics at individual cell level (grey = soft
 threshold pass zone).
 
 ```{r results='asis', fig.height=6, fig.width=8}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
+render_sample_chunks(sids, function(sid) {
+  cat("#### ", sid, "\n\n")
   d <- sample_data[[sid]]
   print(plot_qc_metric_scatter(d$qc_all_dt, qc_names, qc_lu, cuts_dt[batch_var == sid], sid))
-  cat("\n\n")
-}
-cat(":::\n\n")
+})
 ```
 
 ```{r results='asis'}
@@ -139,9 +150,8 @@ Cell label (left) and cluster (right) over the same per-sample UMAP -- both show
 together since the cluster identity is already visible alongside the label.
 
 ```{r results='asis'}
-cat("::: {.panel-tabset}\n\n")
-for (sid in sids) {
-  cat("### ", sid, "\n\n")
+render_sample_chunks(sids, function(sid) {
+  cat("#### ", sid, "\n\n")
   d <- sample_data[[sid]]
   g_lab <- plot_umap_cluster(
     d$int_dt[, .(cell_id, UMAP1, UMAP2)],
@@ -155,8 +165,7 @@ for (sid in sids) {
   ) + theme(legend.position = "none")
   print(g_lab + g_clu)
   cat(sprintf("\n\n%d cells, %d clusters.\n\n", nrow(d$int_dt), uniqueN(d$int_dt$cluster)))
-}
-cat(":::\n\n")
+})
 ```
 
 ## Session info

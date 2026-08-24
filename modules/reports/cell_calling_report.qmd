@@ -47,6 +47,25 @@ names(label_fs)   <- .sid(label_fs,   "cell_calling_labels_",  "\\.csv\\.gz$")
 names(gmm_fs)     <- .sid(gmm_fs,     "cell_calling_gmm_",     "\\.rds$")
 sids <- sort(names(summary_fs))
 
+# Paginate the per-sample tabset into chunks so large cohorts stay navigable:
+# nested chunk tabs -> per-sample sub-tabs. render_one(sid) emits its own '#### <sid>'
+# header + body. Single-chunk cohorts skip the redundant outer tab layer.
+page_size <- 30L
+render_sample_chunks <- function(ids, render_one) {
+  chunks <- split(ids, ceiling(seq_along(ids) / page_size))
+  multi  <- length(chunks) > 1L
+  if (multi) cat('::: {.panel-tabset}\n\n')
+  for (ci in seq_along(chunks)) {
+    if (multi) cat(sprintf("### Samples %d–%d\n\n",
+                           (ci - 1L) * page_size + 1L,
+                           (ci - 1L) * page_size + length(chunks[[ci]])))
+    cat('::: {.panel-tabset}\n\n')
+    for (sid in chunks[[ci]]) { render_one(sid); cat("\n\n") }
+    cat(':::\n\n')
+  }
+  if (multi) cat(':::\n\n')
+}
+
 summary_dt <- rbindlist(lapply(summary_fs, fread), fill = TRUE)
 
 pop_cols <- c(empty="grey75", ambient="#8e44ad", damaged="#e08214", nuclei="#2c8a3d")
@@ -270,14 +289,12 @@ ggplot(long[population!="empty"], aes(sample_id, n, fill=population)) +
 
 ## Per-sample diagnostics
 
-::: {.panel-tabset}
-
 ```{r per-sample, results='asis', fig.width=9, fig.height=7}
-for (sid in sids) {
+render_sample_chunks(sids, function(sid) {
   bh <- suppressWarnings(as.numeric(summary_dt[sample_id == sid, bhattacharyya][1]))
   st <- if (length(bh) == 0 || is.na(bh)) "n/a" else
         if (bh < fail_thr) "FAIL" else if (bh < warn_thr) "WARN" else "PASS"
-  cat(sprintf("\n\n### %s  —  separability %s (Bhattacharyya %s)\n\n",
+  cat(sprintf("\n\n#### %s  —  separability %s (Bhattacharyya %s)\n\n",
               sid, st, ifelse(is.na(bh), "n/a", sprintf("%.2f", bh))))
   dt <- fread(label_fs[[sid]]); g <- readRDS(gmm_fs[[sid]])
   dt[, lx := log10(total+ps)]; dt[, ly := qlogis((spliced+1)/(total+2))]
@@ -346,10 +363,8 @@ for (sid in sids) {
   cat("\n\n")
   print(knitr::kable(ct, caption=sprintf("%s — population by UMI band", sid)))
   cat("\n\n")
-}
+})
 ```
-
-:::
 
 ## Session info
 

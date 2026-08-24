@@ -36,6 +36,25 @@ summary_dt <- rbindlist(lapply(summary_fs, fread), fill = TRUE)
 summary_dt <- summary_dt[order(sample_id)]
 
 labels_ls <- lapply(labels_fs, fread)
+
+# Paginate the per-sample tabset into chunks so large cohorts stay navigable
+# (nested chunk tabs -> per-sample sub-tabs). render_one(sid) emits its own
+# '#### <sid>' header + body. Single-chunk cohorts skip the outer tab layer.
+page_size <- 30L
+render_sample_chunks <- function(ids, render_one) {
+  chunks <- split(ids, ceiling(seq_along(ids) / page_size))
+  multi  <- length(chunks) > 1L
+  if (multi) cat('::: {.panel-tabset}\n\n')
+  for (ci in seq_along(chunks)) {
+    if (multi) cat(sprintf("### Samples %d–%d\n\n",
+                           (ci - 1L) * page_size + 1L,
+                           (ci - 1L) * page_size + length(chunks[[ci]])))
+    cat('::: {.panel-tabset}\n\n')
+    for (sid in chunks[[ci]]) { render_one(sid); cat("\n\n") }
+    cat(':::\n\n')
+  }
+  if (multi) cat(':::\n\n')
+}
 ```
 
 ## Summary
@@ -87,10 +106,8 @@ ggplot(plot_dt, aes(x = sample_id, y = n, fill = metric)) +
 ## Per-sample Breakdown
 
 ```{r per-sample-tabset, results='asis'}
-cat("::: {.panel-tabset}\n\n")
-
-for (sid in summary_dt$sample_id) {
-  cat("### ", sid, "\n\n", sep = "")
+render_sample_chunks(summary_dt$sample_id, function(sid) {
+  cat("#### ", sid, "\n\n", sep = "")
 
   this_summary <- summary_dt[sample_id == sid]
   this_labels <- labels_ls[[sid]]
@@ -119,10 +136,7 @@ for (sid in summary_dt$sample_id) {
     theme_classic()
 
   print(g)
-  cat("\n\n")
-}
-
-cat("::: \n")
+})
 ```
 
 ## Ratios
