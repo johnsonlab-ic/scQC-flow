@@ -100,8 +100,10 @@ chunk_marg_h <- min((min(page_size, n_batches) + 1) * violin_h, max_marg_h)
 # Render a per-sample plot in chunk tabs when the cohort exceeds one page; otherwise
 # render the single plot directly (no redundant tab layer for small cohorts).
 render_paginated <- function(render_chunk) {
+  # render_chunk returns a ggplot; in a results='asis' chunk it must be printed
+  # explicitly (a returned plot is not auto-emitted).
   if (length(b_chunks) <= 1L) {
-    render_chunk(b_chunks[[1]])
+    print(render_chunk(b_chunks[[1]]))
     return(invisible())
   }
   cat('::: {.panel-tabset}\n\n')
@@ -109,7 +111,7 @@ render_paginated <- function(render_chunk) {
     ch    <- b_chunks[[i]]
     first <- (i - 1L) * page_size + 1L
     cat(sprintf("#### Samples %d–%d\n\n", first, first + length(ch) - 1L))
-    render_chunk(ch)
+    print(render_chunk(ch))
     cat("\n\n")
   }
   cat(':::\n\n')
