@@ -327,6 +327,11 @@ process ANNOTATION_METHOD_REPORT {
     input:
     tuple val(method_id), val(spec_b64), path(cells_csv), path(cluster_csv), path(export_csv)
     path report_qmd
+    path marker_stats_csv
+    path logcpms_csv
+    path top_marker_expr_rds
+    path utils_r
+    path plots_r
 
     output:
     path "annotation_report_${method_id}.html", emit: html
@@ -345,6 +350,11 @@ process ANNOTATION_METHOD_REPORT {
     export ANNOTATION_CELLS_CSV='${cells_csv.name}'
     export ANNOTATION_CLUSTER_CSV='${cluster_csv.name}'
     export ANNOTATION_FEATURE_RES='${params.annotation_sel_res}'
+    export ANNOTATION_MIN_CPM_MKR="${params.annotation_min_cpm_mkr}"
+    export ANNOTATION_NOT_OK_RE="${params.annotation_not_ok_re}"
+    export ANNOTATION_TOP_N="${params.annotation_top_n}"
+    export ANNOTATION_FDR_CUT="${params.annotation_fdr_cut}"
+    export ANNOTATION_MAX_ZERO_P="${params.annotation_max_zero_p}"
 
     quarto render ${report_qmd} --output annotation_report_${method_id}.html
     """

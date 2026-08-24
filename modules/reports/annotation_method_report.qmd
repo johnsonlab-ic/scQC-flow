@@ -418,3 +418,81 @@ if (all(c('UMAP1', 'UMAP2') %in% names(cells_dt))) {
   print(p1)
 }
 ```
+
+```{r markers_setup}
+# Pseudobulk cluster markers — reuses the global marker files (computed at
+# annotation_sel_res) when available; absent (NO_FILE) when run_annotation is off,
+# in which case the section is skipped. Same design as the main annotation report.
+marker_stats_f    <- "annotation_markers.csv.gz"
+logcpms_f         <- "annotation_logcpms.csv.gz"
+top_marker_expr_f <- "annotation_top_marker_expression.rds"
+show_markers <- file.exists(marker_stats_f) && file.exists(logcpms_f)
+
+if (show_markers) {
+  source("annotation_utils.R")
+  source("integration_plots.R")
+
+  min_cpm_mkr <- as.numeric(Sys.getenv("ANNOTATION_MIN_CPM_MKR", "50"))
+  not_ok_re   <- Sys.getenv("ANNOTATION_NOT_OK_RE", "(lincRNA|lncRNA|pseudogene|antisense)")
+  top_n       <- as.integer(Sys.getenv("ANNOTATION_TOP_N", "10"))
+  top_n_plot  <- min(top_n, 5L)
+  fdr_cut     <- as.numeric(Sys.getenv("ANNOTATION_FDR_CUT", "0.01"))
+  max_zero_p  <- as.numeric(Sys.getenv("ANNOTATION_MAX_ZERO_P", "0.5"))
+
+  mkrs_dt <- fread(marker_stats_f)
+  cpms_dt <- fread(logcpms_f)
+  marker_cl_ord <- order_cluster_labels(unique(mkrs_dt$cluster))
+  top_min_dt <- mkrs_dt[str_detect(gene_type, not_ok_re, negate = TRUE)][
+    logcpm.sel >= log(min_cpm_mkr + 1)
+  ] |> get_top_markers(fdr_cut = fdr_cut, n_top = top_n_plot, max_zero_p = max_zero_p)
+}
+```
+
+```{r markers_hdr, results='asis', echo=FALSE}
+if (show_markers) {
+  cat(sprintf(
+    "## Top marker genes by cluster at resolution %s\n\nOne-vs-rest pseudobulk markers per cluster (counts aggregated per sample within each cluster). Bubble dotplot of the top markers, with their expression over the UMAP.\n\n",
+    feature_res
+  ))
+}
+```
+
+```{r plot_top_markers_method, fig.height = 5, fig.width = 7, results = 'asis', eval = show_markers, cache = FALSE}
+top_marker_expr_dt <- if (file.exists(top_marker_expr_f)) readRDS(top_marker_expr_f) else data.table()
+
+cat('::: {.panel-tabset}\n\n')
+for (sel_cl in marker_cl_ord) {
+  cat(sprintf("### %s\n\n", sel_cl))
+  has_markers <- sel_cl %in% as.character(top_min_dt$cluster)
+  if (!has_markers) {
+    cat("No marker genes passed the display filters for this cluster.\n\n")
+    next
+  }
+
+  p_dot <- plot_top_marker_genes(sel_cl, top_min_dt, cpms_dt, cl_order = marker_cl_ord) +
+    theme(
+      axis.text.x = element_text(size = 9),
+      axis.text.y = element_text(size = 9),
+      strip.text = element_text(size = 9),
+      plot.title = element_text(size = 12), legend.position = "none"
+    )
+  g_umap <- NULL
+  if (nrow(top_marker_expr_dt) > 0 && all(c('UMAP1', 'UMAP2') %in% names(cells_dt))) {
+    g_umap <- plot_top_marker_umap_facet(
+      sel_cl, top_min_dt, top_marker_expr_dt,
+      cells_dt[, .(cell_id, UMAP1, UMAP2)]
+    ) +
+      theme(
+        strip.text = element_text(size = 9, margin = margin(b = 4)),
+        plot.title = element_text(size = 11)
+      )
+  }
+
+  print(p_dot)
+  if (!is.null(g_umap)) print(g_umap)
+  cat("\n\n")
+  invisible(gc(verbose = FALSE))
+}
+rm(top_marker_expr_dt)
+cat(':::\n\n')
+```

@@ -624,6 +624,9 @@ workflow ANNOTATION_METHODS {
     h5_ch
     integration_dt_ch
     annotation_methods
+    marker_stats_ch      // annotation_markers.csv.gz (or NO_FILE when run_annotation is off)
+    logcpms_ch           // annotation_logcpms.csv.gz (or NO_FILE)
+    top_marker_expr_ch   // annotation_top_marker_expression.rds (or NO_FILE)
 
     main:
 
@@ -694,7 +697,12 @@ workflow ANNOTATION_METHODS {
 
     ANNOTATION_METHOD_REPORT(
         COMBINE_ANNOTATION_METHOD_OUTPUTS.out.result,
-        channel.value(file("${projectDir}/modules/reports/annotation_method_report.qmd"))
+        channel.value(file("${projectDir}/modules/reports/annotation_method_report.qmd")),
+        marker_stats_ch,
+        logcpms_ch,
+        top_marker_expr_ch,
+        channel.value(file("${projectDir}/modules/annotation/annotation_utils.R")),
+        channel.value(file("${projectDir}/modules/integration/integration_plots.R"))
     )
 
     emit:

@@ -670,6 +670,13 @@ workflow {
                     landing_integration_ch = INTEGRATION.out.integration_dt
                     report_pages = report_pages.mix(INTEGRATION.out.report)
 
+                    // Marker files for the per-method report's marker section. Reused from
+                    // ANNOTATION when it runs; NO_FILE placeholder otherwise (section is
+                    // then skipped in the method report).
+                    def ann_markers_ch         = channel.value(file("${projectDir}/templates/NO_FILE"))
+                    def ann_logcpms_ch         = channel.value(file("${projectDir}/templates/NO_FILE"))
+                    def ann_top_marker_expr_ch = channel.value(file("${projectDir}/templates/NO_FILE"))
+
                     if (params.run_annotation) {
                         ANNOTATION(
                             hvg_h5_ch,
@@ -679,13 +686,19 @@ workflow {
                         annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION.out.export_metadata)
                         hasAnnotationExportMetadata = true
                         report_pages = report_pages.mix(ANNOTATION.out.report)
+                        ann_markers_ch         = ANNOTATION.out.markers
+                        ann_logcpms_ch         = ANNOTATION.out.logcpms
+                        ann_top_marker_expr_ch = ANNOTATION.out.top_marker_expr
                     }
 
                     if (normalizedAnnotationMethods) {
                         ANNOTATION_METHODS(
                             hvg_h5_ch,
                             INTEGRATION.out.integration_dt,
-                            normalizedAnnotationMethods
+                            normalizedAnnotationMethods,
+                            ann_markers_ch,
+                            ann_logcpms_ch,
+                            ann_top_marker_expr_ch
                         )
                         annotation_method_cell_labels_ch = ANNOTATION_METHODS.out.cell_labels.collect()
                         annotation_export_metadata_ch = annotation_export_metadata_ch.mix(ANNOTATION_METHODS.out.export_metadata)
