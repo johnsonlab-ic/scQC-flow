@@ -88,6 +88,32 @@ hard_cuts_dt <- make_hard_cuts_dt(b_lvls, hard_min_counts, hard_min_feats, hard_
 violin_h   <- 0.4
 max_marg_h <- 12
 marg_h     <- min((n_batches + 1) * violin_h, max_marg_h)
+
+# Pagination: above page_size samples the per-sample panels (marginals, scatters,
+# upsets) are split into chunks rendered as nested tabs so the report stays readable
+# and cheap at large cohort sizes. Same split idiom as the ambient/cellsweep reports.
+page_size <- as.integer(Sys.getenv("QC_REPORT_PAGE_SIZE", "30"))
+if (is.na(page_size) || page_size < 1L) page_size <- 30L
+b_chunks     <- split(b_lvls, ceiling(seq_along(b_lvls) / page_size))
+chunk_marg_h <- min((min(page_size, n_batches) + 1) * violin_h, max_marg_h)
+
+# Render a per-sample plot in chunk tabs when the cohort exceeds one page; otherwise
+# render the single plot directly (no redundant tab layer for small cohorts).
+render_paginated <- function(render_chunk) {
+  if (length(b_chunks) <= 1L) {
+    render_chunk(b_chunks[[1]])
+    return(invisible())
+  }
+  cat('::: {.panel-tabset}\n\n')
+  for (i in seq_along(b_chunks)) {
+    ch    <- b_chunks[[i]]
+    first <- (i - 1L) * page_size + 1L
+    cat(sprintf("#### Samples %d–%d\n\n", first, first + length(ch) - 1L))
+    render_chunk(ch)
+    cat("\n\n")
+  }
+  cat(':::\n\n')
+}
 ```
 
 ## Sample QC metrics {.tabset}
@@ -103,29 +129,29 @@ An overview of quality control (QC) metrics for all samples, both before and aft
 
 ### Pre-QC
 
-```{r plot_pre_qc, fig.height=marg_h, fig.width=8}
-suppressWarnings(
-  plot_qc_ranges_marginals(qc_all_dt, b_lvls, qc_names, qc_lu, cuts_dt,
+```{r plot_pre_qc, fig.height=chunk_marg_h, fig.width=8, results='asis'}
+render_paginated(function(ch) suppressWarnings(
+  plot_qc_ranges_marginals(qc_all_dt[batch_var %in% ch], ch, qc_names, qc_lu, cuts_dt,
                            hard_cuts_dt = hard_cuts_dt)
-)
+))
 ```
 
 ### After flat thresholds
 
-```{r plot_post_flat, fig.height=marg_h, fig.width=8}
-suppressWarnings(
-  plot_qc_ranges_marginals(kept_flat_dt, b_lvls, qc_names, qc_lu, cuts_dt)
-)
+```{r plot_post_flat, fig.height=chunk_marg_h, fig.width=8, results='asis'}
+render_paginated(function(ch) suppressWarnings(
+  plot_qc_ranges_marginals(kept_flat_dt[batch_var %in% ch], ch, qc_names, qc_lu, cuts_dt)
+))
 ```
 
 ```{r tab_after_mad, echo=FALSE, results='asis'}
 if (mad_filter) cat("### After MAD filter\n\n")
 ```
 
-```{r plot_post_mad, eval=mad_filter, fig.height=marg_h, fig.width=8}
-suppressWarnings(
-  plot_qc_ranges_marginals(kept_dt, b_lvls, qc_names, qc_lu, cuts_dt)
-)
+```{r plot_post_mad, eval=mad_filter, fig.height=chunk_marg_h, fig.width=8, results='asis'}
+render_paginated(function(ch) suppressWarnings(
+  plot_qc_ranges_marginals(kept_dt[batch_var %in% ch], ch, qc_names, qc_lu, cuts_dt)
+))
 ```
 
 ## MAD adaptive filter thresholds
@@ -145,26 +171,49 @@ if (mad_filter) {
 }
 ```
 
-```{r plot_mad_thresholds, eval=mad_filter, fig.height=marg_h, fig.width=8}
-suppressWarnings(
-  plot_mad_thresholds(qc_all_dt, b_lvls, qc_lu, mad_nmads)
-)
+```{r plot_mad_thresholds, eval=mad_filter, fig.height=chunk_marg_h, fig.width=8, results='asis'}
+render_paginated(function(ch) suppressWarnings(
+  plot_mad_thresholds(qc_all_dt[batch_var %in% ch], ch, qc_lu, mad_nmads)
+))
 ```
 
 ## QC metrics scatterplots
 
-Pairwise relationships of QC metrics at individual cell level.
+Pairwise relationships of QC metrics at individual cell level, shown as 2D binned
+density. The pooled view across all cells is the headline; per-sample panels are
+paginated below for drill-down.
+
+```{r plot_scatter_pooled, fig.height=6, fig.width=8}
+# Flat QC thresholds are global (identical across samples), so any sample's cuts row
+# gives the correct threshold rectangles for the pooled view.
+pooled_cuts <- copy(cuts_dt[batch_var == b_lvls[1]])[, batch_var := "All samples"]
+suppressWarnings(
+  print(plot_qc_metric_scatter(qc_dt, qc_names, qc_lu, pooled_cuts, "All samples"))
+)
+```
+
+### Per sample
 
 ```{r plot_scatters, fig.height=6, fig.width=8, results='asis'}
-cat('::: {.panel-tabset}\n\n')
-for (b in b_lvls) {
-  qc_tmp <- qc_dt[batch_var == b]
-  if (nrow(qc_tmp) <= 1) next
-  cat("### ", b, "\n\n")
-  print(plot_qc_metric_scatter(qc_tmp, qc_names, qc_lu, cuts_dt[batch_var == b], b))
-  cat("\n\n")
+multi <- length(b_chunks) > 1L
+if (multi) cat('::: {.panel-tabset}\n\n')
+for (i in seq_along(b_chunks)) {
+  ch <- b_chunks[[i]]
+  if (multi) {
+    first <- (i - 1L) * page_size + 1L
+    cat(sprintf("#### Samples %d–%d\n\n", first, first + length(ch) - 1L))
+  }
+  cat('::: {.panel-tabset}\n\n')
+  for (b in ch) {
+    qc_tmp <- qc_dt[batch_var == b]
+    if (nrow(qc_tmp) <= 1) next
+    cat("##### ", b, "\n\n")
+    print(plot_qc_metric_scatter(qc_tmp, qc_names, qc_lu, cuts_dt[batch_var == b], b))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
 }
-cat(':::' )
+if (multi) cat(':::\n\n')
 ```
 
 ## How many cells and samples retained?
@@ -202,15 +251,25 @@ htmltools::tagList(
 UpSet plots visualize the overlap between different exclusion criteria per sample. Plots are omitted for samples where no barcodes were excluded.
 
 ```{r plot_upsets, fig.height=4, fig.width=6, results='asis'}
-cat('::: {.panel-tabset}\n\n')
-for (bb in b_lvls) {
-  qc_tmp <- qc_all_dt[batch_var == bb]
-  if (nrow(qc_tmp) <= 1 || sum(qc_tmp$keep) == nrow(qc_tmp)) next
-  cat("### ", bb, "\n\n")
-  suppressMessages(print(plot_upset_of_exclusions(qc_tmp, qc_names, qc_lu, cuts_dt)))
-  cat("\n\n")
+multi <- length(b_chunks) > 1L
+if (multi) cat('::: {.panel-tabset}\n\n')
+for (i in seq_along(b_chunks)) {
+  ch <- b_chunks[[i]]
+  if (multi) {
+    first <- (i - 1L) * page_size + 1L
+    cat(sprintf("#### Samples %d–%d\n\n", first, first + length(ch) - 1L))
+  }
+  cat('::: {.panel-tabset}\n\n')
+  for (bb in ch) {
+    qc_tmp <- qc_all_dt[batch_var == bb]
+    if (nrow(qc_tmp) <= 1 || sum(qc_tmp$keep) == nrow(qc_tmp)) next
+    cat("##### ", bb, "\n\n")
+    suppressMessages(print(plot_upset_of_exclusions(qc_tmp, qc_names, qc_lu, cuts_dt)))
+    cat("\n\n")
+  }
+  cat(':::\n\n')
 }
-cat(':::\n\n')
+if (multi) cat(':::\n\n')
 ```
 
 ## Session info

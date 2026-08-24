@@ -216,6 +216,7 @@ process QC_REPORT {
     export MIN_SPLICE="${params.qc_min_splice}"
     export QC_MAD_FILTER="${params.qc_mad_filter}"
     export QC_MAD_NMADS="${params.qc_mad_nmads}"
+    export QC_REPORT_PAGE_SIZE="${params.qc_report_page_size}"
     quarto render "${report_qmd}" --output qc_report.html
     """
 }
