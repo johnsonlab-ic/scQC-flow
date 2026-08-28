@@ -203,6 +203,16 @@ if (length(cell_cols) == 0L)
 all_genes <- Reduce(union, lapply(empty_cols, names))
 message("Total genes (union): ", length(all_genes))
 
+# Samples that survived the loop (have BOTH an empties and a cells pseudobulk column).
+# A zoom subset can contain no cells from some samples; those are skipped above, so the
+# retained set can be smaller than the input sample_ids. Use kept_ids for every
+# downstream matrix / colData so assay columns and colData rows stay aligned.
+kept_ids <- names(cell_cols)
+if (length(kept_ids) < length(sample_ids))
+  message("Dropped ", length(sample_ids) - length(kept_ids),
+          " sample(s) with no cells in this subset: ",
+          paste(setdiff(sample_ids, kept_ids), collapse = ", "))
+
 make_mat <- function(col_list, genes) {
   m <- matrix(0L, nrow = length(genes), ncol = length(col_list),
                dimnames = list(genes, names(col_list)))
@@ -214,8 +224,8 @@ make_mat <- function(col_list, genes) {
   m
 }
 
-empty_mat <- make_mat(empty_cols, all_genes)
-cell_mat  <- make_mat(cell_cols,  all_genes)
+empty_mat <- make_mat(empty_cols[kept_ids], all_genes)
+cell_mat  <- make_mat(cell_cols[kept_ids],  all_genes)
 
 # Apply SYMBOL_ENSEMBL rownames (fall back to ensembl_id for unmapped genes)
 sym_vec <- sym_map[J(all_genes)]$symbol_ensembl
@@ -228,7 +238,7 @@ rownames(cell_mat)  <- sym_vec
 # ---------------------------------------------------------------------------
 pb_se <- SummarizedExperiment(
   assays  = list(counts = empty_mat),
-  colData = DataFrame(sample_id = sample_ids, row.names = sample_ids)
+  colData = DataFrame(sample_id = kept_ids, row.names = kept_ids)
 )
 saveRDS(pb_se, "pb_empties.rds")
 message("Written pb_empties.rds  (", nrow(pb_se), " genes x ", ncol(pb_se), " samples)")
@@ -240,9 +250,9 @@ message("Written pb_empties.rds  (", nrow(pb_se), " genes x ", ncol(pb_se), " sa
 # group is releveled so "cell" is the reference → groupempty coef = empty − cell.
 # Positive logFC → higher in empty droplets → ambient gene.
 # ---------------------------------------------------------------------------
-n_s          <- length(sample_ids)
+n_s          <- length(kept_ids)
 combined_mat <- cbind(empty_mat, cell_mat)
-colnames(combined_mat) <- c(paste0("empty_", sample_ids), paste0("cell_", sample_ids))
+colnames(combined_mat) <- c(paste0("empty_", kept_ids), paste0("cell_", kept_ids))
 
 group  <- factor(c(rep("empty", n_s), rep("cell", n_s)))
 group  <- relevel(group, ref = "cell")
