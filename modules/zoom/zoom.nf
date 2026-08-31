@@ -106,6 +106,7 @@ process ZOOM_HVG_SELECTION {
     python3 ${script} \
         --h5_pattern  'filt_counts_*.h5' \
         --qc_pattern  'zoom_qc_metrics.csv.gz' \
+        --allow_missing_qc \
         --n_top_genes ${nTopGenes} \
         --out_stats   zoom_hvg_stats.csv.gz \
         --out_h5      zoom_hvg_counts.h5 \

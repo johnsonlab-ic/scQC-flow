@@ -290,7 +290,8 @@ def _rank_hvgs_multi_batch(per_sample_stats, ambient_genes, n_hvgs):
 
 def run_hvg_selection(h5_files, qc_csv_files, n_top_genes, out_stats, out_h5,
                       out_dbl_h5, gtf_path, edger_csv=None,
-                      dbl_h5_files=None, dbl_qc_files=None):
+                      dbl_h5_files=None, dbl_qc_files=None,
+                      allow_missing_qc=False):
     print("=== HVG_SELECTION (Seurat VST) ===")
     print(f"H5 files:    {h5_files}")
     print(f"QC CSVs:     {qc_csv_files}")
@@ -327,6 +328,21 @@ def run_hvg_selection(h5_files, qc_csv_files, n_top_genes, out_stats, out_h5,
     # ------------------------------------------------------------------
     print("\n--- Pass 1: per-sample VST stats ---")
     h5_files_sorted = sorted(h5_files)
+
+    # In a zoom, all sample H5s are staged but the (subset) QC only covers samples that
+    # had cells in the zoom. Drop H5s with no matching QC up front so both passes skip
+    # them consistently. Guarded by --allow_missing_qc; the main run keeps the hard error.
+    if allow_missing_qc:
+        def _sid_of(h5f):
+            return re.sub(r'^(?:.*/)?filt_counts_', '', h5f).replace('.h5', '')
+        dropped = [_sid_of(h) for h in h5_files_sorted if _sid_of(h) not in qc_by_sample]
+        if dropped:
+            print(f"  allow_missing_qc: skipping {len(dropped)} H5(s) with no QC "
+                  f"(no cells in this subset): {dropped}")
+        h5_files_sorted = [h for h in h5_files_sorted if _sid_of(h) in qc_by_sample]
+        if not h5_files_sorted:
+            raise ValueError("No staged H5 has matching QC — nothing to process.")
+
     per_sample_stats = []
     gene_list = None
     sym_ensembl_ids = None
@@ -556,6 +572,8 @@ if __name__ == '__main__':
     parser.add_argument('--dbl_h5_pattern', type=str, default=None,
                         help='separate h5 source for doublets (e.g. pre-CellSweep filt_counts); '
                              'used when the main input carries singlets only')
+    parser.add_argument('--allow_missing_qc', action='store_true',
+                        help='skip staged H5s that have no matching QC (zoom: samples with no cells in the subset)')
     parser.add_argument('--dbl_qc_pattern', type=str, default=None,
                         help='qc_metrics with scdbl_class for the doublet source')
     args = parser.parse_args()
@@ -582,4 +600,5 @@ if __name__ == '__main__':
         edger_csv    = args.edger_csv,
         dbl_h5_files = dbl_h5_files,
         dbl_qc_files = dbl_qc_files,
+        allow_missing_qc = args.allow_missing_qc,
     )
