@@ -321,6 +321,27 @@ if (length(present_leiden) > 0) {
 }
 ```
 
+## Cluster resolution stability (clustree)
+
+Cells are clustered at several Leiden resolutions; the tree shows how clusters split as
+resolution increases and how stably cells flow between them. Edge transparency = `in_prop` (the
+fraction of a child cluster drawn from that parent) — solid vertical edges are stable splits,
+while many faint crossing edges indicate cells being reshuffled, i.e. over-clustering. Use it to
+judge where the clustering stops resolving genuine structure. (No resolution is selected here.)
+
+```{r clustree, fig.width=9, fig.height=8}
+suppressPackageStartupMessages(library(clustree))
+ct_cols <- grep("^RNA_snn_res\\.", names(int_dt_pass2), value = TRUE)
+ct_cols <- ct_cols[order(as.numeric(sub("^RNA_snn_res\\.", "", ct_cols)))]
+if (length(ct_cols) >= 2) {
+  ct_df <- as.data.frame(int_dt_pass2[, ..ct_cols])
+  for (cc in ct_cols) ct_df[[cc]] <- factor(ct_df[[cc]])
+  clustree(ct_df, prefix = "RNA_snn_res.", node_text_size = 2.5)
+} else {
+  cat("Fewer than two clustering resolutions available — clustree needs at least two.\n")
+}
+```
+
 ## UMAP by sample and metadata variables
 
 ```{r umap_metadata, fig.height = 5, fig.width = 7, results='asis'}
