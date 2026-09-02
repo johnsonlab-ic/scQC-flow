@@ -89,6 +89,9 @@ process CELL_CALLING_REPORT {
     path summary_csvs         // cell_calling_summary_*.csv     — per-sample counts + cuts
     path label_csvs           // cell_calling_labels_*.csv.gz   — per-barcode posteriors + population
     path gmm_rds              // cell_calling_gmm_*.rds         — fitted GMM params + cuts
+    path pseudobulk_csv       // pseudobulk_called_cells.csv.gz — genes x samples (called-cell pseudobulk)
+    path ncells_csv           // sample_ncells.csv              — called-cell count per sample
+    path sample_metadata      // sample_metadata.csv.gz or NO_FILE — per-sample metadata_vars for colouring
     path report_qmd           // cell_calling_report.qmd
 
     output:
@@ -100,6 +103,8 @@ process CELL_CALLING_REPORT {
     export HOME="\$PWD"
     export CC_BHATTACHARYYA_WARN="${params.cc_bhattacharyya_warn}"
     export CC_BHATTACHARYYA_FAIL="${params.cc_bhattacharyya_fail}"
+    export METADATA_VARS="${params.metadata_vars ?: ''}"
+    export SAMPLE_METADATA_FILE="${sample_metadata.name}"
     quarto render "${report_qmd}" --output cell_calling_report.html
     """
 }

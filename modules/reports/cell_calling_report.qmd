@@ -366,6 +366,73 @@ render_sample_chunks(sids, function(sid) {
 })
 ```
 
+## Sample pseudobulk PCA (called cells, pre-QC)
+
+A per-sample pseudobulk of the **called** cells (`is_cell`), projected by PCA, to spot whole-sample
+outliers before any cell-level QC. **Method:** sum spliced+unspliced+ambiguous counts per gene
+across all called cells of a sample (pre-ambient, pre-QC) → CPM + `log1p` → top-2,000 variable
+genes → PCA (genes centred + scaled). **Outlier rule (soft flag, nothing dropped):** robust z on
+PC1/PC2 (`|value − median| / MAD`), flagged when `max(|z_PC1|, |z_PC2|) > 3`. Panels are coloured by
+the pipeline's **`--metadata_vars`** (constant / all-NA columns dropped), plus called-cell count.
+
+```{r pbpca_prep}
+pb_mat  <- as.matrix(fread("pseudobulk_called_cells.csv.gz"), rownames = "gene")   # genes x samples
+pb_nc   <- fread("sample_ncells.csv")
+
+pb_meta_f <- Sys.getenv("SAMPLE_METADATA_FILE", "")
+pb_meta   <- if (nzchar(pb_meta_f) && pb_meta_f != "NO_FILE" && file.exists(pb_meta_f))
+               tryCatch(fread(pb_meta_f), error = function(e) NULL) else NULL
+
+pb_lcpm <- log1p(sweep(pb_mat, 2, colSums(pb_mat), "/") * 1e6)
+pb_v    <- apply(pb_lcpm, 1, var)
+pb_X    <- t(pb_lcpm[head(order(pb_v, decreasing = TRUE), 2000), ])
+pb_pca  <- prcomp(pb_X, center = TRUE, scale. = TRUE)
+pb_ve   <- round(100 * (pb_pca$sdev^2 / sum(pb_pca$sdev^2)), 1)
+
+pb_pcs  <- data.table(sample_id = rownames(pb_X), PC1 = pb_pca$x[,1], PC2 = pb_pca$x[,2])
+pb_pcs  <- merge(pb_pcs, pb_nc, by = "sample_id", all.x = TRUE)
+if (!is.null(pb_meta) && "sample_id" %in% names(pb_meta))
+  pb_pcs <- merge(pb_pcs, pb_meta, by = "sample_id", all.x = TRUE)
+pb_rz   <- function(x) (x - median(x)) / mad(x)
+pb_pcs[, `:=`(z1 = pb_rz(PC1), z2 = pb_rz(PC2))]
+pb_pcs[, outlier_score := round(pmax(abs(z1), abs(z2)), 2)][, is_outlier := outlier_score > 3]
+pb_pcs[, short_id := sub("_snRNAseq$", "", sub("^LM[0-9]+_", "", sample_id))]
+
+# Colour by --metadata_vars (present + informative: >1 distinct non-NA value), plus called-cell count.
+pb_req  <- trimws(strsplit(Sys.getenv("METADATA_VARS", ""), "\\s+")[[1]])
+pb_req  <- pb_req[nzchar(pb_req)]
+pb_vars <- c(intersect(pb_req, names(pb_pcs)), "n_called_cells")
+pb_vars <- pb_vars[vapply(pb_vars, function(v) length(unique(pb_pcs[[v]][!is.na(pb_pcs[[v]])])) > 1, logical(1))]
+```
+
+`r sprintf("%d samples · PC1 %.1f%% · PC2 %.1f%% · %d flagged (robust z > 3). PC1 vs called-cell count r = %.2f (a strong correlation would mean PC1 is mostly library size). Panels: %s.", nrow(pb_pcs), pb_ve[1], pb_ve[2], sum(pb_pcs$is_outlier), cor(pb_pcs$PC1, pb_pcs$n_called_cells), paste(pb_vars, collapse=", "))`
+
+```{r pbpca_grid, fig.width=11, fig.height=9}
+pb_panel <- function(v) {
+  cont <- is.numeric(pb_pcs[[v]]) && length(unique(pb_pcs[[v]])) > 10
+  g <- ggplot(pb_pcs, aes(PC1, PC2)) +
+    geom_point(aes(colour = .data[[v]]), size = 2.6, alpha = 0.9) +
+    geom_point(data = pb_pcs[is_outlier == TRUE], shape = 21, size = 4.2, stroke = 1,
+               colour = "#c0392b", fill = NA) +
+    theme_bw(base_size = 10) + theme(legend.key.size = unit(0.8, "lines")) +
+    labs(title = v, x = sprintf("PC1 (%.1f%%)", pb_ve[1]), y = sprintf("PC2 (%.1f%%)", pb_ve[2]),
+         colour = v)
+  if (cont) g + scale_colour_viridis_c() else g + scale_colour_brewer(palette = "Set2", na.value = "grey70")
+}
+patchwork::wrap_plots(lapply(pb_vars, pb_panel), ncol = 2)
+```
+
+```{r pbpca_table, results='asis'}
+pb_cols <- c("short_id", intersect("condition", names(pb_pcs)), "n_called_cells")
+DT::datatable(
+  pb_pcs[order(-outlier_score),
+         c(pb_cols, "PC1", "PC2", "outlier_score", "is_outlier"), with = FALSE][
+         , `:=`(PC1 = round(PC1,1), PC2 = round(PC2,1),
+                flag = fifelse(is_outlier, "OUTLIER", ""))][, is_outlier := NULL],
+  rownames = FALSE, filter = "top", class = "compact stripe hover",
+  options = list(pageLength = 12, dom = "frtip"))
+```
+
 ## Session info
 
 <details>

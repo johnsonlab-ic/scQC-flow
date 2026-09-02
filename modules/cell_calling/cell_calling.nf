@@ -33,3 +33,27 @@ process CELL_CALLING {
     Rscript ${script} "${sampleId}" "${h5_file}" "${knee_csv}" ${incl} "${alpha_csv}" ${alpha_max}
     """
 }
+
+// Per-sample pseudobulk of the called cells (pre-QC), aggregated into one gene x sample
+// matrix for the cell-calling report's sample-outlier PCA. Reads the filt_counts H5s in
+// parallel (heavy at large cohorts, hence process_high).
+process COMPUTE_CALLED_PSEUDOBULK {
+    label     "process_high"
+    tag       "called_pseudobulk"
+    container "ghcr.io/johnsonlab-ic/landmark-sc_image"
+    publishDir "${params.outputDir}/cell_calling", mode: params.publish_mode_nonreport, overwrite: true
+
+    input:
+    path filt_h5s     // filt_counts_*.h5 (all samples, collected)
+    path script       // called_cells_pseudobulk.py
+
+    output:
+    path "pseudobulk_called_cells.csv.gz", emit: pseudobulk
+    path "sample_ncells.csv",              emit: ncells
+
+    script:
+    """
+    export HOME="\$PWD"
+    python3 ${script} . . ${task.cpus}
+    """
+}

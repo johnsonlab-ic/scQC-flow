@@ -578,7 +578,8 @@ workflow {
         AMBIENT(
             MAPPING.out.h5_files,
             MAPPING.out.knee_data,
-            MAPPING.out.alevinfry_stats
+            MAPPING.out.alevinfry_stats,
+            sample_metadata_ch
         )
         report_pages = report_pages.mix(AMBIENT.out.report)
 

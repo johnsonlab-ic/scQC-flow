@@ -9,6 +9,7 @@ include { CELLBENDER        } from '../modules/ambient/ambient.nf'
 include { AMBIENT_REPORT    } from '../modules/reports/reports.nf'
 include { CELLBENDER_REPORT } from '../modules/reports/reports.nf'
 include { CELL_CALLING      } from '../modules/cell_calling/cell_calling.nf'
+include { COMPUTE_CALLED_PSEUDOBULK } from '../modules/cell_calling/cell_calling.nf'
 include { CELL_CALLING_REPORT } from '../modules/reports/reports.nf'
 include { EMPTYDROPS_CALLING } from '../modules/emptydrops/emptydrops.nf'
 include { EMPTYDROPS_REPORT } from '../modules/reports/reports.nf'
@@ -170,6 +171,7 @@ workflow AMBIENT {
     h5_ch             // tuple(sampleId, h5_file)      from MAPPING.h5_files
     knee_ch           // tuple(sampleId, knee_csv)      from MAPPING.knee_data
     alevinfry_stats_ch // tuple(sampleId, stats_csv)    from MAPPING.alevinfry_stats
+    sample_metadata_ch // path sample_metadata.csv.gz (or NO_FILE) for cell-calling report colouring
 
     main:
 
@@ -212,11 +214,18 @@ workflow AMBIENT {
             joined_input,
             channel.value(file("${projectDir}/modules/cell_calling/cell_calling.R"))
         )
+        COMPUTE_CALLED_PSEUDOBULK(
+            CELL_CALLING.out.h5_files.map { _id, h5 -> h5 }.collect(),
+            channel.value(file("${projectDir}/modules/cell_calling/called_cells_pseudobulk.py"))
+        )
         CELL_CALLING_REPORT(
             alevinfry_stats_ch.map { _id, csv -> csv }.collect(),
             CELL_CALLING.out.summaries.map { _id, csv -> csv }.collect(),
             CELL_CALLING.out.labels.map    { _id, csv -> csv }.collect(),
             CELL_CALLING.out.gmm.map       { _id, rds -> rds }.collect(),
+            COMPUTE_CALLED_PSEUDOBULK.out.pseudobulk,
+            COMPUTE_CALLED_PSEUDOBULK.out.ncells,
+            sample_metadata_ch,
             channel.value(file("${projectDir}/modules/reports/cell_calling_report.qmd"))
         )
         cc_h5       = CELL_CALLING.out.h5_files
